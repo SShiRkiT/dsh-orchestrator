@@ -1,6 +1,6 @@
 {
   "name": "dsh-orchestrator",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "private": true,
   "description": "Plan-only main agent with a plan-mode toggle in the composer; delegated workers on a switchable default route",
   "type": "module",
