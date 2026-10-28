@@ -1,0 +1,29 @@
+# Dependencies and generated duplicates
+node_modules/
+dist/
+
+# Local-only packages, backups, and test runtime state
+offline/
+old-package-backup/
+pre-install-backup-*/
+sandbox/
+
+# Logs, archives, and captured sessions
+*.log
+*.tgz
+*.zip
+*.zstd
+sessions/
+
+# Secrets — never commit these
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.credentials.yaml
+.anonymous-user-id
+
+# OS files
+.DS_Store
+Thumbs.db

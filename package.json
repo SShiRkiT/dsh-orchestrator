@@ -1,0 +1,60 @@
+{
+  "name": "dsh-orchestrator",
+  "version": "0.1.4",
+  "private": true,
+  "description": "Plan-only main agent with a plan-mode toggle in the composer; delegated workers on a switchable default route",
+  "type": "module",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "README.en.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "*",
+    "zod": "*"
+  },
+  "main": "lib/index.js",
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "orchestrator",
+    "subagent",
+    "planning"
+  ],
+  "license": "MIT",
+  "author": "SShiRkiT (https://github.com/SShiRkiT)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SShiRkiT/dsh-orchestrator.git"
+  },
+  "homepage": "https://github.com/SShiRkiT/dsh-orchestrator#readme",
+  "bugs": {
+    "url": "https://github.com/SShiRkiT/dsh-orchestrator/issues"
+  }
+}
