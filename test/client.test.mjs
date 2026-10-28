@@ -142,7 +142,7 @@ test('saveRoute surfaces a rejected write and a write that did not land', async 
   assert.equal(await T.saveRoute(dropped, T.MAIN.fields, { provider: 'p', model: 'm', effort: '' }, t), 'route.saveFailed')
 })
 
-test('apply puts the toggle in the plan slot and the picker in input.right', () => {
+test('apply puts the toggle in the left slot and the picker in input.right', () => {
   const regs = []
   const ctx = {
     effect: (fn) => fn(),
@@ -153,7 +153,7 @@ test('apply puts the toggle in the plan slot and the picker in input.right', () 
   }
   mod.apply(ctx)
   assert.deepEqual(regs.map((r) => [r.opts.name, r.opts.id, r.opts.order]), [
-    ['conversation.input.plan', 'orchestrator-plan-toggle', 10],
+    ['conversation.input.left', 'orchestrator-plan-toggle', 20],
     ['conversation.input.right', 'orchestrator-route-picker', 11],
   ])
   const props = regs[1].opts.inject('S1')
