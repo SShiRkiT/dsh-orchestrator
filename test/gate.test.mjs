@@ -34,7 +34,7 @@ test('denyGuard denies a listed name and lets anything else through', () => {
   const guard = denyGuard(HIDDEN)
   assert.equal(
     guard({ name: 'edit' }),
-    'orchestrator: "edit" is not available to the main agent. Hand the work to a worker with the delegate tool.',
+    'orchestrator: "edit" is not available to the main agent. The main agent only plans; hand every action to a worker with the delegate tool.',
   )
   assert.equal(guard({ name: 'write' }).startsWith('orchestrator: "write"'), true)
   assert.equal(guard({ name: 'todo_write' }), undefined)

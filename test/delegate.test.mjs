@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { DELEGATE_TOOL, buildActivation, createDelegateTool, readRoute } from '../lib/delegate.js'
+import { DELEGATE_TOOL, buildActivation, createDelegateTool, languageNote, readRoute } from '../lib/delegate.js'
 
 const cfg = (provider, model, effort = '') => ({
   workerProvider: { get: () => provider },
@@ -37,7 +37,7 @@ test('buildActivation shapes the spawn request with the route and parent deliver
   assert.equal(spec.label, 'fix parser')
   assert.equal(spec.delivery, 'parent')
   assert.equal(spec.signal, signal)
-  assert.deepEqual(spec.request.prompt, [{ type: 'text', text: 'do it' }])
+  assert.deepEqual(spec.request.prompt, [{ type: 'text', text: languageNote('do it') + 'do it' }])
   assert.equal(spec.request.parent, parent)
   assert.deepEqual(spec.request.agentOptions, route)
   assert.equal(spec.request.maxDepth, 2)

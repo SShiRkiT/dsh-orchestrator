@@ -142,7 +142,7 @@ test('saveRoute surfaces a rejected write and a write that did not land', async 
   assert.equal(await T.saveRoute(dropped, T.MAIN.fields, { provider: 'p', model: 'm', effort: '' }, t), 'route.saveFailed')
 })
 
-test('apply registers the toggle first and the route picker second, both in input.right', () => {
+test('apply puts the toggle in the plan slot and the picker in input.right', () => {
   const regs = []
   const ctx = {
     effect: (fn) => fn(),
@@ -153,11 +153,12 @@ test('apply registers the toggle first and the route picker second, both in inpu
   }
   mod.apply(ctx)
   assert.deepEqual(regs.map((r) => [r.opts.name, r.opts.id, r.opts.order]), [
-    ['conversation.input.right', 'orchestrator-plan-toggle', 10],
+    ['conversation.input.plan', 'orchestrator-plan-toggle', 10],
     ['conversation.input.right', 'orchestrator-route-picker', 11],
   ])
   const props = regs[1].opts.inject('S1')
-  assert.deepEqual([props.scopes.main.ns, props.scopes.worker.ns], ['agent-default-model', 'orchestrator'])
+  assert.deepEqual([props.scopes.main.ns, props.scopes.worker.ns, props.scopes.orch.ns], ['agent-default-model', 'orchestrator', 'orchestrator'])
+  assert.equal(typeof props.setPlan, 'function')
   assert.deepEqual(plain(mod.inject), ['slots', 'locale', 'remote', 'remote.commands', 'remote.session', 'configForms'])
 })
 
