@@ -19,6 +19,10 @@ function fakeAgent({ globals = ['edit', 'write', 'str_replace_editor'], guardErr
             const [tool] = deny
             if (!globals.includes(tool)) throw new Error(`tools.restrict() names unknown global tool "${tool}"`)
             restricted.push(tool)
+            return () => {
+              const at = restricted.indexOf(tool)
+              if (at !== -1) restricted.splice(at, 1)
+            }
           },
           guard(fn) {
             if (guardError !== undefined) throw new Error(guardError)
@@ -65,15 +69,13 @@ test('restrictEach keeps going after one name is refused and reports it in skipp
   assert.match(skipped[0], /unknown global tool "subagent"/)
 })
 
-test('installGate hides a global tool and refuses a scope-local one through the guard', () => {
+test('installGate hides global tools and refuses a scope-local one through the guard', () => {
   const { agent, restricted, getGuard } = fakeAgent()
-  const { applied, skipped, guarded, guardError } = installGate({ agent, names: HIDDEN })
-  // restrict cannot hide subagent, so it is skipped...
+  const { applied, skipped, guarded, guardError } = installGate({ agent, names: () => HIDDEN, enabled: () => true })
   assert.deepEqual(applied, ['edit', 'write', 'str_replace_editor'])
   assert.deepEqual(restricted, applied)
   assert.equal(skipped.length, 6)
   assert.match(skipped.join('\n'), /subagent \(.*unknown global tool/)
-  // ...but the guard installed afterwards denies it at execution time.
   assert.equal(guardError, undefined)
   assert.notEqual(getGuard()({ name: 'subagent' }), undefined)
   assert.notEqual(getGuard()({ name: 'ops_bash' }), undefined)
@@ -83,19 +85,37 @@ test('installGate hides a global tool and refuses a scope-local one through the 
 
 test('installGate reports a guard failure instead of throwing', () => {
   const { agent } = fakeAgent({ guardError: 'guard is not available here' })
-  const result = installGate({ agent, names: ['edit', 'subagent'] })
+  const result = installGate({ agent, names: () => ['edit', 'subagent'], enabled: () => true })
   assert.equal(result.guardError, 'guard is not available here')
   assert.deepEqual(result.applied, ['edit'])
   assert.equal(result.skipped.length, 1)
 })
 
-test('installGate snapshots the names, so a later config change does not reach the guard', () => {
+test('installGate follows the switch: off hides nothing, on hides and denies, off again lifts it', () => {
+  const { agent, restricted, getGuard } = fakeAgent({ globals: ['edit'] })
+  let on = false
+  const names = ['edit', 'subagent']
+  const result = installGate({ agent, names: () => names, enabled: () => on })
+  assert.deepEqual(result.applied, [])
+  assert.deepEqual(restricted, [])
+  assert.equal(getGuard()({ name: 'edit' }), undefined)
+
+  on = true
+  assert.notEqual(getGuard()({ name: 'edit' }), undefined)
+  assert.deepEqual(restricted, ['edit'])
+  assert.notEqual(getGuard()({ name: 'subagent' }), undefined)
+
+  on = false
+  assert.equal(getGuard()({ name: 'edit' }), undefined)
+  assert.deepEqual(restricted, [])
+})
+
+test('installGate reads the denied list per call, so a config edit reaches a live agent', () => {
   const { agent, getGuard } = fakeAgent({ globals: [] })
   const names = ['edit', 'subagent']
-  installGate({ agent, names })
-  names.length = 0
-  names.push('todo_write')
+  installGate({ agent, names: () => names, enabled: () => true })
   assert.notEqual(getGuard()({ name: 'edit' }), undefined)
-  assert.notEqual(getGuard()({ name: 'subagent' }), undefined)
   assert.equal(getGuard()({ name: 'todo_write' }), undefined)
+  names.push('todo_write')
+  assert.notEqual(getGuard()({ name: 'todo_write' }), undefined)
 })

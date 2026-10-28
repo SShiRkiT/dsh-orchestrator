@@ -158,7 +158,7 @@ test('apply puts the toggle in the plan slot and the picker in input.right', () 
   ])
   const props = regs[1].opts.inject('S1')
   assert.deepEqual([props.scopes.main.ns, props.scopes.worker.ns, props.scopes.orch.ns], ['agent-default-model', 'orchestrator', 'orchestrator'])
-  assert.equal(typeof props.setPlan, 'function')
+  assert.equal(props.setPlan, undefined)
   assert.deepEqual(plain(mod.inject), ['slots', 'locale', 'remote', 'remote.commands', 'remote.session', 'configForms'])
 })
 
