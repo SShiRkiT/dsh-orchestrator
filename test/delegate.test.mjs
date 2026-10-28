@@ -55,7 +55,14 @@ test('the tool is concurrency-safe, named delegate, and takes no model parameter
   assert.equal(tool.name, DELEGATE_TOOL)
   assert.equal(tool.isConcurrencySafe(), true)
   assert.deepEqual(Object.keys(tool.parameters).sort(), ['cwd', 'description', 'prompt'])
-  assert.equal(tool.parameters.prompt.required, true)
+  // The host schema dialect has no required keyword, so the tool validates at call time.
+  assert.equal('required' in tool.parameters.prompt, false)
+})
+
+test('execute rejects a missing prompt or description before touching the route', async () => {
+  const tool = createDelegateTool({ defineTool: (d) => d, subagents: {}, config: cfg('p', 'm') })
+  await assert.rejects(() => tool.execute({ description: 'x' }, { agent: {} }), /non-empty prompt/)
+  await assert.rejects(() => tool.execute({ prompt: 'x' }, { agent: {} }), /non-empty description/)
 })
 
 test('execute reads the route per call, so a changed route applies to the next delegation', async () => {
