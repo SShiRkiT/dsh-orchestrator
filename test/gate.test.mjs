@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { DELEGATE_TOOL, denyGuard, installGate, restrictEach } from '../lib/gate.js'
+import { DELEGATE_TOOL, denyGuard, installGate, mergeDenied, restrictEach } from '../lib/gate.js'
 
 const HIDDEN = ['edit', 'write', 'str_replace_editor', 'subagent', 'subagent_fork', 'workflow', 'ralph', 'ops_bash', 'pwsh']
 
@@ -118,4 +118,16 @@ test('installGate reads the denied list per call, so a config edit reaches a liv
   assert.equal(getGuard()({ name: 'todo_write' }), undefined)
   names.push('todo_write')
   assert.notEqual(getGuard()({ name: 'todo_write' }), undefined)
+})
+
+test('mergeDenied keeps the shipped defaults when a profile lists only a few', () => {
+  const merged = mergeDenied(['edit', 'read', 'pwsh'], ['edit', 'write'])
+  for (const name of ['edit', 'read', 'pwsh', 'write']) assert.ok(merged.includes(name), name)
+  assert.equal(merged.length, 4)
+})
+
+test('mergeDenied tolerates a missing list on either side', () => {
+  assert.deepEqual(mergeDenied(['read'], undefined), ['read'])
+  assert.deepEqual(mergeDenied(undefined, ['read']), ['read'])
+  assert.deepEqual(mergeDenied(undefined, undefined), [])
 })
