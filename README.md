@@ -12,7 +12,7 @@
 - **阶段投影**：从已有会话事件推导 `idle / clarify / planning / awaiting / executing`，不额外保存会话内容。
 - **零构建导入**：`lib/` 已包含 DSH 加载所需文件，克隆或从 GitHub 添加后即可使用。
 
-默认拒绝主代理调用的工具：`edit`、`write`、`str_replace_editor`、`subagent`、`subagent_fork`、`workflow`、`ralph`、`ops_bash`、`pwsh`。可在插件配置中调整。
+默认只允许主代理使用 `delegate`、`send_message`、`todo_write`、`ask_user_question`，其余内置工具（读、写、shell、原生多代理、web、计划任务等 49 个）全部隐藏并在调用时兜底拒绝；可在插件配置中调整。
 
 ## 安装
 
@@ -46,7 +46,7 @@ dsh plugin --profile desktop add "D:\path\to\dsh-orchestrator"
 
 ## 使用
 
-1. 在 composer 的模型按钮中打开 **Orchestrator** 面板。
+1. 点 composer 里的 **规划模式** 按钮：顶部开关启用/停用本插件，下面两行分别选主代理和子代理的默认模型。
 2. 在“主代理”行选择默认模型与思考强度；该默认值在之后创建 agent 时读取，因此新会话使用新值。
 3. 在“子代理”行选择 worker 模型与思考强度；该值从下一次 `delegate` 开始生效。
 4. 让主代理通过 `delegate` 派发任务。
