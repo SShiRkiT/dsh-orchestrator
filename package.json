@@ -1,8 +1,8 @@
 {
   "name": "dsh-orchestrator",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
-  "description": "Plan-only main agent with a plan-mode toggle in the composer; delegated workers on a switchable default route",
+  "description": "Main agent that plans and delegates work; orchestrate fans out with pipelines and structured results",
   "type": "module",
   "exports": {
     ".": "./lib/index.js",

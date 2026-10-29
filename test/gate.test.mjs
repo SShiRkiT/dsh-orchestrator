@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { DELEGATE_TOOL, denyGuard, installGate, mergeDenied, restrictEach } from '../lib/gate.js'
+import { DELEGATE_TOOL, DELEGATION_TOOLS, denyGuard, installGate, mergeDenied, restrictEach } from '../lib/gate.js'
 
 const HIDDEN = ['edit', 'write', 'str_replace_editor', 'subagent', 'subagent_fork', 'workflow', 'ralph', 'ops_bash', 'pwsh']
 
@@ -38,7 +38,7 @@ test('denyGuard denies a listed name and lets anything else through', () => {
   const guard = denyGuard(HIDDEN)
   assert.equal(
     guard({ name: 'edit' }),
-    'orchestrator: "edit" is not available to the main agent. The main agent only plans; hand every action to a worker with the delegate tool.',
+    'orchestrator: "edit" is not available to the main agent. The main agent only plans; hand every action to a worker with the delegate or orchestrate tools.',
   )
   assert.equal(guard({ name: 'write' }).startsWith('orchestrator: "write"'), true)
   assert.equal(guard({ name: 'todo_write' }), undefined)
@@ -49,6 +49,20 @@ test('denyGuard never denies delegate, even when the config lists it', () => {
   const guard = denyGuard([...HIDDEN, DELEGATE_TOOL])
   assert.equal(guard({ name: DELEGATE_TOOL }), undefined)
   assert.notEqual(guard({ name: 'subagent' }), undefined)
+})
+
+test('the gate lets orchestrate through but never the native workflow', () => {
+  assert.equal(DELEGATION_TOOLS.has('delegate'), true)
+  assert.equal(DELEGATION_TOOLS.has('orchestrate'), true)
+  assert.equal(DELEGATION_TOOLS.has('workflow'), false)
+  const guard = denyGuard([...HIDDEN, 'orchestrate', 'workflow'])
+  assert.equal(guard({ name: 'orchestrate' }), undefined)
+  assert.match(guard({ name: 'workflow' }), /"workflow" is not available/)
+  const { agent, getGuard } = fakeAgent()
+  const { guarded } = installGate({ agent, names: () => [...HIDDEN, 'orchestrate'], enabled: () => true })
+  assert.equal(guarded.includes('orchestrate'), false)
+  assert.equal(guarded.includes('workflow'), true)
+  assert.notEqual(getGuard()({ name: 'workflow' }), undefined)
 })
 
 test('denyGuard tolerates an execution without a name', () => {

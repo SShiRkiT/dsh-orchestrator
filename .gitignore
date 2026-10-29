@@ -22,8 +22,19 @@ sessions/
 *.pem
 *.key
 .credentials.yaml
+/credentials/
 .anonymous-user-id
 
 # OS files
 .DS_Store
 Thumbs.db
+
+# Local scratch at the repository root. Anchored so same-named source
+# fixtures deeper in the tree stay trackable.
+/memory/
+/_verify/
+/dshiso-orchestrator/
+/dshprobe/
+/test-artifacts/
+/coverage/
+/MIGRATION.md
