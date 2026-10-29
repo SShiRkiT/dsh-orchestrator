@@ -55,6 +55,17 @@ test('a forked session reports na and ignores everything', () => {
   assert.equal(fold([turn, mode(true), call('exit_plan_mode')], 12).stage, 'na')
 })
 
+test('a supervision notice starting a new turn never resets the stage', () => {
+  const notice = {
+    type: 'user/message',
+    data: { content: [{ type: 'text', text: '【插件巡检…】' }], source: { kind: 'orchestrator-supervision', form: 'notice' } },
+  }
+  // The notice wakes the parent after `delegate` already returned, so it arrives in
+  // executing (or awaiting review); its new turn must not fall back to clarify/planning.
+  assert.equal(fold([turn, call('subagent'), notice, turn]).stage, 'executing')
+  assert.equal(fold([turn, mode(true), call('exit_plan_mode'), notice, turn]).stage, 'awaiting')
+})
+
 test('PTC dispatch start counts like a direct call; unrelated events are ignored', () => {
   assert.equal(fold([turn, { type: 'tool/ptc-dispatch-start', data: { name: 'subagent' } }]).stage, 'executing')
   assert.equal(fold([turn, { type: 'assistant/message', data: {} }, call('read')]).stage, 'clarify')

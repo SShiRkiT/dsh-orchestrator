@@ -10,7 +10,8 @@ A **DeepSeek Harness** plugin for a planning main agent and delegated workers. I
 - **Independent worker route**: every dispatch reads the current configuration, so changes apply from the next dispatch.
 - **Two dispatch shapes**: asynchronous `delegate` for one or two dynamic tasks whose next step depends on the previous result; declarative `orchestrate` for batch work that is one list times one fixed set of steps.
 - **Declarative orchestration**: single-stage fan-out and multi-stage per-item pipelines with no global barrier; results keep input order, one failed item does not sink the others, and each stage can declare an object schema for structured output.
-- **Model picker**: separate main/worker rows, searchable in-place model lists, keyboard selection, and host-theme-aware styling.
+- **Subagent supervision**: when a `delegate` worker runs long, the plugin reads its session log at the configured interval and merges due workers under the same parent into one notice that wakes the main agent; it never interrupts the worker and spends no model tokens to inspect it.
+- **Model picker**: separate main/worker rows, searchable in-place model lists, keyboard selection, host-theme-aware styling, and a subagent check-interval field in seconds.
 - **Stage projection**: derives `idle / clarify / planning / awaiting / executing` from existing session events without storing additional conversation content.
 - **No build step**: the loadable `lib/` files are committed, so the repository can be added directly.
 
@@ -48,6 +49,33 @@ Fully quit and reopen DSH after installation; client plugins are composed at sta
 The switch also affects open sessions: the guard rereads it on every call, so the next denied call fails immediately, and hidden tools disappear from the tool list on the next step. Turning the switch off restores them.
 
 In either model list, type a provider, model ID, or display name to filter. Use `↑` / `↓`, `Enter`, and `Esc` for keyboard navigation. Changing models clears the previous effort because supported efforts belong to the selected model.
+
+## Subagent supervision
+
+A long-running worker can drift, and workers do not report back on their own. The plugin supervises workers started by `delegate`:
+
+- Every 5 seconds the plugin checks for due workers; only then does it read the worker's session log and build a progress summary (log-only, no model call).
+- Workers due under the same parent are merged into one 「【插件巡检…】」 notice and delivered with `followup`: the main agent starts a new turn immediately when idle, and the notice waits for the current turn boundary when it is busy.
+- The main agent decides what to do: `send_message` a correction to a worker, or answer in one line and end the turn when nothing needs intervention.
+- Only `delegate` workers are supervised. `orchestrate` workers are not: the caller waits inside the tool call, so a notice would arrive after the work is already done.
+- Supervision has no termination power: `interrupt_agent` stays denied, and the main agent can only correct a worker by message.
+
+Configuration (volatile fields, saved by the host and re-read on every scan):
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `superviseEnabled` | `true` | Master switch; when off, nothing is supervised |
+| `superviseIntervalSeconds` | `600` | Interval in seconds, 10–86400; the default 600 seconds is 10 minutes |
+| `superviseMaxNoticesPerChild` | `3` | Most notices per worker, 0–20; `0` means unlimited |
+| `superviseNotifyOnNoProgress` | `false` | Also notify when the log shows no new progress |
+
+The interval is also editable in the **Dispatch** panel at the bottom right: enter an integer from 10 to 86400 seconds, then press Enter or leave the field; `Esc` abandons the edit. A running supervisor picks the new value up on its next scan.
+
+Cost: every supervision notice wakes the main agent for one full model request. The default caps a worker at 3 notices; raise the interval, lower the budget, or turn supervision off. The inspection itself only reads the session log and makes no model call.
+
+## Reusing a finished worker
+
+After `delegate` returns, its worker may already be finished, but the session can continue: the main agent can `send_message` a new instruction to that worker, and it keeps working in the same session. A reused worker is still a full worker under the plugin's worker route and tool permissions; on cold resume it is identified as a child by the persisted delegation depth in the session header, so it is not gated as a main agent (the earlier misclassification is fixed; only a missing depth falls back to the main-agent gate and logs a warning).
 
 ## Batch dispatch (orchestrate)
 
@@ -143,6 +171,7 @@ lib/delegate.js      worker route lookup and dynamic task dispatch
 lib/orchestrate.js   declarative batch dispatch
 lib/gate.js          tool hiding and execution-time refusal
 lib/stage.js         session-stage reduction
+lib/supervise.js     pure supervision logic (due times, batching, budget, notice text)
 test/                unit tests, no DSH runtime dependency
 docs/adr/            design decisions
 CONTEXT.md           terminology

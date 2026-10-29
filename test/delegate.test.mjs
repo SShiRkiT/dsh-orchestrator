@@ -109,3 +109,57 @@ test('an aborted signal stops execute before a worker is started', async () => {
   await assert.rejects(() => tool.execute({ description: 'a', prompt: 'x' }, { agent: {}, signal: ac.signal }))
   assert.equal(started, false)
 })
+
+test('a successful start reports the child and leaves the returned result unchanged', async () => {
+  const seen = []
+  const started = { childId: 'child-9', result: Promise.resolve('done') }
+  const subagents = { resolveMaxDepth: () => 1, startActivation: async () => started }
+  const tool = createDelegateTool({
+    defineTool: (d) => d,
+    subagents,
+    config: cfg('p', 'm'),
+    onStarted(parent, child, args) {
+      seen.push({ parent, child, args })
+    },
+  })
+  const exec = { agent: { id: 'main' }, signal: new AbortController().signal }
+  const value = await tool.execute({ description: 'a', prompt: 'x' }, exec)
+  assert.deepEqual(value, { kind: 'activation', subagentId: 'child-9' })
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].parent, exec.agent)
+  assert.equal(seen[0].child, started)
+  assert.equal(seen[0].args.description, 'a')
+})
+
+test('a broken onStarted cannot affect dispatch or its result', async () => {
+  const subagents = { resolveMaxDepth: () => 1, startActivation: async () => ({ childId: 'child-1' }) }
+  const exec = { agent: { id: 'main' }, signal: new AbortController().signal }
+
+  const throwing = createDelegateTool({
+    defineTool: (d) => d,
+    subagents,
+    config: cfg('p', 'm'),
+    onStarted() {
+      throw new Error('supervision is broken')
+    },
+  })
+  assert.deepEqual(await throwing.execute({ description: 'a', prompt: 'x' }, exec), {
+    kind: 'activation',
+    subagentId: 'child-1',
+  })
+
+  // An async callback that rejects is also swallowed, so it cannot surface later.
+  const rejecting = createDelegateTool({
+    defineTool: (d) => d,
+    subagents,
+    config: cfg('p', 'm'),
+    onStarted: async () => {
+      throw new Error('async supervision is broken')
+    },
+  })
+  assert.deepEqual(await rejecting.execute({ description: 'a', prompt: 'x' }, exec), {
+    kind: 'activation',
+    subagentId: 'child-1',
+  })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+})
