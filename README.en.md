@@ -35,6 +35,10 @@ The "dispatch mode" plugin for DeepSeek Harness.
   
     When a `delegate` worker runs long, the plugin merges its session log into one notice that wakes the main agent; the main agent corrects it with a concrete `send_message`, or decides no intervention is needed and ends the turn with a one-line note.
   
+    ![Example patrol notice and correction](docs/images/patrol-notice.png)
+  
+    *Each patrol notice summarises one running subagent — elapsed time, rounds, steps, new tool calls since the last patrol, latest tool, and last output — and the main agent then chooses to leave it alone (replying one line 「巡检：正常」), correct it with `send_message`, or terminate. In the screenshot the main agent sends corrective guidance to a subagent stuck on shell quoting and backslashes.*
+  
 - **Collecting results**:
 
     `delegate` returns `{ kind: "activation", subagentId }` immediately, and when the worker finishes the host delivers its result to the main agent as a message; `orchestrate` collects every result synchronously inside the tool call.
@@ -62,6 +66,10 @@ After installing, **fully quit and reopen DSH**: client plugins are composed at 
 1. Dispatch mode is already on after installing and restarting (`enabled` defaults to `true`).
 2. In the composer's "Dispatch mode" panel, configure `workerProvider` and `workerModel` (required) and `workerReasoningEffort` (may stay empty, letting the model resolve its default effort); dispatching without a route fails outright instead of silently inheriting the main-agent model.
 3. Clearing "Enable dispatch mode" temporarily restores all main-agent tools and applies to already-open sessions immediately.
+
+![Dispatch mode panel](docs/images/dispatch-panel.png)
+
+*The dispatch mode panel: the enable switch, the main agent's and the subagents' models and reasoning effort, and the subagent patrol interval (default 600 s, range 10–86400).*
 
 ## Configuration
 

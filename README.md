@@ -35,6 +35,10 @@ DeepSeek Harness 的「调度模式」插件。
   
     `delegate` 派出的 worker 跑久了，插件按其会话日志合并成一条通知唤醒主代理；主代理用 `send_message` 给出具体指令纠偏，或判断无需干预、回一行说明结束回合。
   
+    ![巡检通知与纠偏示例](docs/images/patrol-notice.png)
+  
+    *巡检通知按间隔逐个汇总运行中的子代理：已运行时长、轮次、步骤、自上次巡检新增的工具调用、最近工具和最后输出；主代理据此选择 A) 不干预（回一行「巡检：正常」）、B) 用 `send_message` 纠偏，或 C) 终止。图中主代理向卡在 shell 引号和反斜杠上的子代理发出了纠偏指令。*
+  
 - **结果回收**：
 
     `delegate` 立即返回 `{ kind: "activation", subagentId }`，worker 结束时由宿主把结果作为消息投给主代理；`orchestrate` 在工具调用内同步收齐全部结果。
@@ -62,6 +66,10 @@ dsh plugin --profile desktop add SShiRkiT/dsh-orchestrator#main
 1. 安装重启后调度模式默认已开启（`enabled` 默认 `true`）。
 2. 在 composer 的「调度模式」面板里配置 `workerProvider` 与 `workerModel`（必填）、`workerReasoningEffort`（可留空，交给模型决定默认强度）；未配置就派发会直接报错，不会静默继承主代理模型。
 3. 取消勾选「启用调度模式」可临时恢复主代理的全部工具，对已打开的会话立即生效。
+
+![调度模式面板](docs/images/dispatch-panel.png)
+
+*调度模式面板：启用开关、主代理与子代理各自的模型和思考强度，以及子代理巡检间隔（默认 600 秒，范围 10–86400）。*
 
 ## 配置
 
