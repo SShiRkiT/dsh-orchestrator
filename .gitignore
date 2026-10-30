@@ -6,6 +6,7 @@ dist/
 offline/
 old-package-backup/
 pre-install-backup-*/
+*.bak
 sandbox/
 
 # Logs, archives, and captured sessions
