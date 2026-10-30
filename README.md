@@ -10,15 +10,6 @@ DeepSeek Harness 的「调度模式」插件。
 
 [English](README.en.md)
 
-## 关键特性
-
-- **主代理只规划，闸门强制**：内置一份 49 项的拒绝名单，隐藏并在执行时拒绝读写、shell、web 等工具；主代理只保留 `delegate`、`orchestrate`、`send_message`、`todo_write`、`ask_user_question`。
-- **并行派发独立子任务**：互不依赖的子任务在同一回合一起派出；`delegate` 没有插件侧并发上限，`orchestrate` 用 `maxConcurrency`（1–16，默认 4）限制同时存活的 worker 数。
-- **声明式编排**：`orchestrate` 支持单阶段扇出和多阶段逐条目流水线（没有全量屏障），结果与输入同序，单项失败不影响其他项，阶段可声明 object schema 拿结构化结果。
-- **巡检与纠偏**：`delegate` 派出的 worker 跑久了，插件按其会话日志合并成一条通知唤醒主代理；主代理用 `send_message` 给出具体指令纠偏，或判断无需干预、回一行说明结束回合。
-- **结果回收**：`delegate` 立即返回 `{ kind: "activation", subagentId }`，worker 结束时由宿主把结果作为消息投给主代理；`orchestrate` 在工具调用内同步收齐全部结果。
-- **零构建导入**：`lib/` 已包含 DSH 加载所需文件，克隆或从 GitHub 添加即可使用。
-
 ## 与单代理会话的区别
 
 | | 普通单代理会话 | 调度模式 |
@@ -28,6 +19,29 @@ DeepSeek Harness 的「调度模式」插件。
 | 并行 | 工具调用依次完成 | 多个 worker 同时跑 |
 | 模型 | 一个模型全包 | 主代理、子代理两套路由 |
 | 越权 | 靠模型自觉 | 闸门强制拒绝 |
+
+
+## 关键特性
+
+- **主代理只规划，闸门强制**：
+  
+     内置一份 49 项的拒绝名单，隐藏并在执行时拒绝读写、shell、web 等工具；主代理只保留 `delegate`、`orchestrate`、`send_message`、`todo_write`、`ask_user_question`。
+  
+- **并行派发独立子任务**：
+
+    互不依赖的子任务在同一回合一起派出；`delegate` 没有插件侧并发上限，`orchestrate` 用 `maxConcurrency`（1–16，默认 4）限制同时存活的 worker 数。
+  
+- **巡检与纠偏**：
+  
+    `delegate` 派出的 worker 跑久了，插件按其会话日志合并成一条通知唤醒主代理；主代理用 `send_message` 给出具体指令纠偏，或判断无需干预、回一行说明结束回合。
+  
+- **结果回收**：
+
+    `delegate` 立即返回 `{ kind: "activation", subagentId }`，worker 结束时由宿主把结果作为消息投给主代理；`orchestrate` 在工具调用内同步收齐全部结果。
+  
+- **声明式编排**：
+
+    `orchestrate` 支持单阶段扇出和多阶段逐条目流水线（没有全量屏障），结果与输入同序，单项失败不影响其他项，阶段可声明 object schema 拿结构化结果。
 
 ## 安装
 
