@@ -25,7 +25,7 @@ DeepSeek Harness 的「调度模式」插件。
 
 - **主代理只规划，闸门强制**：
   
-     内置一份 49 项的拒绝名单，隐藏并在执行时拒绝读写、shell、web 等工具；主代理只保留 `delegate`、`orchestrate`、`send_message`、`todo_write`、`ask_user_question`。
+     内置一份 48 项的拒绝名单，隐藏并在执行时拒绝读写、shell、web 等工具；主代理只保留 `delegate`、`orchestrate`、`send_message`、`todo_write`、`ask_user_question`、`compress`。
   
 - **并行派发独立子任务**：
 
@@ -78,7 +78,7 @@ dsh plugin --profile desktop add SShiRkiT/dsh-orchestrator#main
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `enabled` | `true` | 调度模式总开关。关闭时撤销隐藏，守卫仍安装但放行。 |
-| `deniedTools` | 49 项内置名单 | 主代理不可用的工具；只能追加，不能删减。 |
+| `deniedTools` | 48 项内置名单 | 主代理不可用的工具；只能追加，不能删减。 |
 | `workerProvider` | `""` | 子代理 provider，空表示未配置。 |
 | `workerModel` | `""` | 子代理模型，空表示未配置。 |
 | `workerReasoningEffort` | `""` | 子代理思考强度，空表示不传，交给模型解析默认值。 |

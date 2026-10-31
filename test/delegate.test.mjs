@@ -264,6 +264,23 @@ test('the description keeps the main-agent rule and the deny list, and states th
   })
   assert.equal(tool.description.startsWith(mainAgentRule(denied)), true)
   assert.match(tool.description, /Blocked for the main agent: edit, read\./)
-  assert.match(tool.description, /only when the user explicitly names/i)
-  assert.match(tool.description, /never pick a model on your own initiative/i)
+  assert.match(tool.description, /the main agent plans only/)
+  assert.match(tool.description, /runs ONLY in a worker/i)
+  assert.match(tool.description, /workers are not gated/i)
+  assert.match(tool.description, /not even once/)
+  assert.match(tool.description, /never re-check on a new session or after compression/i)
+  assert.match(tool.description, /only when the current message explicitly names them for this dispatch/i)
+  assert.match(tool.description, /A named model is for this dispatch only/i)
+  assert.match(tool.description, /never reuse one from earlier turns, dispatch or summary/i)
+  assert.match(tool.description, /never assume an unstated default/i)
+  assert.match(tool.description, /if unsure, ask/i)
+  assert.match(tool.parameters.provider.description, /Never choose one on your own initiative/i)
+  assert.match(tool.description, /compress is available to the main agent/)
+  assert.match(tool.description, /independent delegations start in the same message/i)
+  // The same one-line reminder belongs on both route parameters, where a model would be typed.
+  for (const param of ['provider', 'model']) {
+    const description = tool.parameters[param].description
+    assert.match(description, /this one dispatch only/i, param)
+    assert.match(description, /never reuse a model from earlier turns or a summary/i, param)
+  }
 })

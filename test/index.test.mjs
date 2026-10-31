@@ -162,6 +162,25 @@ test('a main agent is restricted and guarded, and its guard refuses the denied l
   assert.equal(guards[0]({ name: 'delegate' }), undefined)
 })
 
+test('the shipped deny list lets compress through and still refuses the rest', () => {
+  // The main agent may compress its own context, so `compress` is the one ACP tool left out;
+  // every other entry stays denied so the gate can never be widened by accident.
+  assert.equal(mod.DEFAULT_DENIED_TOOLS.length, 48)
+  assert.equal(mod.DEFAULT_DENIED_TOOLS.includes('compress'), false)
+  for (const name of ['decompress', 'search_context', 'acp_status', 'acp_cache']) {
+    assert.equal(mod.DEFAULT_DENIED_TOOLS.includes(name), true, name)
+  }
+  const { created } = start()
+  const { agent, restricted, guards } = fakeAgent()
+  created({ agent, source: 'create' })
+  assert.equal(restricted.includes('compress'), false, 'compress must not be hidden')
+  assert.equal(guards[0]({ name: 'compress' }), undefined, 'compress must pass the guard')
+  for (const name of ['ops_bash', 'read', 'decompress']) {
+    assert.match(guards[0]({ name }), /is not available to the main agent/, name)
+  }
+  assert.equal(guards[0]({ name: 'delegate' }), undefined)
+})
+
 test('a resumed agent with a parentSession but no depth is gated and warns', () => {
   const { created, logs } = start()
   const { agent, restricted, guards } = fakeAgent({ id: 'cold-child', header: { parentSession: 'root-session' } })

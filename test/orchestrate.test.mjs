@@ -722,6 +722,23 @@ test('the description keeps the main-agent rule and states the explicit-request 
   })
   assert.equal(definition.description.startsWith(mainAgentRule(denied, ORCHESTRATE_TOOL)), true)
   assert.match(definition.description, /Blocked for the main agent: edit, read\./)
-  assert.match(definition.description, /only when the user explicitly names/i)
+  assert.match(definition.description, /the main agent plans only/)
+  assert.match(definition.description, /runs ONLY in a worker/i)
+  assert.match(definition.description, /workers are not gated/i)
+  assert.match(definition.description, /not even once/)
+  assert.match(definition.description, /never re-check on a new session or after compression/i)
+  assert.match(definition.description, /only when the current message explicitly names them for this dispatch/i)
+  assert.match(definition.description, /A named model is for this dispatch only/i)
+  assert.match(definition.description, /never reuse one from earlier turns, dispatch or summary/i)
+  assert.match(definition.description, /never assume an unstated default/i)
+  assert.match(definition.description, /if unsure, ask/i)
+  assert.match(definition.description, /compress is available to the main agent/)
+  assert.match(definition.description, /independent delegations start in the same message/i)
+  // The same one-line reminder belongs on both route parameters, where a model would be typed.
+  for (const param of ['provider', 'model']) {
+    const description = definition.parameters[param].description
+    assert.match(description, /this one dispatch only/i, param)
+    assert.match(description, /never reuse a model from earlier turns or a summary/i, param)
+  }
   assert.equal(definition.description.includes('takes no provider or model parameters'), false)
 })

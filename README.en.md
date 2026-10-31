@@ -25,7 +25,7 @@ The "dispatch mode" plugin for DeepSeek Harness.
 
 - **The main agent only plans, enforced by a gate**:
   
-     a built-in deny list of 49 tools hides and refuses read, write, shell, web, and other tools at execution time; the main agent keeps only `delegate`, `orchestrate`, `send_message`, `todo_write`, and `ask_user_question`.
+     a built-in deny list of 48 tools hides and refuses read, write, shell, web, and other tools at execution time; the main agent keeps only `delegate`, `orchestrate`, `send_message`, `todo_write`, `ask_user_question`, and `compress`.
   
 - **Parallel dispatch of independent subtasks**:
 
@@ -78,7 +78,7 @@ Every field is volatile: the host stores it and the plugin re-reads it on each u
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | Master switch for dispatch mode. When off it revokes the hiding; the guard stays installed but lets calls through. |
-| `deniedTools` | 49 built-ins | Tools the main agent may not use; it can only append, never remove. |
+| `deniedTools` | 48 built-ins | Tools the main agent may not use; it can only append, never remove. |
 | `workerProvider` | `""` | Subagent provider; empty means unconfigured. |
 | `workerModel` | `""` | Subagent model; empty means unconfigured. |
 | `workerReasoningEffort` | `""` | Subagent reasoning effort; empty means it is not passed and the model resolves the default. |
