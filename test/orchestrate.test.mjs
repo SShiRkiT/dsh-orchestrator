@@ -9,6 +9,7 @@ import {
   readStageOutput,
   runOrchestration,
 } from '../lib/orchestrate.js'
+import { mainAgentRule } from '../lib/rules.js'
 
 const ROUTE = { provider: 'nexus-deepseek', model: 'deepseek-v4.1-flash' }
 const cfg = (provider = ROUTE.provider, model = ROUTE.model, effort = '') => ({
@@ -70,11 +71,26 @@ function trackedSubagents(handler) {
 
 const textResult = (text) => ({ output: [{ type: 'text', text }], stopReason: 'completed' })
 
-test('the tool is named orchestrate, takes no route parameters and defaults maxConcurrency to 4', () => {
+test('the tool is named orchestrate, takes optional route overrides and defaults maxConcurrency to 4', () => {
   const definition = tool()
   assert.equal(definition.name, ORCHESTRATE_TOOL)
   assert.equal(definition.isConcurrencySafe(), true)
-  assert.deepEqual(Object.keys(definition.parameters).sort(), ['cwd', 'items', 'maxConcurrency', 'stages'])
+  assert.deepEqual(Object.keys(definition.parameters).sort(), [
+    'cwd',
+    'items',
+    'maxConcurrency',
+    'model',
+    'provider',
+    'reasoning_effort',
+    'stages',
+  ])
+  for (const key of ['provider', 'model', 'reasoning_effort']) {
+    assert.equal('required' in definition.parameters[key], false)
+  }
+  for (const key of ['provider', 'model']) {
+    assert.match(definition.parameters[key].description, /only when the user explicitly names/)
+  }
+  assert.match(definition.parameters.reasoning_effort.description, /set it only when the user names it/)
   assert.deepEqual(parseOrchestrateArgs({ items: [1], stages: [{ name: 's', prompt: 'p' }] }), {
     cwd: undefined,
     items: [1],
@@ -142,8 +158,6 @@ test('invalid arguments and stage schemas fail globally before any worker starts
     [{ items: [1], stages: [stage], cwd: '' }, /"cwd" must be a non-empty string/],
     [{ items: [1], stages: [stage], cwd: '   ' }, /"cwd" must be a non-empty string/],
     [{ items: [1], stages: [stage], cwd: '\t\n' }, /"cwd" must be a non-empty string/],
-    [{ items: [1], stages: [stage], provider: 'nexus-deepseek' }, /arguments has unknown field "provider"/],
-    [{ items: [1], stages: [stage], model: 'deepseek-v4.1-flash' }, /arguments has unknown field "model"/],
     [{ items: [1], stages: [stage], extra: true }, /arguments has unknown field "extra"/],
     [{ items: [1], stages: [{ ...stage, provider: 'nexus-deepseek' }] }, /stage 1 has unknown field "provider"/],
     [{ items: [1], stages: [{ ...stage, model: 'deepseek-v4.1-flash' }] }, /stage 1 has unknown field "model"/],
@@ -624,4 +638,90 @@ test('runOrchestration can be driven directly with a plan', async () => {
     results: [{ index: 0, output: 'direct', stopReason: 'completed' }],
     errors: [],
   })
+})
+
+test('an explicit provider and model apply to every worker of the call and skip the configured route', async () => {
+  // An empty configured route would throw if it were read, so the override must short-circuit it.
+  const { subagents, calls } = trackedSubagents(async () => textResult('done'))
+  const result = await tool(cfg('', ''), subagents).execute(
+    {
+      provider: 'nexus-claude',
+      model: 'claude-opus-5.5',
+      items: [{ id: 1 }, { id: 2 }],
+      stages: [{ name: 'one', prompt: 'p' }],
+    },
+    exec(),
+  )
+  assert.equal(calls.length, 2)
+  for (const spec of calls) {
+    assert.deepEqual(spec.request.agentOptions, { provider: 'nexus-claude', model: 'claude-opus-5.5' })
+  }
+  assert.equal(result.agentsStarted, 2)
+  assert.equal(result.errors.length, 0)
+})
+
+test('provider and model must be given together, and no worker starts', async () => {
+  for (const args of [
+    { provider: 'nexus-claude' },
+    { model: 'claude-opus-5.5' },
+    { provider: 'nexus-claude', model: '  ' },
+    { reasoning_effort: 'high' },
+  ]) {
+    const { subagents, calls } = trackedSubagents(async () => textResult('x'))
+    await assert.rejects(
+      () =>
+        tool(cfg('nexus-deepseek', 'deepseek-v4.1-flash'), subagents).execute(
+          { items: [1], stages: [{ name: 's', prompt: 'p' }], ...args },
+          exec(),
+        ),
+      /"provider" and "model" must be given together/,
+    )
+    assert.equal(calls.length, 0, JSON.stringify(args))
+  }
+})
+
+test('a non-string override field is refused instead of coerced', async () => {
+  const { subagents, calls } = trackedSubagents(async () => textResult('x'))
+  await assert.rejects(
+    () =>
+      tool(cfg(), subagents).execute(
+        { items: [1], stages: [{ name: 's', prompt: 'p' }], provider: 7, model: 'm' },
+        exec(),
+      ),
+    /"provider" must be a string/,
+  )
+  assert.equal(calls.length, 0)
+})
+
+test('reasoning_effort passes through with the override for every worker', async () => {
+  const { subagents, calls } = trackedSubagents(async () => textResult('x'))
+  await tool(cfg('', ''), subagents).execute(
+    {
+      provider: 'nexus-claude',
+      model: 'claude-opus-5.5',
+      reasoning_effort: 'high',
+      items: [1],
+      stages: [{ name: 's', prompt: 'p' }],
+    },
+    exec(),
+  )
+  assert.deepEqual(calls[0].request.agentOptions, {
+    provider: 'nexus-claude',
+    model: 'claude-opus-5.5',
+    reasoningEffort: 'high',
+  })
+})
+
+test('the description keeps the main-agent rule and states the explicit-request condition', () => {
+  const denied = ['edit', 'read']
+  const definition = createOrchestrateTool({
+    defineTool: (d) => d,
+    subagents: {},
+    config: cfg(),
+    deniedTools: denied,
+  })
+  assert.equal(definition.description.startsWith(mainAgentRule(denied, ORCHESTRATE_TOOL)), true)
+  assert.match(definition.description, /Blocked for the main agent: edit, read\./)
+  assert.match(definition.description, /only when the user explicitly names/i)
+  assert.equal(definition.description.includes('takes no provider or model parameters'), false)
 })

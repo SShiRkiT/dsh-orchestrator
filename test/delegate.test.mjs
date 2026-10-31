@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { DELEGATE_TOOL, buildActivation, createDelegateTool, languageNote, readRoute } from '../lib/delegate.js'
+import { mainAgentRule } from '../lib/rules.js'
 
 const cfg = (provider, model, effort = '') => ({
   workerProvider: { get: () => provider },
@@ -50,15 +51,29 @@ test('buildActivation passes cwd through and leaves out an undefined depth', () 
   assert.equal('maxDepth' in spec.request, false)
 })
 
-test('the tool is concurrency-safe, named delegate, and takes no model parameters', () => {
+test('the tool is concurrency-safe, named delegate, and takes optional route overrides', () => {
   const tool = createDelegateTool({ defineTool: (d) => d, subagents: {}, config: cfg('p', 'm') })
   assert.equal(tool.name, DELEGATE_TOOL)
   assert.equal(tool.isConcurrencySafe(), true)
-  assert.deepEqual(Object.keys(tool.parameters).sort(), ['cwd', 'description', 'prompt'])
+  assert.deepEqual(Object.keys(tool.parameters).sort(), [
+    'cwd',
+    'description',
+    'model',
+    'prompt',
+    'provider',
+    'reasoning_effort',
+  ])
   // The author dialect spells requiredness per property, not as a `required` array.
   assert.equal(tool.parameters.prompt.required, true)
   assert.equal(tool.parameters.description.required, true)
   assert.equal('required' in tool.parameters.cwd, false)
+  for (const key of ['provider', 'model', 'reasoning_effort']) {
+    assert.equal('required' in tool.parameters[key], false)
+  }
+  for (const key of ['provider', 'model']) {
+    assert.match(tool.parameters[key].description, /only when the user explicitly names/)
+  }
+  assert.match(tool.parameters.reasoning_effort.description, /set it only when the user names it/)
 })
 
 test('execute rejects a missing prompt or description before touching the route', async () => {
@@ -162,4 +177,93 @@ test('a broken onStarted cannot affect dispatch or its result', async () => {
     subagentId: 'child-1',
   })
   await new Promise((resolve) => setTimeout(resolve, 0))
+})
+
+const exec = () => ({ agent: { id: 'main' }, signal: new AbortController().signal })
+
+/** A delegate tool whose subagent service records the route every worker starts on. */
+function recordingTool(config) {
+  const seen = []
+  const subagents = {
+    resolveMaxDepth: () => 1,
+    startActivation: async (spec) => {
+      seen.push(spec.request.agentOptions)
+      return { childId: 'child-' + seen.length }
+    },
+  }
+  return { seen, tool: createDelegateTool({ defineTool: (d) => d, subagents, config }) }
+}
+
+test('without an override the configured route is used unchanged', async () => {
+  const { seen, tool } = recordingTool(cfg('nexus-deepseek', 'deepseek-v4.1-flash', 'high'))
+  await tool.execute({ description: 'a', prompt: 'x' }, exec())
+  assert.deepEqual(seen, [
+    { provider: 'nexus-deepseek', model: 'deepseek-v4.1-flash', reasoningEffort: 'high' },
+  ])
+})
+
+test('an explicit provider and model replace the configured route for that worker', async () => {
+  // An empty configured route would throw if it were read, so the override must short-circuit it.
+  const { seen, tool } = recordingTool(cfg('', ''))
+  await tool.execute(
+    { description: 'a', prompt: 'x', provider: 'nexus-claude', model: 'claude-opus-5.5' },
+    exec(),
+  )
+  assert.deepEqual(seen, [{ provider: 'nexus-claude', model: 'claude-opus-5.5' }])
+})
+
+test('provider and model must be given together, and nothing starts', async () => {
+  const { seen, tool } = recordingTool(cfg('nexus-deepseek', 'deepseek-v4.1-flash'))
+  for (const args of [
+    { provider: 'nexus-claude' },
+    { model: 'claude-opus-5.5' },
+    { provider: 'nexus-claude', model: '  ' },
+    { reasoning_effort: 'high' },
+  ]) {
+    await assert.rejects(
+      () => tool.execute({ description: 'a', prompt: 'x', ...args }, exec()),
+      /"provider" and "model" must be given together/,
+    )
+    assert.equal(seen.length, 0, JSON.stringify(args))
+  }
+})
+
+test('a non-string override field is refused instead of coerced', async () => {
+  const { seen, tool } = recordingTool(cfg('p', 'm'))
+  await assert.rejects(
+    () => tool.execute({ description: 'a', prompt: 'x', provider: 7, model: 'm' }, exec()),
+    /"provider" must be a string/,
+  )
+  assert.equal(seen.length, 0)
+})
+
+test('reasoning_effort passes through with the override and is trimmed', async () => {
+  const { seen, tool } = recordingTool(cfg('', ''))
+  await tool.execute(
+    {
+      description: 'a',
+      prompt: 'x',
+      provider: ' nexus-claude ',
+      model: ' claude-opus-5.5 ',
+      reasoning_effort: ' high ',
+    },
+    exec(),
+  )
+  assert.deepEqual(seen, [
+    { provider: 'nexus-claude', model: 'claude-opus-5.5', reasoningEffort: 'high' },
+  ])
+})
+
+test('the description keeps the main-agent rule and the deny list, and states the explicit-request condition', () => {
+  const denied = ['edit', 'read']
+  const tool = createDelegateTool({
+    defineTool: (d) => d,
+    subagents: {},
+    config: cfg('p', 'm'),
+    deniedTools: denied,
+  })
+  assert.equal(tool.description.startsWith(mainAgentRule(denied)), true)
+  assert.match(tool.description, /Blocked for the main agent: edit, read\./)
+  assert.match(tool.description, /only when the user explicitly names/i)
+  assert.match(tool.description, /never pick a model on your own initiative/i)
 })

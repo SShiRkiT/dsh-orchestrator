@@ -90,7 +90,15 @@ test('delegate schemas stay inside the host author dialect', () => {
 test('orchestrate schemas stay inside the host author dialect and expose the stated inputs', () => {
   const tool = createOrchestrateTool({ defineTool: (d) => d, subagents: {}, config })
   assert.deepEqual(authorProblems(tool), [])
-  assert.deepEqual(Object.keys(tool.parameters).sort(), ['cwd', 'items', 'maxConcurrency', 'stages'])
+  assert.deepEqual(Object.keys(tool.parameters).sort(), [
+    'cwd',
+    'items',
+    'maxConcurrency',
+    'model',
+    'provider',
+    'reasoning_effort',
+    'stages',
+  ])
   assert.equal(tool.parameters.items.required, true)
   assert.equal(tool.parameters.items.items.type, 'json')
   assert.equal(tool.parameters.stages.required, true)
@@ -100,11 +108,14 @@ test('orchestrate schemas stay inside the host author dialect and expose the sta
   assert.equal(stage.properties.name.required, true)
   assert.equal(stage.properties.prompt.required, true)
   assert.equal('required' in stage.properties.schema, false)
-  // No way for a caller to choose another provider/model.
-  const text = JSON.stringify(tool.parameters)
-  for (const forbidden of ['"provider"', '"model"', '"reasoningEffort"']) {
-    assert.equal(text.includes(forbidden), false, forbidden)
+  // A route override is spelled like the native subagent tool, and only the call accepts one.
+  for (const key of ['provider', 'model', 'reasoning_effort']) {
+    assert.equal(tool.parameters[key].type, 'string')
+    assert.equal('required' in tool.parameters[key], false)
   }
+  const stageText = JSON.stringify(stage.properties)
+  assert.equal(stageText.includes('"provider"'), false)
+  assert.equal(stageText.includes('"model"'), false)
   assert.equal(tool.isConcurrencySafe(), true)
 })
 
