@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { registerHooks } from 'node:module'
 import test from 'node:test'
+import { denyGuard } from '../lib/gate.js'
 
 /**
  * `lib/index.js` is the DSH plugin entry, and it imports three packages the host
@@ -165,7 +166,15 @@ test('a main agent is restricted and guarded, and its guard refuses the denied l
 test('the shipped deny list lets compress through and still refuses the rest', () => {
   // The main agent may compress its own context, so `compress` is the one ACP tool left out;
   // every other entry stays denied so the gate can never be widened by accident.
-  assert.equal(mod.DEFAULT_DENIED_TOOLS.length, 48)
+  assert.equal(mod.DEFAULT_DENIED_TOOLS.length, 42)
+  for (const name of ['session_search', 'session_trace', 'session_event_search', 'session_event_read', 'session_event_trace', 'interrupt_agent']) {
+    assert.equal(mod.DEFAULT_DENIED_TOOLS.includes(name), false, name)
+    assert.equal(denyGuard(mod.DEFAULT_DENIED_TOOLS)({ name }), undefined, name)
+  }
+  for (const name of ['create_goal', 'update_goal', 'get_goal', 'list_agents', 'ops_bash', 'read', 'decompress', 'schedule_create']) {
+    assert.equal(mod.DEFAULT_DENIED_TOOLS.includes(name), true, name)
+    assert.match(denyGuard(mod.DEFAULT_DENIED_TOOLS)({ name }), /not available to the main agent/)
+  }
   assert.equal(mod.DEFAULT_DENIED_TOOLS.includes('compress'), false)
   for (const name of ['decompress', 'search_context', 'acp_status', 'acp_cache']) {
     assert.equal(mod.DEFAULT_DENIED_TOOLS.includes(name), true, name)
