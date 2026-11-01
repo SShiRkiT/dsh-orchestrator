@@ -742,3 +742,26 @@ test('the description keeps the main-agent rule and states the explicit-request 
   }
   assert.equal(definition.description.includes('takes no provider or model parameters'), false)
 })
+
+test('the worker variant drops the main-agent rule and keeps the same contract', () => {
+  // A delegated child reads the global description too; its scoped shadow must not
+  // repeat a rule about a role it does not have.
+  const definition = createOrchestrateTool({
+    defineTool: (x) => x,
+    subagents: {},
+    config: cfg(),
+    deniedTools: ['edit', 'read'],
+    forWorker: true,
+  })
+  assert.equal(/main[- ]agent/i.test(definition.description), false)
+  assert.equal(definition.description.includes('Main-agent rule:'), false)
+  assert.equal(definition.description.includes('runs ONLY in a worker'), false)
+  assert.equal(definition.description.includes('edit, read'), false)
+  assert.ok(definition.description.length < 400)
+  assert.match(definition.description, /one worker per item/)
+  assert.match(definition.description, /configured route/)
+  // The parameters and the execution path are shared with the main-agent variant.
+  assert.equal(definition.name, ORCHESTRATE_TOOL)
+  assert.equal(definition.parameters.items.required, true)
+  assert.match(definition.parameters.provider.description, /only when the user explicitly names/)
+})

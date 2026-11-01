@@ -108,9 +108,10 @@ function fakeCtx({ enabled = true, denied = ['edit', 'read'], allowed = [], agen
 }
 
 /** A stand-in agent with its own tool registry, so gate side effects are observable. */
-function fakeAgent({ id = 'agent-1', depth, header = {} } = {}) {
+function fakeAgent({ id = 'agent-1', depth, header = {}, hidden = [] } = {}) {
   const restricted = []
   const guards = []
+  const registered = []
   const agent = {
     id,
     options: { provider: 'p', model: 'm', ...(depth === undefined ? {} : { subagentDepth: depth }) },
@@ -124,10 +125,18 @@ function fakeAgent({ id = 'agent-1', depth, header = {} } = {}) {
         guard(fn) {
           guards.push(fn)
         },
+        register(tool) {
+          registered.push(tool)
+          return () => {}
+        },
+        // The per-scope view: a hidden name is what a preset tool filter would return.
+        get(name) {
+          return hidden.includes(name) ? undefined : {}
+        },
       },
     },
   }
-  return { agent, restricted, guards }
+  return { agent, restricted, guards, registered }
 }
 
 /** Start the plugin and hand back its `agent/created` handler. */
@@ -151,6 +160,59 @@ test('a child with a persisted delegation depth is never gated', () => {
     assert.deepEqual(restricted, [], 'restrict must not run for a child')
     assert.equal(guards.length, 0, 'no guard may be registered for a child')
   }
+})
+
+test('a delegated child gets a short role-neutral description, never the main-agent rule', () => {
+  // Workers inherit the global table, so without a scoped shadow they would read the
+  // main-agent rule and could take it as a ban on their own tools.
+  const { created } = start()
+  const { agent, registered } = fakeAgent({ header: { delegationDepth: 1 } })
+  created({ agent, source: 'resume' })
+  assert.deepEqual(registered.map((tool) => tool.name).sort(), ['delegate', 'orchestrate'])
+  for (const tool of registered) {
+    assert.equal(/main[- ]agent/i.test(tool.description), false, tool.name)
+    assert.equal(tool.description.includes('Main-agent rule:'), false, tool.name)
+    assert.equal(tool.description.includes('runs ONLY in a worker'), false, tool.name)
+    assert.equal(tool.description.includes(mod.DEFAULT_DENIED_TOOLS[0]), false, tool.name)
+    assert.ok(tool.description.length < 400, tool.name)
+  }
+})
+
+test('a child a preset hid delegation from gets no shadow that would defeat the filter', () => {
+  const { created } = start()
+  const { agent, registered } = fakeAgent({ header: { delegationDepth: 1 }, hidden: ['delegate'] })
+  created({ agent, source: 'resume' })
+  assert.deepEqual(registered.map((tool) => tool.name), ['orchestrate'])
+})
+
+test('a main agent gets the full rule and no scoped shadows', () => {
+  const { created, tools } = start()
+  const { agent, registered } = fakeAgent()
+  created({ agent, source: 'create' })
+  assert.deepEqual(registered, [], 'the global pair is enough for a main agent')
+  const delegate = tools.find((tool) => tool.name === 'delegate')
+  const orchestrate = tools.find((tool) => tool.name === 'orchestrate')
+  assert.match(delegate.description, /Main-agent rule: the main agent plans only/)
+  assert.match(orchestrate.description, /Main-agent rule: the main agent plans only/)
+})
+
+test('a panel refresh still re-masks main agents and leaves a child shadow in place', () => {
+  const main = maskAgent()
+  const child = maskAgent({ id: 'child-1', depth: 1 })
+  const childShadows = []
+  child.agent.ctx.tools.register = (tool) => {
+    childShadows.push(tool.name)
+    return () => {}
+  }
+  const roots = () => [main.agent, child.agent]
+  const { handlers, created, allowed } = start({ agents: { get: () => undefined, roots } })
+  created({ agent: main.agent, source: 'create' })
+  created({ agent: child.agent, source: 'startup' })
+  assert.deepEqual(childShadows, ['delegate', 'orchestrate'])
+  allowed.push('read')
+  handlers.get('loader/volatile-update')()
+  assert.equal(main.mask.has('read'), false, 'the main mask follows the panel write')
+  assert.deepEqual(childShadows, ['delegate', 'orchestrate'], 'a refresh must not register anything else')
 })
 
 test('a main agent is restricted and guarded, and its guard refuses the denied list', () => {

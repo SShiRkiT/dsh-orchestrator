@@ -284,3 +284,40 @@ test('the description keeps the main-agent rule and the deny list, and states th
     assert.match(description, /never reuse a model from earlier turns or a summary/i, param)
   }
 })
+
+test('the worker variant drops the main-agent rule and keeps the same contract', async () => {
+  // A delegated child reads the global description too; its scoped shadow must not
+  // repeat a rule about a role it does not have.
+  const denied = ['edit', 'read']
+  const seen = []
+  const subagents = {
+    resolveMaxDepth: () => 1,
+    startActivation: async (spec) => {
+      seen.push(spec.request.agentOptions)
+      return { childId: 'child-1' }
+    },
+  }
+  const tool = createDelegateTool({
+    defineTool: (definition) => definition,
+    subagents,
+    config: cfg('p', 'm'),
+    deniedTools: denied,
+    forWorker: true,
+  })
+  assert.equal(/main[- ]agent/i.test(tool.description), false)
+  assert.equal(tool.description.includes('Main-agent rule:'), false)
+  assert.equal(tool.description.includes('runs ONLY in a worker'), false)
+  assert.equal(tool.description.includes('edit, read'), false)
+  assert.ok(tool.description.length < 400)
+  assert.match(tool.description, /self-contained task/)
+  assert.match(tool.description, /configured worker route/)
+  // The parameters and the execution path are shared with the main-agent variant.
+  for (const key of ['provider', 'model']) {
+    assert.match(tool.parameters[key].description, /only when the user explicitly names/)
+  }
+  assert.deepEqual(await tool.execute({ description: 'a', prompt: 'x' }, exec()), {
+    kind: 'activation',
+    subagentId: 'child-1',
+  })
+  assert.deepEqual(seen, [{ provider: 'p', model: 'm' }])
+})
