@@ -104,7 +104,7 @@ function fakeCtx({ enabled = true, denied = ['edit', 'read'], allowed = [], agen
     superviseMaxNoticesPerChild: { get: () => 3 },
     superviseNotifyOnNoProgress: { get: () => false },
   }
-  return { ctx, config, state, projections, tools, handlers, effects, logs }
+  return { ctx, config, state, denied, allowed, projections, tools, handlers, effects, logs }
 }
 
 /** A stand-in agent with its own tool registry, so gate side effects are observable. */
@@ -413,4 +413,127 @@ test('deliver queues exactly one notice with followup, never steer', async () =>
     senderSessionId: 'child-1',
   })
   assert.equal(calls.flush.length, 1)
+})
+
+/**
+ * An agent whose deny mask is a real set with real disposers. `lifts` counts released
+ * handles, so a refresh that leaks (or double-disposes) one is visible here.
+ */
+function maskAgent({ id = 'agent-1', globals = mod.DEFAULT_DENIED_TOOLS, depth, header = {} } = {}) {
+  const mask = new Set()
+  const counts = { restrict: 0, lift: 0 }
+  let guard
+  return {
+    mask,
+    counts,
+    getGuard: () => guard,
+    agent: {
+      id,
+      options: { provider: 'p', model: 'm', ...(depth === undefined ? {} : { subagentDepth: depth }) },
+      session: { header },
+      ctx: {
+        tools: {
+          restrict({ deny }) {
+            const [tool] = deny
+            if (!globals.includes(tool)) throw new Error('tools.restrict() names unknown global tool "' + tool + '"')
+            counts.restrict += 1
+            mask.add(tool)
+            let live = true
+            return () => {
+              if (!live) throw new Error('a restriction was disposed twice')
+              live = false
+              counts.lift += 1
+              mask.delete(tool)
+            }
+          },
+          guard(fn) {
+            guard = fn
+          },
+        },
+      },
+    },
+  }
+}
+
+test('a panel write re-applies the mask on every live main agent, in the open session', () => {
+  const main = maskAgent()
+  const child = maskAgent({ id: 'child-1', depth: 1 })
+  const { handlers, created, allowed } = start({ agents: { get: () => undefined, roots: () => [main.agent, child.agent] } })
+  created({ agent: main.agent, source: 'create' })
+  assert.equal(main.mask.has('read'), true)
+  assert.equal(child.mask.size, 0, 'a child is never gated')
+
+  // The panel un-checks `read`: allowedTools gains it, then the loader announces the write.
+  allowed.push('read')
+  const volatile = handlers.get('loader/volatile-update')
+  assert.equal(typeof volatile, 'function', 'apply must subscribe to loader/volatile-update')
+  volatile()
+  assert.equal(main.mask.has('read'), false, 'the next request sees the table without read')
+  assert.equal(main.mask.has('ops_bash'), true, 'every other name stays denied')
+  assert.equal(child.mask.size, 0, 'a refresh must not touch a child')
+
+  // Checking it again hides it again.
+  allowed.length = 0
+  volatile()
+  assert.equal(main.mask.has('read'), true)
+})
+
+test('the enable switch flips every restriction in the open session through the same event', () => {
+  const main = maskAgent()
+  const { handlers, created, state } = start({ agents: { get: () => undefined, roots: () => [main.agent] } })
+  created({ agent: main.agent, source: 'create' })
+  const volatile = handlers.get('loader/volatile-update')
+  assert.equal(main.mask.size, mod.DEFAULT_DENIED_TOOLS.length)
+
+  state.enabled = false
+  volatile()
+  assert.equal(main.mask.size, 0, 'off lifts every restriction')
+  assert.equal(main.getGuard()({ name: 'edit' }), undefined, 'and lets every call through')
+
+  state.enabled = true
+  volatile()
+  assert.equal(main.mask.size, mod.DEFAULT_DENIED_TOOLS.length, 'on restores the table')
+  assert.match(main.getGuard()({ name: 'edit' }), /not available to the main agent/)
+})
+
+test('a disposed agent releases its mask and is not refreshed afterwards', () => {
+  const main = maskAgent()
+  const roots = [main.agent]
+  const { handlers, created, allowed } = start({ agents: { get: () => undefined, roots: () => roots } })
+  created({ agent: main.agent, source: 'create' })
+  const volatile = handlers.get('loader/volatile-update')
+  const disposed = handlers.get('agent/disposed')
+  assert.equal(typeof disposed, 'function', 'apply must subscribe to agent/disposed')
+
+  disposed({ agent: main.agent })
+  assert.equal(main.mask.size, 0, 'the mask is lifted when the agent goes away')
+  assert.equal(main.counts.lift, mod.DEFAULT_DENIED_TOOLS.length)
+
+  // A later write with the agent gone has nothing to reinstall.
+  roots.length = 0
+  allowed.push('read')
+  volatile()
+  assert.equal(main.mask.size, 0)
+})
+
+test('an agent created before the plugin mounted is gated on the first panel write', () => {
+  // The registry is the source of truth, so a missed creation hook self-heals.
+  const main = maskAgent({ id: 'pre-existing' })
+  const { handlers, allowed } = start({ agents: { get: () => undefined, roots: () => [main.agent] } })
+  const volatile = handlers.get('loader/volatile-update')
+  assert.equal(main.mask.size, 0)
+  allowed.push('read')
+  volatile()
+  assert.equal(main.mask.has('edit'), true)
+  assert.equal(main.mask.has('read'), false)
+})
+
+test('a refresh without agents.roots, or a broken registry, is not fatal', () => {
+  const { handlers } = start()
+  const volatile = handlers.get('loader/volatile-update')
+  assert.doesNotThrow(() => volatile())
+
+  const broken = start({ agents: { get: () => undefined, roots: () => { throw new Error('registry gone') } } })
+  assert.doesNotThrow(() => broken.handlers.get('loader/volatile-update')())
+  assert.match(broken.logs.warn.join('\n'), /cannot enumerate live agents/)
 })

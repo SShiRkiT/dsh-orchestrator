@@ -290,3 +290,138 @@ test('a forked root keeps the gate: parentSession without a depth is not a child
   const forkedWithoutDepth = { options: {}, session: { header: { parentSession: 'root-session' } } }
   assert.equal(isDelegatedChild(forkedWithoutDepth), false)
 })
+
+/**
+ * An agent whose deny mask is a real set with real disposers, so a re-install shows up as
+ * the exact table the host would compute. `restricts` counts installs, `lifts` counts
+ * disposals: a leaked handle is a lift that never happened, a double disposal throws.
+ */
+function maskAgent({ globals }) {
+  const mask = new Set()
+  const denies = []
+  const counts = { restrict: 0, lift: 0 }
+  let guard
+  return {
+    mask,
+    denies,
+    counts,
+    getGuard: () => guard,
+    agent: {
+      id: 'main',
+      ctx: {
+        tools: {
+          restrict({ deny }) {
+            const [tool] = deny
+            if (!globals.includes(tool)) throw new Error('tools.restrict() names unknown global tool "' + tool + '"')
+            counts.restrict += 1
+            denies.push(tool)
+            mask.add(tool)
+            let live = true
+            return () => {
+              if (!live) throw new Error('a restriction was disposed twice')
+              live = false
+              counts.lift += 1
+              mask.delete(tool)
+            }
+          },
+          guard(fn) {
+            guard = fn
+          },
+        },
+      },
+    },
+  }
+}
+
+test('a checkbox change rebuilds the mask, so the next request sees the new table', () => {
+  const { agent, mask, getGuard } = maskAgent({ globals: ['edit', 'read', 'ops_bash'] })
+  let names = ['edit', 'read', 'ops_bash']
+  const gate = installGate({ agent, names: () => names, enabled: () => true })
+  assert.deepEqual([...mask], ['edit', 'read', 'ops_bash'])
+
+  // Un-checking `read` only rewrites the config; refresh is what the panel write triggers.
+  names = ['edit', 'ops_bash']
+  assert.equal(gate.refresh(), true)
+  assert.deepEqual([...mask].sort(), ['edit', 'ops_bash'])
+  assert.equal(getGuard()({ name: 'read' }), undefined, 'the re-allowed tool is callable at once')
+
+  // Re-checking it hides it again, and the guard refuses it in the same breath.
+  names = ['edit', 'read']
+  assert.equal(gate.refresh(), true)
+  assert.deepEqual([...mask].sort(), ['edit', 'read'])
+  assert.match(getGuard()({ name: 'read' }), /not available to the main agent/)
+  // The tool that left the list is callable again, with no session restart anywhere.
+  assert.equal(getGuard()({ name: 'ops_bash' }), undefined)
+})
+
+test('refresh with an unchanged list does not touch the registry', () => {
+  const { agent, mask, counts } = maskAgent({ globals: ['edit'] })
+  const gate = installGate({ agent, names: () => ['edit'], enabled: () => true })
+  for (let index = 0; index < 5; index += 1) assert.equal(gate.refresh(), false)
+  assert.equal(counts.restrict, 1)
+  assert.equal(counts.lift, 0)
+  assert.deepEqual([...mask], ['edit'])
+})
+
+test('repeated changes never accumulate restrictions or leak handles', () => {
+  const { agent, mask, counts } = maskAgent({ globals: ['edit', 'read'] })
+  let names = ['edit', 'read']
+  const gate = installGate({ agent, names: () => names, enabled: () => true })
+  const rounds = ['edit', 'read', 'edit', 'edit', 'read', 'edit', 'read', 'read']
+  for (const name of rounds) {
+    names = [name]
+    gate.refresh()
+    assert.deepEqual([...mask], [name], name)
+  }
+  // Each refresh lifts exactly what it installed: one lift per install.
+  assert.equal(counts.lift, counts.restrict - 1)
+  assert.equal(counts.lift, counts.restrict - 1)
+  assert.equal(mask.size, 1)
+})
+
+test('the switch flips the whole table in an open session, both ways', () => {
+  const { agent, mask, getGuard } = maskAgent({ globals: ['edit', 'read'] })
+  let on = true
+  const gate = installGate({ agent, names: () => ['edit', 'read'], enabled: () => on })
+  assert.deepEqual([...mask].sort(), ['edit', 'read'])
+  assert.match(getGuard()({ name: 'edit' }), /not available/)
+
+  on = false
+  assert.equal(gate.refresh(), true)
+  assert.deepEqual([...mask], [], 'off lifts every restriction')
+  assert.equal(getGuard()({ name: 'edit' }), undefined, 'off lets everything through')
+
+  on = true
+  assert.equal(gate.refresh(), true)
+  assert.deepEqual([...mask].sort(), ['edit', 'read'], 'on restores the same table')
+  assert.match(getGuard()({ name: 'edit' }), /not available/)
+})
+
+test('the tools the main agent always keeps are never in the mask, before or after a refresh', () => {
+  const kept = [DELEGATE_TOOL, ORCHESTRATE_TOOL, 'send_message', 'todo_write', 'compress']
+  const { agent, mask, denies, getGuard } = maskAgent({ globals: [...kept, ...SHIPPED] })
+  let configured = []
+  const names = () => effectiveDenied(SHIPPED, configured, [])
+  const gate = installGate({ agent, names, enabled: () => true })
+  configured = [...kept, 'custom_tool']
+  gate.refresh()
+  configured = [...kept]
+  gate.refresh()
+
+  for (const name of kept) {
+    assert.equal(mask.has(name), false, name)
+    assert.equal(denies.includes(name), false, name)
+    assert.equal(getGuard()({ name }), undefined, name)
+  }
+  assert.deepEqual([...mask].sort(), [...SHIPPED].sort())
+})
+
+test('dispose lifts the mask and unregisters the guard', () => {
+  const { agent, mask, counts } = maskAgent({ globals: ['edit', 'read'] })
+  const gate = installGate({ agent, names: () => ['edit', 'read'], enabled: () => true })
+  gate.dispose()
+  assert.deepEqual([...mask], [])
+  assert.equal(counts.lift, 2)
+  gate.dispose()
+  assert.equal(counts.lift, 2, 'a second dispose must not re-run a lifted handle')
+})

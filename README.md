@@ -66,7 +66,7 @@ dsh plugin --profile desktop add SShiRkiT/dsh-orchestrator#main
 1. 安装重启后调度模式默认已开启（`enabled` 默认 `true`）。
 2. 在 composer 的「调度模式」面板里配置 `workerProvider` 与 `workerModel`（必填）、`workerReasoningEffort`（可留空，交给模型决定默认强度）；未配置就派发会直接报错，不会静默继承主代理模型。
 3. 关闭「启用调度模式」开关可临时恢复主代理的全部工具，对已打开的会话立即生效。
-4. 面板右侧的 Denied Tools 清单逐个列出主代理不可用的工具：勾选即拒绝、取消勾选即放行；「恢复默认」回到内置的 42 项。
+4. 面板右侧的 Denied Tools 清单逐个列出主代理不可用的工具：勾选即拒绝、取消勾选即放行；「恢复默认」回到内置的 42 项。勾选变化会立刻重建主代理的工具表，已打开的会话在下一条消息里就能看到，不需要新开会话，也不需要关开总开关。
 
 ![调度模式面板](docs/images/dispatch-panel.png)
 

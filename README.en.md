@@ -66,7 +66,7 @@ After installing, **fully quit and reopen DSH**: client plugins are composed at 
 1. Dispatch mode is already on after installing and restarting (`enabled` defaults to `true`).
 2. In the composer's "Dispatch mode" panel, configure `workerProvider` and `workerModel` (required) and `workerReasoningEffort` (may stay empty, letting the model resolve its default effort); dispatching without a route fails outright instead of silently inheriting the main-agent model.
 3. Turning off the "Enable dispatch mode" switch temporarily restores all main-agent tools and applies to already-open sessions immediately.
-4. The Denied Tools list on the right of the panel names the tools the main agent may not use: check to deny, uncheck to allow; "Reset to defaults" returns to the 42 built-ins.
+4. The Denied Tools list on the right of the panel names the tools the main agent may not use: check to deny, uncheck to allow; "Reset to defaults" returns to the 42 built-ins. A checkbox change rebuilds the main agent's tool table at once, so an already-open session sees it on its next message, with no new session and no switch off/on.
 
 ![Dispatch mode panel](docs/images/dispatch-panel.png)
 
