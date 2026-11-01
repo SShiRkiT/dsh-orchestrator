@@ -65,11 +65,12 @@ After installing, **fully quit and reopen DSH**: client plugins are composed at 
 
 1. Dispatch mode is already on after installing and restarting (`enabled` defaults to `true`).
 2. In the composer's "Dispatch mode" panel, configure `workerProvider` and `workerModel` (required) and `workerReasoningEffort` (may stay empty, letting the model resolve its default effort); dispatching without a route fails outright instead of silently inheriting the main-agent model.
-3. Clearing "Enable dispatch mode" temporarily restores all main-agent tools and applies to already-open sessions immediately.
+3. Turning off the "Enable dispatch mode" switch temporarily restores all main-agent tools and applies to already-open sessions immediately.
+4. The Denied Tools list on the right of the panel names the tools the main agent may not use: check to deny, uncheck to allow; "Reset to defaults" returns to the 42 built-ins.
 
 ![Dispatch mode panel](docs/images/dispatch-panel.png)
 
-*The dispatch mode panel: the enable switch, the main agent's and the subagents' models and reasoning effort, and the subagent patrol interval (default 600 s, range 10–86400).*
+*The dispatch mode panel: the enable switch, the main agent's and the subagents' models and reasoning effort, and the subagent patrol interval (default 600 s, range 10–86400); the Denied Tools list sits on the right.*
 
 ## Configuration
 
@@ -78,7 +79,8 @@ Every field is volatile: the host stores it and the plugin re-reads it on each u
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | Master switch for dispatch mode. When off it revokes the hiding; the guard stays installed but lets calls through. |
-| `deniedTools` | 42 built-ins | Tools the main agent may not use; it can only append, never remove. |
+| `deniedTools` | 42 built-ins | Tools the main agent may not use, added on top of the built-ins. |
+| `allowedTools` | `[]` | Built-in tools the profile re-allows; the effective list is built-ins + `deniedTools` − `allowedTools`. |
 | `workerProvider` | `""` | Subagent provider; empty means unconfigured. |
 | `workerModel` | `""` | Subagent model; empty means unconfigured. |
 | `workerReasoningEffort` | `""` | Subagent reasoning effort; empty means it is not passed and the model resolves the default. |

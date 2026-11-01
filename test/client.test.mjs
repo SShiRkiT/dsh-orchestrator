@@ -462,9 +462,299 @@ test('the invalid-input hint disappears when its timer fires', async () => {
   assert.equal(field.alert(), undefined)
 })
 
+
 test('the interval field follows a value changed elsewhere', () => {
   const scope = fakeScope({ initial: { superviseIntervalSeconds: 600 } })
   const field = mountField(scope)
   scope.externalSet({ superviseIntervalSeconds: 1200 })
   assert.equal(field.input().props.value, '1200')
+})
+
+// ---- Denied tools -------------------------------------------------------------------
+
+// The panel cannot ask the host for a tool catalog (the session remote has no such
+// method), so it re-declares the shipped list. Reading the host constant out of the
+// source keeps the two copies honest without loading the host entry, whose packages
+// this test process does not install.
+const hostSource = fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+const hostListSource = /export const DEFAULT_DENIED_TOOLS = \[([\s\S]*?)\]/.exec(hostSource)
+const HOST_DEFAULT_DENIED_TOOLS = [...hostListSource[1].matchAll(/'([^']+)'/g)].map((match) => match[1])
+
+test('the bundled copy of the shipped deny list matches the host constant', () => {
+  assert.deepEqual(plain(T.DEFAULT_DENIED_TOOLS), HOST_DEFAULT_DENIED_TOOLS)
+  assert.equal(HOST_DEFAULT_DENIED_TOOLS.length, 42)
+})
+
+test('the list holds the shipped names minus the tools no profile may deny', () => {
+  const shown = plain(T.toolListOf({}))
+  assert.deepEqual(shown, HOST_DEFAULT_DENIED_TOOLS.filter((name) => !T.NEVER_DENIED.has(name)))
+  for (const name of ['delegate', 'orchestrate', 'send_message', 'todo_write', 'compress']) {
+    assert.equal(shown.includes(name), false, name)
+  }
+})
+
+test('config names join the list, extras after the shipped order and sorted', () => {
+  const shown = plain(T.toolListOf({ deniedTools: ['zeta', 'alpha'], allowedTools: ['edit'] }))
+  // An allowed shipped name stays listed (unchecked); it is not removed from the rows.
+  assert.equal(shown.includes('edit'), true)
+  assert.deepEqual(shown.slice(-2), ['alpha', 'zeta'])
+  assert.equal(new Set(shown).size, shown.length)
+  // A never-denied name in the config is never offered as a row.
+  assert.equal(plain(T.toolListOf({ deniedTools: ['delegate'] })).includes('delegate'), false)
+})
+
+test('checked means denied: the shipped list is checked, an allowance is not', () => {
+  const shipped = T.deniedSetOf({})
+  for (const name of HOST_DEFAULT_DENIED_TOOLS) assert.equal(shipped.has(name), true, name)
+  assert.equal(shipped.has('delegate'), false)
+  assert.equal(shipped.has('compress'), false)
+
+  const tweaked = T.deniedSetOf({ allowedTools: ['edit'], deniedTools: ['custom'] })
+  assert.equal(tweaked.has('edit'), false)
+  assert.equal(tweaked.has('read'), true)
+  assert.equal(tweaked.has('custom'), true)
+})
+
+test('a legacy deniedTools-only profile still adds to the shipped list', () => {
+  const legacy = ['session_search', 'interrupt_agent']
+  const denied = T.deniedSetOf({ deniedTools: legacy })
+  assert.equal(denied.size, HOST_DEFAULT_DENIED_TOOLS.length + 2)
+  for (const name of legacy) assert.equal(denied.has(name), true, name)
+})
+
+test('the checkbox state maps to the two keys, storing only the differences', () => {
+  const clear = [
+    { op: 'unset', path: ['deniedTools'] },
+    { op: 'unset', path: ['allowedTools'] },
+  ]
+  assert.deepEqual(plain(T.denyOps(HOST_DEFAULT_DENIED_TOOLS)), clear)
+
+  const withoutEdit = HOST_DEFAULT_DENIED_TOOLS.filter((name) => name !== 'edit')
+  assert.deepEqual(plain(T.denyOps(withoutEdit)), [
+    { op: 'unset', path: ['deniedTools'] },
+    { op: 'set', path: ['allowedTools'], value: ['edit'] },
+  ])
+
+  assert.deepEqual(plain(T.denyOps([...HOST_DEFAULT_DENIED_TOOLS, 'zeta', 'alpha'])), [
+    { op: 'set', path: ['deniedTools'], value: ['alpha', 'zeta'] },
+    { op: 'unset', path: ['allowedTools'] },
+  ])
+
+  // A never-denied name is dropped even when a caller passes it, and both keys can move
+  // at once when one shipped name is unchecked while another tool is added.
+  assert.deepEqual(plain(T.denyOps([...HOST_DEFAULT_DENIED_TOOLS, 'delegate'])), clear)
+  assert.deepEqual(plain(T.denyOps([...withoutEdit, 'custom'])), [
+    { op: 'set', path: ['deniedTools'], value: ['custom'] },
+    { op: 'set', path: ['allowedTools'], value: ['edit'] },
+  ])
+})
+
+test('reset clears both keys so the shipped list applies again', () => {
+  assert.deepEqual(plain(T.resetDenyOps()), [
+    { op: 'unset', path: ['deniedTools'] },
+    { op: 'unset', path: ['allowedTools'] },
+  ])
+})
+
+test('the search matches a case-insensitive substring of the tool name', () => {
+  const names = ['edit', 'read', 'ops_bash', 'web_search']
+  assert.deepEqual(plain(T.filterTools(names, '')), names)
+  assert.deepEqual(plain(T.filterTools(names, '  ED ')), ['edit'])
+  assert.deepEqual(plain(T.filterTools(names, 'ops')), ['ops_bash'])
+  assert.deepEqual(plain(T.filterTools(names, 'SEARCH')), ['web_search'])
+  assert.deepEqual(plain(T.filterTools(names, 'zzz')), [])
+})
+
+/** Mount the switch and expose the nodes the tests reach for. */
+function mountSwitch(props) {
+  const view = mount(T.EnableSwitch, {
+    checked: false,
+    disabled: false,
+    onChange: () => {},
+    label: 'route.enable',
+    ...props,
+  })
+  const input = () => nodes(view.tree).find((node) => node.type === 'input')
+  const track = () => nodes(view.tree).find((node) => node.props?.['data-switch'] !== undefined)
+  return { view, input, track }
+}
+
+test('the switch is a role=switch checkbox with a real aria-checked state', () => {
+  const off = mountSwitch({})
+  assert.equal(off.input().props.type, 'checkbox')
+  assert.equal(off.input().props.role, 'switch')
+  assert.equal(off.input().props['aria-checked'], 'false')
+  assert.equal(off.input().props.checked, false)
+  assert.equal(off.input().props['aria-label'], 'route.enable')
+  assert.equal(off.track().props['data-switch'], 'off')
+
+  const on = mountSwitch({ checked: true })
+  assert.equal(on.input().props['aria-checked'], 'true')
+  assert.equal(on.track().props['data-switch'], 'on')
+  // The on-track colour is fixed so it reads the same in both themes.
+  assert.equal(on.track().props.style.background, '#C6FFD5')
+  // The knob slides rather than jumping, and is ringed so white stays visible on it.
+  const knob = on.track().kids[0]
+  assert.equal(knob.props.style.transform, 'translateX(16px)')
+  assert.match(knob.props.style.transition, /transform/)
+  assert.match(knob.props.style.boxShadow, /rgba\(0, 0, 0/)
+  const offKnob = off.track().kids[0]
+  assert.equal(offKnob.props.style.transform, 'translateX(0)')
+  assert.match(off.track().props.style.transition, /background-color/)
+})
+
+test('the switch is grey when off and green when on, from theme tokens', () => {
+  const off = mountSwitch({})
+  assert.match(off.track().props.style.background, /--dsw-alias-border-l3/)
+  const on = mountSwitch({ checked: true })
+  assert.equal(on.track().props.style.background, '#C6FFD5')
+  assert.equal(mountSwitch({ checked: true, disabled: true }).track().props.style.opacity, 0.5)
+})
+
+test('Enter toggles the switch, and a disabled switch ignores it', () => {
+  const seen = []
+  const off = mountSwitch({ onChange: (next) => seen.push(next) })
+  off.input().props.onKeyDown({ key: 'Enter', preventDefault() {} })
+  const on = mountSwitch({ checked: true, onChange: (next) => seen.push(next) })
+  on.input().props.onKeyDown({ key: 'Enter', preventDefault() {} })
+  assert.deepEqual(seen, [true, false])
+  off.input().props.onKeyDown({ key: 'a', preventDefault() {} })
+  assert.deepEqual(seen, [true, false])
+  const locked = mountSwitch({ disabled: true, onChange: (next) => seen.push(next) })
+  locked.input().props.onKeyDown({ key: 'Enter', preventDefault() {} })
+  assert.deepEqual(seen, [true, false])
+  // The native checkbox change path is untouched.
+  off.input().props.onChange({ target: { checked: true } })
+  assert.deepEqual(seen, [true, false, true])
+})
+
+test('the switch draws a focus ring only while focused', () => {
+  const sw = mountSwitch({})
+  assert.equal(sw.track().props.style.boxShadow, 'none')
+  sw.input().props.onFocus()
+  assert.match(sw.track().props.style.boxShadow, /0 0 0 2px/)
+  sw.input().props.onBlur()
+  assert.equal(sw.track().props.style.boxShadow, 'none')
+})
+
+/** Mount the denied-tools column and expose the nodes the tests reach for. */
+function mountDenied(scope) {
+  const view = mount(T.DeniedToolsPanel, { scope, t })
+  const rows = () => nodes(view.tree).filter((node) => node.type === 'label')
+  const search = () => nodes(view.tree).find((node) => node.props?.['data-search'] === 'denied-tools')
+  const button = () => nodes(view.tree).find((node) => node.type === 'button')
+  const text = () => nodes(view.tree).map((node) => node.kids?.[0]).filter((kid) => typeof kid === 'string')
+  return { view, rows, search, button, text }
+}
+
+test('the column is headed Denied Tools and lists one checkbox row per tool', () => {
+  const panel = mountDenied(fakeScope())
+  assert.equal(panel.text().includes('denied.title'), true)
+  // The heading is literally "Denied Tools" in both dictionaries.
+  const zhTitle = /'denied.title': '([^']+)'/.exec(src)?.[1]
+  assert.equal(zhTitle, 'Denied Tools')
+
+  const rows = panel.rows()
+  assert.equal(rows.length, HOST_DEFAULT_DENIED_TOOLS.filter((name) => !T.NEVER_DENIED.has(name)).length)
+  const first = rows[0]
+  assert.equal(first.kids[0].type, 'span')
+  assert.equal(first.kids[1].type, 'input')
+  assert.equal(first.kids[1].props.type, 'checkbox')
+  assert.equal(first.kids[1].props.checked, true)
+  // The search box sits above the list.
+  assert.equal(panel.search().props.type, 'search')
+})
+
+test('the search narrows the rows case-insensitively and explains an empty result', () => {
+  const panel = mountDenied(fakeScope())
+  panel.search().props.onChange({ target: { value: 'READ' } })
+  assert.deepEqual(
+    panel.rows().map((row) => row.props['data-tool']),
+    ['read', 'ops_read_files', 'read_image', 'acp_read_original_image'],
+  )
+  panel.search().props.onChange({ target: { value: 'zzz' } })
+  assert.deepEqual(panel.rows(), [])
+  assert.equal(panel.text().includes('denied.empty'), true)
+})
+
+test('unchecking a shipped name writes allowedTools and re-renders from the store', async () => {
+  const scope = fakeScope()
+  const panel = mountDenied(scope)
+  const row = () => panel.rows().find((entry) => entry.props['data-tool'] === 'edit')
+  assert.equal(row().kids[1].props.checked, true)
+  await row().kids[1].props.onChange({ target: { checked: false } })
+  assert.equal(scope.calls.length, 1)
+  assert.deepEqual(plain(scope.calls[0].ops), [
+    { op: 'unset', path: ['deniedTools'] },
+    { op: 'set', path: ['allowedTools'], value: ['edit'] },
+  ])
+  assert.equal(scope.calls[0].expected, 1)
+  assert.equal(row().kids[1].props.checked, false)
+})
+
+test('unchecking a name a profile added removes it from deniedTools', async () => {
+  const scope = fakeScope({ initial: { deniedTools: ['custom_tool'] } })
+  const panel = mountDenied(scope)
+  const row = panel.rows().find((entry) => entry.props['data-tool'] === 'custom_tool')
+  assert.ok(row, 'a config-added name is listed')
+  await row.kids[1].props.onChange({ target: { checked: false } })
+  assert.deepEqual(plain(scope.calls[0].ops), [
+    { op: 'unset', path: ['deniedTools'] },
+    { op: 'unset', path: ['allowedTools'] },
+  ])
+})
+
+test('reset to defaults clears both keys', async () => {
+  const scope = fakeScope({ initial: { deniedTools: ['custom_tool'], allowedTools: ['edit'] } })
+  const panel = mountDenied(scope)
+  assert.equal(panel.button().kids[0], 'denied.reset')
+  await panel.button().props.onClick()
+  assert.deepEqual(plain(scope.calls[0].ops), plain(T.resetDenyOps()))
+  assert.equal(panel.rows().find((entry) => entry.props['data-tool'] === 'edit').kids[1].props.checked, true)
+})
+
+test('a read-only scope disables the boxes and never writes', async () => {
+  const scope = fakeScope({ writable: false })
+  const panel = mountDenied(scope)
+  const box = panel.rows()[0].kids[1]
+  assert.equal(box.props.disabled, true)
+  assert.equal(panel.button().props.disabled, true)
+  await panel.button().props.onClick()
+  assert.equal(scope.calls.length, 0)
+})
+
+test('a rejected write is reported without dropping the stored state', async () => {
+  const scope = fakeScope({ reject: 'settings changed since it was read' })
+  const panel = mountDenied(scope)
+  const row = () => panel.rows().find((entry) => entry.props['data-tool'] === 'edit')
+  await row().kids[1].props.onChange({ target: { checked: false } })
+  const alert = nodes(panel.view.tree).find((node) => node.props?.role === 'alert')
+  assert.match(alert.kids[0], /settings changed/)
+  assert.equal(row().kids[1].props.checked, true)
+})
+
+test('the popover is two columns, the original panel then the denied tools column', () => {
+  const scopes = { main: fakeScope(), worker: fakeScope(), orch: fakeScope() }
+  const view = mount(T.RoutePicker, {
+    t,
+    scopes,
+    orch: scopes.orch,
+    loadCatalog: async () => ({ ok: true, value: { groups: [] } }),
+  })
+  // The popover only exists while open; the trigger is the only button before that.
+  nodes(view.tree).find((node) => node.type === 'button').props.onClick()
+  const dialog = nodes(view.tree).find((node) => node.props?.role === 'dialog')
+  assert.ok(dialog)
+  assert.equal(dialog.kids.length, 2)
+  const [left, right] = dialog.kids
+  assert.equal(left.type, 'div')
+  assert.equal(left.props.style.width, '340px')
+  assert.match(left.props.style.borderRight, /^1px solid/)
+  assert.equal(right.type, T.DeniedToolsPanel)
+  assert.equal(right.props.scope, scopes.orch)
+  // The enable row is label-then-switch, and the switch is the new component.
+  const switchRow = nodes(left).find((node) => node.type === T.EnableSwitch)
+  assert.ok(switchRow)
+  assert.equal(switchRow.props.label, 'route.enable')
+  view.unmount()
 })

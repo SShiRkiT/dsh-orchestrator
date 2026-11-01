@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { DELEGATE_TOOL, DELEGATION_TOOLS, denyGuard, installGate, isDelegatedChild, mergeDenied, restrictEach } from '../lib/gate.js'
+import { ORCHESTRATE_TOOL } from '../lib/api.js'
+import {
+  DELEGATE_TOOL,
+  DELEGATION_TOOLS,
+  denyGuard,
+  effectiveDenied,
+  installGate,
+  isDelegatedChild,
+  mergeDenied,
+  neverDenied,
+  restrictEach,
+} from '../lib/gate.js'
 
 const HIDDEN = ['edit', 'write', 'str_replace_editor', 'subagent', 'subagent_fork', 'workflow', 'ralph', 'ops_bash', 'pwsh']
 
@@ -210,6 +221,68 @@ test('a partial agent reads whichever side it has, and never throws', () => {
   assert.equal(isDelegatedChild({ options: {}, session: { header: null } }), false)
 })
 
+
+/** The shipped list is big; two names stand in for it in these tests. */
+const SHIPPED = ['edit', 'read', 'ops_bash']
+
+test('the effective list is the shipped list plus additions, minus allowances', () => {
+  assert.deepEqual(effectiveDenied(SHIPPED, [], []), SHIPPED)
+  assert.deepEqual(effectiveDenied(SHIPPED, ['custom'], []), [...SHIPPED, 'custom'])
+  assert.deepEqual(effectiveDenied(SHIPPED, [], ['read']), ['edit', 'ops_bash'])
+  // An allowance and an addition can name the same field: the allowance wins.
+  assert.deepEqual(effectiveDenied(SHIPPED, ['custom', 'read'], ['read']), ['edit', 'ops_bash', 'custom'])
+  // Unknown names are tolerated in both directions: allowing one is a no-op.
+  assert.deepEqual(effectiveDenied(SHIPPED, [], ['not-a-tool']), SHIPPED)
+  assert.deepEqual(effectiveDenied(SHIPPED, ['not-a-tool'], []), [...SHIPPED, 'not-a-tool'])
+  // A dirty profile value must not throw.
+  assert.deepEqual(effectiveDenied(SHIPPED, undefined, undefined), SHIPPED)
+  assert.deepEqual(effectiveDenied(undefined, ['x'], undefined), ['x'])
+})
+
+test('delegation and the main agent own tools are never denied, even when a profile lists them', () => {
+  const listed = [...SHIPPED, DELEGATE_TOOL, ORCHESTRATE_TOOL, 'send_message', 'todo_write', 'compress']
+  const kept = neverDenied(SHIPPED)
+  for (const name of [DELEGATE_TOOL, ORCHESTRATE_TOOL, 'send_message', 'todo_write', 'compress']) {
+    assert.equal(kept.has(name), true, name)
+    assert.equal(effectiveDenied(SHIPPED, listed, []).includes(name), false, name)
+  }
+  // A profile cannot re-allow something that was never denied in the first place: the
+  // effective list stays exactly the shipped list.
+  assert.deepEqual(effectiveDenied(SHIPPED, [], [DELEGATE_TOOL, ORCHESTRATE_TOOL]), SHIPPED)
+})
+
+test('a shipped name inside DEFAULT_DENIED_TOOLS stays deniable, as 0.4.6 treated it', () => {
+  // send_message/todo_write/compress are kept only while the shipped list omits them.
+  const shipped = ['edit', 'todo_write']
+  assert.equal(neverDenied(shipped).has('todo_write'), false)
+  assert.deepEqual(effectiveDenied(shipped, [], ['todo_write']), ['edit'])
+})
+
+test('a legacy deniedTools-only profile keeps exactly the 0.4.6 deny list', () => {
+  const legacy = ['session_search', 'session_trace', 'session_event_search', 'session_event_read', 'session_event_trace', 'interrupt_agent']
+  const live = effectiveDenied(SHIPPED, legacy, [])
+  assert.deepEqual(live, mergeDenied(SHIPPED, legacy))
+  for (const name of legacy) assert.equal(live.includes(name), true, name)
+})
+
+test('installGate with allowedTools leaves an allowed name callable and keeps the rest denied', () => {
+  const { agent, restricted, getGuard } = fakeAgent({ globals: ['edit', 'read', 'ops_bash'] })
+  const allowed = []
+  const { applied, guarded } = installGate({
+    agent,
+    names: () => effectiveDenied(SHIPPED, [], allowed),
+    enabled: () => true,
+  })
+  assert.deepEqual(applied, SHIPPED)
+  assert.deepEqual(restricted, SHIPPED)
+  const guard = getGuard()
+  assert.match(guard({ name: 'edit' }), /not available to the main agent/)
+  // The switch is live: allowing `edit` after installation lifts the guard for it only.
+  allowed.push('edit')
+  assert.equal(guard({ name: 'edit' }), undefined)
+  assert.match(guard({ name: 'read' }), /not available to the main agent/)
+  assert.equal(guarded.includes('edit'), true)
+})
 test('a forked root keeps the gate: parentSession without a depth is not a child', () => {
   // A GUI fork is a new root session: it records where it came from but starts at depth 0.
   const forked = { options: {}, session: { header: { parentSession: 'root-session', delegationDepth: 0 } } }

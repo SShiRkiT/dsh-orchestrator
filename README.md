@@ -65,11 +65,12 @@ dsh plugin --profile desktop add SShiRkiT/dsh-orchestrator#main
 
 1. 安装重启后调度模式默认已开启（`enabled` 默认 `true`）。
 2. 在 composer 的「调度模式」面板里配置 `workerProvider` 与 `workerModel`（必填）、`workerReasoningEffort`（可留空，交给模型决定默认强度）；未配置就派发会直接报错，不会静默继承主代理模型。
-3. 取消勾选「启用调度模式」可临时恢复主代理的全部工具，对已打开的会话立即生效。
+3. 关闭「启用调度模式」开关可临时恢复主代理的全部工具，对已打开的会话立即生效。
+4. 面板右侧的 Denied Tools 清单逐个列出主代理不可用的工具：勾选即拒绝、取消勾选即放行；「恢复默认」回到内置的 42 项。
 
 ![调度模式面板](docs/images/dispatch-panel.png)
 
-*调度模式面板：启用开关、主代理与子代理各自的模型和思考强度，以及子代理巡检间隔（默认 600 秒，范围 10–86400）。*
+*调度模式面板：启用开关、主代理与子代理各自的模型和思考强度、子代理巡检间隔（默认 600 秒，范围 10–86400），右侧是 Denied Tools 清单。*
 
 ## 配置
 
@@ -78,7 +79,8 @@ dsh plugin --profile desktop add SShiRkiT/dsh-orchestrator#main
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `enabled` | `true` | 调度模式总开关。关闭时撤销隐藏，守卫仍安装但放行。 |
-| `deniedTools` | 42 项内置名单 | 主代理不可用的工具；只能追加，不能删减。 |
+| `deniedTools` | 42 项内置名单 | 主代理不可用的工具；在内置名单之上追加。 |
+| `allowedTools` | `[]` | 从内置名单里放行的工具；最终名单 = 内置 + `deniedTools` − `allowedTools`。 |
 | `workerProvider` | `""` | 子代理 provider，空表示未配置。 |
 | `workerModel` | `""` | 子代理模型，空表示未配置。 |
 | `workerReasoningEffort` | `""` | 子代理思考强度，空表示不传，交给模型解析默认值。 |

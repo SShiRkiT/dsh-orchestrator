@@ -56,7 +56,7 @@ const mod = await import(new URL('../lib/index.js', import.meta.url).href)
  * A minimal ctx: only the members `apply` touches, each recording what it got.
  * `enabled` is mutable so a test can flip the switch after installation.
  */
-function fakeCtx({ enabled = true, denied = ['edit', 'read'], agents, sessions, stateOf } = {}) {
+function fakeCtx({ enabled = true, denied = ['edit', 'read'], allowed = [], agents, sessions, stateOf } = {}) {
   const state = { enabled }
   const projections = []
   const tools = []
@@ -95,6 +95,7 @@ function fakeCtx({ enabled = true, denied = ['edit', 'read'], agents, sessions, 
   const config = {
     enabled: { get: () => state.enabled },
     deniedTools: { get: () => denied },
+    allowedTools: { get: () => allowed },
     workerProvider: { get: () => '' },
     workerModel: { get: () => '' },
     workerReasoningEffort: { get: () => '' },
@@ -226,6 +227,45 @@ test('the switch being off still installs the guard and stays quiet', () => {
   assert.equal(logs.warn.length, 0)
 })
 
+test('allowedTools re-allows a shipped name for an open conversation, live', () => {
+  // Safety: every other shipped name stays denied, and the change is read per call, so a
+  // panel write reaches a conversation that was already open.
+  const denied = []
+  const allowed = ['read']
+  const { created } = start({ denied, allowed })
+  const { agent, restricted, guards } = fakeAgent()
+  created({ agent, source: 'create' })
+  assert.equal(restricted.includes('read'), false, 'an allowed name is not hidden either')
+  assert.equal(guards[0]({ name: 'read' }), undefined)
+  assert.match(guards[0]({ name: 'edit' }), /not available to the main agent/)
+
+  // Un-checking a box is a write to deniedTools; checking one is a write to allowedTools.
+  allowed.push('edit')
+  assert.equal(guards[0]({ name: 'edit' }), undefined)
+  assert.match(guards[0]({ name: 'ops_bash' }), /not available to the main agent/)
+})
+
+test('the blocked-tools clause follows the effective list without re-registering', () => {
+  // The description is a getter, so the same registered tool renders the new list: a
+  // settings change reaches the prompt without a restart or a new session.
+  const denied = []
+  const allowed = []
+  const { tools } = start({ denied, allowed })
+  const delegate = tools.find((tool) => tool.name === 'delegate')
+  const orchestrate = tools.find((tool) => tool.name === 'orchestrate')
+  const blockedOf = (tool) => /Blocked for the main agent: ([^.]+)\./.exec(tool.description)?.[1]
+  assert.equal(blockedOf(delegate), mod.DEFAULT_DENIED_TOOLS.join(', '))
+  assert.equal(blockedOf(orchestrate), mod.DEFAULT_DENIED_TOOLS.join(', '))
+
+  allowed.push('read')
+  denied.push('custom_tool', 'delegate', 'orchestrate')
+  const expected = [...mod.DEFAULT_DENIED_TOOLS.filter((name) => name !== 'read'), 'custom_tool'].join(', ')
+  assert.equal(blockedOf(delegate), expected)
+  assert.equal(blockedOf(orchestrate), expected)
+  // The delegation tools can never appear in the clause, even when a profile lists them.
+  assert.equal(blockedOf(delegate).includes('delegate,'), false)
+  assert.equal(orchestrate.description.includes('orchestrate,'), false)
+})
 /** Only the members supervision adapters use, with recording friendly defaults. */
 function fakeSupervisionHost({ parents = new Map(), sessions = new Map(), stateOf, flush } = {}) {
   const logs = []
