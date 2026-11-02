@@ -149,17 +149,30 @@ function mountField(scope) {
 
 let mod
 const timers = []
-vm.runInNewContext(src, {
-  window: {
-    __ModuleLoader__: {
-      load: (def) => {
-        mod = def.factory((id) => {
-          if (id === 'react') return React
-          throw new Error('unexpected require ' + id)
-        })
-      },
+// A stand-in browser: the row measures its own box and the window height before it opens
+// the model list, and listens for scroll and resize while it is open.
+const fakeWindow = {
+  __ModuleLoader__: {
+    load: (def) => {
+      mod = def.factory((id) => {
+        if (id === 'react') return React
+        throw new Error('unexpected require ' + id)
+      })
     },
   },
+  innerHeight: 900,
+  listeners: [],
+  addEventListener(type) {
+    fakeWindow.listeners.push(type)
+  },
+  removeEventListener(type) {
+    fakeWindow.listeners = fakeWindow.listeners.filter((entry) => entry !== type)
+  },
+}
+const fakeDocument = { listeners: [], addEventListener() {}, removeEventListener() {} }
+vm.runInNewContext(src, {
+  window: fakeWindow,
+  document: fakeDocument,
   // The field schedules its transient warning; tests drive the timer by hand.
   setTimeout: (fn, ms) => {
     const timer = { fn, ms }
@@ -485,12 +498,16 @@ test('the bundled copy of the shipped deny list matches the host constant', () =
   assert.equal(HOST_DEFAULT_DENIED_TOOLS.length, 42)
 })
 
-test('the list holds the shipped names minus the tools no profile may deny', () => {
+test('the list holds every shipped name, with nothing locked out of it', () => {
   const shown = plain(T.toolListOf({}))
-  assert.deepEqual(shown, HOST_DEFAULT_DENIED_TOOLS.filter((name) => !T.NEVER_DENIED.has(name)))
+  assert.deepEqual(shown, HOST_DEFAULT_DENIED_TOOLS)
+  // The tools the shipped list omits are not rows until the host catalog names them, but
+  // a profile may deny them like any other once it does.
   for (const name of ['delegate', 'orchestrate', 'send_message', 'todo_write', 'compress']) {
     assert.equal(shown.includes(name), false, name)
   }
+  const withCatalog = plain(T.toolListOf({ toolCatalog: ['delegate', 'todo_write'] }))
+  for (const name of ['delegate', 'todo_write']) assert.equal(withCatalog.includes(name), true, name)
 })
 
 test('config names join the list, extras after the shipped order and sorted', () => {
@@ -499,13 +516,57 @@ test('config names join the list, extras after the shipped order and sorted', ()
   assert.equal(shown.includes('edit'), true)
   assert.deepEqual(shown.slice(-2), ['alpha', 'zeta'])
   assert.equal(new Set(shown).size, shown.length)
-  // A never-denied name in the config is never offered as a row.
-  assert.equal(plain(T.toolListOf({ deniedTools: ['delegate'] })).includes('delegate'), false)
+  // A name outside the shipped list is offered like any other: nothing is exempt.
+  assert.equal(plain(T.toolListOf({ deniedTools: ['delegate'] })).includes('delegate'), true)
+})
+
+test('the live catalog from the host joins the rows, deduped and sorted after the shipped list', () => {
+  const shown = plain(T.toolListOf({ toolCatalog: ['zeta', 'mcp__github__create_issue', 'edit', 'read'] }))
+  // A catalog name the shipped list also knows is listed once, in its shipped place.
+  assert.equal(shown.filter((name) => name === 'edit').length, 1)
+  assert.deepEqual(shown.slice(-2), ['mcp__github__create_issue', 'zeta'])
+  // A delegation tool the catalog names is a row like any other.
+  assert.equal(plain(T.toolListOf({ toolCatalog: ['delegate'] })).includes('delegate'), true)
+})
+
+test('a tool the shipped list never heard of is offered and defaults to available', () => {
+  const catalog = { toolCatalog: ['mcp__demo__ping', 'ops_new'] }
+  const shown = plain(T.toolListOf(catalog))
+  assert.ok(shown.includes('mcp__demo__ping'))
+  assert.ok(shown.includes('ops_new'))
+  // Unchecked, i.e. not denied: a tool another plugin adds is available unless configured.
+  const denied = T.deniedSetOf(catalog)
+  assert.equal(denied.has('mcp__demo__ping'), false)
+  assert.equal(denied.has('ops_new'), false)
+  // Once denied, the panel writes the name and the row reads checked.
+  assert.equal(T.deniedSetOf({ ...catalog, deniedTools: ['mcp__demo__ping'] }).has('mcp__demo__ping'), true)
+})
+
+test('an absent or empty catalog keeps the shipped fallback', () => {
+  const shipped = HOST_DEFAULT_DENIED_TOOLS
+  assert.deepEqual(plain(T.toolListOf({ toolCatalog: [] })), shipped)
+  assert.deepEqual(plain(T.toolListOf({ toolCatalog: 'not-a-list' })), shipped)
+  assert.deepEqual(plain(T.toolListOf({})), shipped)
+  assert.deepEqual(plain(T.catalogOf({})), [])
+  // Junk entries are dropped instead of rendering as empty rows.
+  assert.deepEqual(plain(T.catalogOf({ toolCatalog: ['b', '', 7, 'a'] })), ['b', 'a'])
+  assert.equal(T.CATALOG_KEY, 'toolCatalog')
+})
+
+test('no name is exempt: anything the panel lists can be denied or re-allowed', () => {
+  const onlyShipped = T.deniedSetOf({})
+  assert.equal(onlyShipped.has('delegate'), false, 'not denied by default')
+  const denied = T.deniedSetOf({ deniedTools: ['delegate', 'orchestrate', 'todo_write'] })
+  for (const name of ['delegate', 'orchestrate', 'todo_write']) assert.equal(denied.has(name), true, name)
+  const allowed = T.deniedSetOf({ allowedTools: ['read', 'todo_write'] })
+  assert.equal(allowed.has('read'), false)
+  assert.equal(allowed.has('todo_write'), false)
 })
 
 test('checked means denied: the shipped list is checked, an allowance is not', () => {
   const shipped = T.deniedSetOf({})
   for (const name of HOST_DEFAULT_DENIED_TOOLS) assert.equal(shipped.has(name), true, name)
+  // Tools outside the shipped list start available: default denied is the shipped list.
   assert.equal(shipped.has('delegate'), false)
   assert.equal(shipped.has('compress'), false)
 
@@ -540,9 +601,12 @@ test('the checkbox state maps to the two keys, storing only the differences', ()
     { op: 'unset', path: ['allowedTools'] },
   ])
 
-  // A never-denied name is dropped even when a caller passes it, and both keys can move
-  // at once when one shipped name is unchecked while another tool is added.
-  assert.deepEqual(plain(T.denyOps([...HOST_DEFAULT_DENIED_TOOLS, 'delegate'])), clear)
+  // A name outside the shipped list is stored as an addition, exactly like any other, and
+  // both keys can move at once when one shipped name is unchecked while another is denied.
+  assert.deepEqual(plain(T.denyOps([...HOST_DEFAULT_DENIED_TOOLS, 'delegate'])), [
+    { op: 'set', path: ['deniedTools'], value: ['delegate'] },
+    { op: 'unset', path: ['allowedTools'] },
+  ])
   assert.deepEqual(plain(T.denyOps([...withoutEdit, 'custom'])), [
     { op: 'set', path: ['deniedTools'], value: ['custom'] },
     { op: 'set', path: ['allowedTools'], value: ['edit'] },
@@ -655,12 +719,23 @@ test('the column is headed Denied Tools and lists one checkbox row per tool', ()
   assert.equal(zhTitle, 'Denied Tools')
 
   const rows = panel.rows()
-  assert.equal(rows.length, HOST_DEFAULT_DENIED_TOOLS.filter((name) => !T.NEVER_DENIED.has(name)).length)
+  assert.equal(rows.length, HOST_DEFAULT_DENIED_TOOLS.length)
   const first = rows[0]
   assert.equal(first.kids[0].type, 'span')
   assert.equal(first.kids[1].type, 'input')
   assert.equal(first.kids[1].props.type, 'checkbox')
   assert.equal(first.kids[1].props.checked, true)
+  assert.equal(first.kids[1].props.disabled, false)
+  // The five tools the shipped list omits are ordinary rows once the catalog names them,
+  // with a working checkbox: the panel no longer locks anything.
+  const withCatalog = mountDenied(fakeScope({ initial: { toolCatalog: ['delegate', 'orchestrate', 'send_message', 'todo_write', 'compress'] } }))
+  const extra = withCatalog.rows().filter((row) => row.props['data-tool'] === 'delegate' || row.props['data-tool'] === 'compress')
+  assert.equal(extra.length, 2)
+  for (const row of extra) {
+    assert.equal(row.kids[1].type, 'input')
+    assert.equal(row.kids[1].props.disabled, false)
+    assert.equal(row.kids[1].props.checked, false)
+  }
   // The search box sits above the list.
   assert.equal(panel.search().props.type, 'search')
 })
@@ -675,6 +750,23 @@ test('the search narrows the rows case-insensitively and explains an empty resul
   panel.search().props.onChange({ target: { value: 'zzz' } })
   assert.deepEqual(panel.rows(), [])
   assert.equal(panel.text().includes('denied.empty'), true)
+})
+
+test('a tool published by another plugin is listed, searchable and unchecked', async () => {
+  const scope = fakeScope({ initial: { toolCatalog: ['mcp__demo__ping', 'ops_new_tool'] } })
+  const panel = mountDenied(scope)
+  panel.search().props.onChange({ target: { value: 'DEMO' } })
+  const rows = panel.rows()
+  assert.deepEqual(rows.map((row) => row.props['data-tool']), ['mcp__demo__ping'])
+  assert.equal(rows[0].kids[1].props.type, 'checkbox')
+  assert.equal(rows[0].kids[1].props.checked, false)
+
+  // Checking it writes the name as a deny addition, not as an allowance.
+  await rows[0].kids[1].props.onChange({ target: { checked: true } })
+  assert.deepEqual(plain(scope.calls[0].ops), [
+    { op: 'set', path: ['deniedTools'], value: ['mcp__demo__ping'] },
+    { op: 'unset', path: ['allowedTools'] },
+  ])
 })
 
 test('unchecking a shipped name writes allowedTools and re-renders from the store', async () => {
@@ -716,7 +808,7 @@ test('reset to defaults clears both keys', async () => {
 test('a read-only scope disables the boxes and never writes', async () => {
   const scope = fakeScope({ writable: false })
   const panel = mountDenied(scope)
-  const box = panel.rows()[0].kids[1]
+  const box = panel.rows().find((row) => row.props['data-tool'] === 'edit').kids[1]
   assert.equal(box.props.disabled, true)
   assert.equal(panel.button().props.disabled, true)
   await panel.button().props.onClick()
@@ -758,3 +850,166 @@ test('the popover is two columns, the original panel then the denied tools colum
   assert.equal(switchRow.props.label, 'route.enable')
   view.unmount()
 })
+
+
+// ---- The model list inside a clipped popover ------------------------------------------
+
+test('catalogFor keeps the last non-empty catalog, because an empty read is a write in flight', () => {
+  assert.deepEqual(plain(T.catalogFor({ toolCatalog: ['a', 'b'] }, ['stale'])), ['a', 'b'])
+  // The Loader commits the profile's raw value on every settings write; for an unset key
+  // that is [], and a real catalog is never empty.
+  assert.deepEqual(plain(T.catalogFor({ toolCatalog: [] }, ['kept'])), ['kept'])
+  assert.deepEqual(plain(T.catalogFor({}, ['kept'])), ['kept'])
+  assert.deepEqual(plain(T.catalogFor({}, undefined)), [])
+  // A remembered catalog never leaks into toolListOf on its own.
+  assert.deepEqual(plain(T.toolListOf({ toolCatalog: [] }, ['mcp__demo__ping'])).slice(-1), ['mcp__demo__ping'])
+})
+
+test('a catalog that reads empty mid-write does not collapse the panel to the shipped list', () => {
+  const scope = fakeScope({ initial: { toolCatalog: ['mcp__demo__ping', 'delegate'] } })
+  const panel = mountDenied(scope)
+  const names = () => panel.rows().map((row) => row.props['data-tool'])
+  assert.ok(names().includes('mcp__demo__ping'))
+
+  // The host's own settings write empties the field for an instant; the rows must survive it.
+  scope.externalSet({ toolCatalog: [] })
+  assert.ok(names().includes('mcp__demo__ping'))
+  assert.ok(names().includes('delegate'))
+
+  // A genuinely different catalog still replaces the remembered one.
+  scope.externalSet({ toolCatalog: ['ops_new'] })
+  assert.ok(names().includes('ops_new'))
+  assert.equal(names().includes('mcp__demo__ping'), false)
+})
+
+test('the model list opens on the side with room and caps its height to that room', () => {
+  const rect = { top: 100, bottom: 134, left: 20, width: 300 }
+  // Plenty of room below: open downward at the preferred height, aligned to the button.
+  const down = plain(T.popupPlacement(rect, 900))
+  assert.deepEqual(down, { side: 'down', maxHeight: 260, top: 138, bottom: 'auto', left: 20, width: 300 })
+
+  // At the bottom of the window the room below is small, so it flips upward.
+  const up = plain(T.popupPlacement({ top: 700, bottom: 734, left: 20, width: 300 }, 800))
+  assert.equal(up.side, 'up')
+  assert.equal(up.maxHeight, 260)
+  assert.equal(up.top, 'auto')
+  assert.equal(up.bottom, 104)
+
+  // Tight on both sides: stay on the roomier side, shrink to it, and scroll inside.
+  const tight = plain(T.popupPlacement({ top: 200, bottom: 240, left: 0, width: 200 }, 400))
+  assert.equal(tight.side, 'up')
+  assert.equal(tight.maxHeight, 188)
+  assert.ok(tight.maxHeight < 260)
+
+  // No layout to measure (a test host, a detached render): leave the caller on its own style.
+  assert.equal(T.popupPlacement(null, 900), null)
+  assert.equal(T.popupPlacement(rect, undefined), null)
+  assert.equal(T.popupPlacement({ top: NaN, bottom: 10 }, 900), null)
+  // The fallback keeps the list scrollable rather than open-ended.
+  assert.equal(T.dropdownStyleOf(null).maxHeight, '260px')
+  assert.equal(T.dropdownStyleOf(null).position, 'fixed')
+  const placed = T.dropdownStyleOf(T.popupPlacement({ top: 700, bottom: 734, left: 8, width: 240 }, 800))
+  assert.equal(placed.maxHeight, '260px')
+  assert.equal(placed.bottom, 104)
+  assert.equal(placed.right, 'auto')
+  assert.equal(placed.width, 240)
+})
+
+/** Mount one model row, open its list, and expose what the tests read off it. */
+function mountRow({ groups = [], route = { provider: '', model: '', effort: '' }, rect, viewport = 900 } = {}) {
+  const changes = []
+  fakeWindow.innerHeight = viewport
+  const view = mount(T.RouteRow, {
+    label: 'worker',
+    route,
+    groups,
+    disabled: false,
+    onChange: (next) => changes.push(next),
+    t,
+  })
+  const all = () => nodes(view.tree)
+  const trigger = () => all().find((node) => node.props?.['aria-haspopup'] === 'listbox')
+  const listbox = () => all().find((node) => node.props?.role === 'listbox')
+  const choices = () => all().filter((node) => node.props?.role === 'option')
+  const open = () => {
+    // The row measures its own box before the list paints; the harness has no layout
+    // engine, so the anchor's ref is handed a rect the way React would hand it a node.
+    const anchor = all().find((node) => node.props?.ref !== null && typeof node.props?.ref === 'object')
+    if (anchor !== undefined && rect !== undefined) anchor.props.ref.current = { getBoundingClientRect: () => rect }
+    trigger().props.onClick()
+  }
+  return { view, changes, trigger, listbox, choices, open }
+}
+
+const ROW_GROUPS = [
+  {
+    id: 'nexus-deepseek',
+    name: 'Nexus DeepSeek',
+    models: [
+      { id: 'deepseek-v4.1-flash', name: 'Flash' },
+      { id: 'deepseek-v4.1-pro', name: 'Pro' },
+    ],
+  },
+  { id: 'nexus-claude', name: 'Nexus Claude', models: [{ id: 'claude/opus:5.5', name: 'Opus 5.5' }] },
+]
+
+test('the model list flips above the row and stays clickable at the bottom of the window', () => {
+  const row = mountRow({
+    groups: ROW_GROUPS,
+    route: { provider: 'nexus-deepseek', model: 'deepseek-v4.1-pro', effort: '' },
+    rect: { top: 700, bottom: 734, left: 40, width: 320 },
+    viewport: 800,
+  })
+  assert.equal(row.listbox(), undefined, 'the list is closed until the row is clicked')
+  row.open()
+
+  const list = row.listbox()
+  assert.ok(list, 'clicking the row opens the listbox')
+  // Upward, because the window bottom leaves 58px below and 688px above.
+  assert.equal(list.props['data-side'], 'up')
+  assert.equal(list.props.style.position, 'fixed')
+  assert.equal(list.props.style.bottom, 104)
+  assert.equal(list.props.style.top, 'auto')
+  assert.equal(list.props.style.maxHeight, '260px')
+  // Capped and scrollable: the last option is reachable instead of clipped away.
+  assert.equal(list.props.style.overflowY, 'auto')
+  assert.equal(list.props.style.left, 40)
+  assert.equal(list.props.style.width, 320)
+  // Scroll and resize are watched while it is open, and released when it closes.
+  assert.ok(fakeWindow.listeners.includes('resize'))
+  assert.ok(fakeWindow.listeners.includes('scroll'))
+  row.view.unmount()
+  assert.deepEqual(fakeWindow.listeners, [])
+})
+
+test('the last model in the list is a real choice, and it saves that model', () => {
+  const row = mountRow({
+    groups: ROW_GROUPS,
+    route: { provider: 'nexus-deepseek', model: 'deepseek-v4.1-pro', effort: '' },
+    rect: { top: 700, bottom: 734, left: 40, width: 320 },
+    viewport: 800,
+  })
+  row.open()
+  const choices = row.choices()
+  // Unset, then three models: the last one is the final provider's only model.
+  assert.equal(choices.length, 4)
+  const last = choices.at(-1)
+  assert.equal(last.kids[0], 'Opus 5.5')
+  last.props.onClick()
+  assert.deepEqual(plain(row.changes), [{ provider: 'nexus-claude', model: 'claude/opus:5.5', effort: '' }])
+  assert.equal(row.listbox(), undefined, 'choosing closes the list')
+})
+
+test('a row with no measurable box still opens, on the static upward-or-downward style', () => {
+  const row = mountRow({ groups: ROW_GROUPS })
+  row.open()
+  const list = row.listbox()
+  assert.ok(list)
+  // No rect was supplied, so no placement was measured and the element keeps the fallback.
+  assert.equal(list.props['data-side'], undefined)
+  assert.equal(list.props.style.position, 'fixed')
+  assert.equal(list.props.style.maxHeight, '260px')
+  assert.equal(row.choices().length, 4)
+  row.view.unmount()
+})
+

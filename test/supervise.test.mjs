@@ -621,6 +621,75 @@ test('re-tracking a child keeps the notices already spent', async () => {
   assert.match(h.deliveries[1].text, /第 2\/3 次/)
 })
 
+test('a resumed child starts with a fresh notice budget', async () => {
+  // The interrupt that ended the first run is not the child's fault, and the cold resume
+  // creates the worker again: its three notices are available again.
+  const h = harness({ config: { notifyOnNoProgress: true } })
+  h.add('c1')
+  h.events.set('c1', [])
+  for (let round = 1; round <= 2; round += 1) {
+    h.advance(10 * 60_000)
+    await h.sup.tick()
+    assert.match(h.deliveries[round - 1].text, new RegExp(`第 ${round}/3 次`))
+  }
+  // The interrupt releases the registration, exactly as the settled receipt does.
+  h.sup.forget('c1')
+  assert.equal(h.sup.size(), 0)
+
+  h.sup.track({ childId: 'c1', parentId: 'p1', label: 'resumed', startedAt: h.at(), resumed: true, sinceSeq: 0 })
+  assert.equal(h.sup.size(), 1)
+  h.advance(10 * 60_000)
+  await h.sup.tick()
+  assert.equal(h.deliveries.length, 3)
+  assert.match(h.deliveries[2].text, /第 1\/3 次/)
+})
+
+test('a resumed child does not report its pre-interrupt history as new activity', async () => {
+  const h = harness()
+  h.add('c1')
+  // Three turns before the interrupt, all summarised by the notice the user already read.
+  h.events.set('c1', [call(1, 'read', { path: 'a' }), call(2, 'edit', { path: 'b' }), call(3, 'bash', { cmd: 'ls' })])
+  h.sup.track({ childId: 'c1', parentId: 'p1', label: 'slow', startedAt: h.at(), resumed: true, sinceSeq: 3 })
+
+  h.advance(10 * 60_000)
+  await h.sup.tick()
+  assert.equal(h.deliveries.length, 0, 'old events are not progress')
+  assert.equal(h.sup.size(), 1, 'the child stays registered')
+
+  // Real progress after the resume is reported once, as the first notice of the new run.
+  h.events.get('c1').push(call(4, 'read', { path: 'c' }))
+  h.advance(10 * 60_000)
+  await h.sup.tick()
+  assert.equal(h.deliveries.length, 1)
+  assert.match(h.deliveries[0].text, /第 1\/3 次/)
+  assert.match(h.deliveries[0].text, /read/)
+})
+
+test('a resumed track without a baseline falls back to the previous mark', async () => {
+  const h = harness()
+  h.add('c1')
+  h.events.set('c1', [call(1, 'read', { path: 'a' }), call(2, 'read', { path: 'b' })])
+  h.advance(10 * 60_000)
+  await h.sup.tick()
+  assert.equal(h.deliveries.length, 1)
+
+  // Same child, resumed, with no head mark available (an unreadable log): the mark the
+  // last notice reached is the safest baseline, so the two old events are not re-sent.
+  h.sup.track({ childId: 'c1', parentId: 'p1', label: 'slow', startedAt: h.at(), resumed: true })
+  h.advance(10 * 60_000)
+  await h.sup.tick()
+  assert.equal(h.deliveries.length, 1)
+})
+
+test('has reports whether a child is registered', () => {
+  const h = harness()
+  assert.equal(h.sup.has('c1'), false)
+  h.add('c1')
+  assert.equal(h.sup.has('c1'), true)
+  h.sup.forget('c1')
+  assert.equal(h.sup.has('c1'), false)
+})
+
 test('forget is idempotent and size reports the registry', () => {
   const h = harness()
   h.add('c1')

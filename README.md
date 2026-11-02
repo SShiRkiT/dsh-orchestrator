@@ -34,6 +34,8 @@ DeepSeek Harness 的「调度模式」插件。
 - **巡检与纠偏**：
   
     `delegate` 派出的 worker 跑久了，插件按其会话日志合并成一条通知唤醒主代理；主代理用 `send_message` 给出具体指令纠偏，或判断无需干预、回一行说明结束回合。
+
+    worker 被 `interrupt_agent` 中断、之后又被 `send_message` 唤醒时，巡检会重新接管它：通知次数重新从第 1 次算起，中断前的日志不算作新活动。
   
     ![巡检通知与纠偏示例](docs/images/patrol-notice.png)
   
@@ -66,7 +68,7 @@ dsh plugin --profile desktop add SShiRkiT/dsh-orchestrator#main
 1. 安装重启后调度模式默认已开启（`enabled` 默认 `true`）。
 2. 在 composer 的「调度模式」面板里配置 `workerProvider` 与 `workerModel`（必填）、`workerReasoningEffort`（可留空，交给模型决定默认强度）；未配置就派发会直接报错，不会静默继承主代理模型。
 3. 关闭「启用调度模式」开关可临时恢复主代理的全部工具，对已打开的会话立即生效。
-4. 面板右侧的 Denied Tools 清单逐个列出主代理不可用的工具：勾选即拒绝、取消勾选即放行；「恢复默认」回到内置的 42 项。勾选变化会立刻重建主代理的工具表，已打开的会话在下一条消息里就能看到，不需要新开会话，也不需要关开总开关。
+4. 面板右侧的 Denied Tools 清单列出宿主当前提供的全部工具（插件启动时和之后每次工具注册变化时从宿主实时拉取，其他插件和 MCP 注册的工具也在内），勾选即拒绝、取消勾选即放行，没有任何工具被锁在外面——调度工具（`delegate`、`orchestrate`、`send_message`、`todo_write`、`compress`）也在清单里，同样可以勾选；「恢复默认」回到内置的 42 项。勾选变化会立刻重建主代理的工具表，已打开的会话在下一条消息里就能看到，不需要新开会话，也不需要关开总开关。
 
 ![调度模式面板](docs/images/dispatch-panel.png)
 
@@ -88,6 +90,7 @@ dsh plugin --profile desktop add SShiRkiT/dsh-orchestrator#main
 | `superviseIntervalSeconds` | `600` | 巡检间隔（秒），整数 10–86400。 |
 | `superviseMaxNoticesPerChild` | `3` | 每个子代理最多通知几次，整数 0–20；`0` 表示不限。 |
 | `superviseNotifyOnNoProgress` | `false` | 日志没有新活动时是否也通知。 |
+| `toolCatalog` | `[]` | 插件自己发布的实时工具目录：宿主当前提供的全部工具名，面板据此把内置 42 项之外的工具（含 MCP 和其他插件注册的）也列出来。由插件写入，不要手工编辑。 |
 
 主代理的默认路由不在这份配置里：它写在宿主的 `agent-default-model`（`provider` / `model` / `reasoningEffort`），由同一个面板写入，创建新 agent 时读取。
 

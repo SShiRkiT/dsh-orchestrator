@@ -3,13 +3,11 @@ import test from 'node:test'
 import { ORCHESTRATE_TOOL } from '../lib/api.js'
 import {
   DELEGATE_TOOL,
-  DELEGATION_TOOLS,
   denyGuard,
   effectiveDenied,
   installGate,
   isDelegatedChild,
   mergeDenied,
-  neverDenied,
   restrictEach,
 } from '../lib/gate.js'
 
@@ -56,24 +54,24 @@ test('denyGuard denies a listed name and lets anything else through', () => {
   assert.equal(guard({ name: 'read' }), undefined)
 })
 
-test('denyGuard never denies delegate, even when the config lists it', () => {
-  const guard = denyGuard([...HIDDEN, DELEGATE_TOOL])
-  assert.equal(guard({ name: DELEGATE_TOOL }), undefined)
-  assert.notEqual(guard({ name: 'subagent' }), undefined)
+test('every name is deniable, the delegation tools and the main agent own ones included', () => {
+  const listed = [...HIDDEN, DELEGATE_TOOL, ORCHESTRATE_TOOL, 'send_message', 'todo_write', 'compress']
+  const guard = denyGuard(listed)
+  for (const name of [DELEGATE_TOOL, ORCHESTRATE_TOOL, 'send_message', 'todo_write', 'compress']) {
+    assert.match(guard({ name }), new RegExp('"' + name + '" is not available'), name)
+  }
+  // A name that is not listed stays callable, whatever it is.
+  assert.equal(guard({ name: 'ask_user_question' }), undefined)
 })
 
-test('the gate lets orchestrate through but never the native workflow', () => {
-  assert.equal(DELEGATION_TOOLS.has('delegate'), true)
-  assert.equal(DELEGATION_TOOLS.has('orchestrate'), true)
-  assert.equal(DELEGATION_TOOLS.has('workflow'), false)
+test('the gate denies exactly the names it was handed, the native workflow included', () => {
   const guard = denyGuard([...HIDDEN, 'orchestrate', 'workflow'])
-  assert.equal(guard({ name: 'orchestrate' }), undefined)
+  assert.match(guard({ name: 'orchestrate' }), /"orchestrate" is not available/)
   assert.match(guard({ name: 'workflow' }), /"workflow" is not available/)
   const { agent, getGuard } = fakeAgent()
   const { guarded } = installGate({ agent, names: () => [...HIDDEN, 'orchestrate'], enabled: () => true })
-  assert.equal(guarded.includes('orchestrate'), false)
-  assert.equal(guarded.includes('workflow'), true)
-  assert.notEqual(getGuard()({ name: 'workflow' }), undefined)
+  assert.equal(guarded.includes('orchestrate'), true)
+  assert.notEqual(getGuard()({ name: 'orchestrate' }), undefined)
 })
 
 test('denyGuard tolerates an execution without a name', () => {
@@ -239,23 +237,21 @@ test('the effective list is the shipped list plus additions, minus allowances', 
   assert.deepEqual(effectiveDenied(undefined, ['x'], undefined), ['x'])
 })
 
-test('delegation and the main agent own tools are never denied, even when a profile lists them', () => {
+test('the delegation tools are denied like any other when the profile lists them', () => {
   const listed = [...SHIPPED, DELEGATE_TOOL, ORCHESTRATE_TOOL, 'send_message', 'todo_write', 'compress']
-  const kept = neverDenied(SHIPPED)
+  const live = effectiveDenied(SHIPPED, listed, [])
   for (const name of [DELEGATE_TOOL, ORCHESTRATE_TOOL, 'send_message', 'todo_write', 'compress']) {
-    assert.equal(kept.has(name), true, name)
-    assert.equal(effectiveDenied(SHIPPED, listed, []).includes(name), false, name)
+    assert.equal(live.includes(name), true, name)
   }
-  // A profile cannot re-allow something that was never denied in the first place: the
-  // effective list stays exactly the shipped list.
+  // `allowedTools` is the one way back, for these names as for any other.
+  assert.equal(effectiveDenied(SHIPPED, listed, [DELEGATE_TOOL]).includes(DELEGATE_TOOL), false)
   assert.deepEqual(effectiveDenied(SHIPPED, [], [DELEGATE_TOOL, ORCHESTRATE_TOOL]), SHIPPED)
 })
 
-test('a shipped name inside DEFAULT_DENIED_TOOLS stays deniable, as 0.4.6 treated it', () => {
-  // send_message/todo_write/compress are kept only while the shipped list omits them.
-  const shipped = ['edit', 'todo_write']
-  assert.equal(neverDenied(shipped).has('todo_write'), false)
-  assert.deepEqual(effectiveDenied(shipped, [], ['todo_write']), ['edit'])
+test('a name is deniable whether or not the shipped list contains it', () => {
+  assert.deepEqual(effectiveDenied(['edit', 'todo_write'], ['todo_write'], []), ['edit', 'todo_write'])
+  assert.deepEqual(effectiveDenied(['edit'], ['todo_write'], []), ['edit', 'todo_write'])
+  assert.deepEqual(effectiveDenied(['edit', 'todo_write'], [], ['todo_write']), ['edit'])
 })
 
 test('a legacy deniedTools-only profile keeps exactly the 0.4.6 deny list', () => {
@@ -397,20 +393,28 @@ test('the switch flips the whole table in an open session, both ways', () => {
   assert.match(getGuard()({ name: 'edit' }), /not available/)
 })
 
-test('the tools the main agent always keeps are never in the mask, before or after a refresh', () => {
-  const kept = [DELEGATE_TOOL, ORCHESTRATE_TOOL, 'send_message', 'todo_write', 'compress']
-  const { agent, mask, denies, getGuard } = maskAgent({ globals: [...kept, ...SHIPPED] })
+test('a denied delegation tool lands in the mask and is refused, then comes back', () => {
+  const extra = [DELEGATE_TOOL, ORCHESTRATE_TOOL, 'send_message', 'todo_write', 'compress']
+  const { agent, mask, denies, getGuard } = maskAgent({ globals: [...extra, ...SHIPPED] })
   let configured = []
   const names = () => effectiveDenied(SHIPPED, configured, [])
   const gate = installGate({ agent, names, enabled: () => true })
-  configured = [...kept, 'custom_tool']
-  gate.refresh()
-  configured = [...kept]
-  gate.refresh()
+  assert.deepEqual([...mask].sort(), [...SHIPPED].sort())
 
-  for (const name of kept) {
+  configured = [...extra]
+  assert.equal(gate.refresh(), true)
+  for (const name of extra) {
+    assert.equal(mask.has(name), true, name)
+    assert.equal(denies.includes(name), true, name)
+    assert.match(getGuard()({ name }), /not available/, name)
+  }
+  assert.deepEqual([...mask].sort(), [...extra, ...SHIPPED].sort())
+
+  // Re-allowing them lifts the mask and the guard in the same breath.
+  configured = []
+  gate.refresh()
+  for (const name of extra) {
     assert.equal(mask.has(name), false, name)
-    assert.equal(denies.includes(name), false, name)
     assert.equal(getGuard()({ name }), undefined, name)
   }
   assert.deepEqual([...mask].sort(), [...SHIPPED].sort())

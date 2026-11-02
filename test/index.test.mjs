@@ -56,13 +56,30 @@ const mod = await import(new URL('../lib/index.js', import.meta.url).href)
  * A minimal ctx: only the members `apply` touches, each recording what it got.
  * `enabled` is mutable so a test can flip the switch after installation.
  */
-function fakeCtx({ enabled = true, denied = ['edit', 'read'], allowed = [], agents, sessions, stateOf } = {}) {
+function fakeCtx({
+  enabled = true,
+  denied = ['edit', 'read'],
+  allowed = [],
+  agents,
+  sessions,
+  stateOf,
+  catalogNames = ['read', 'edit'],
+} = {}) {
   const state = { enabled }
   const projections = []
   const tools = []
   const handlers = new Map()
   const effects = []
   const logs = { info: [], warn: [] }
+  const emitted = []
+  // The live tool catalog the plugin publishes, as a writable volatile reference.
+  let catalog = []
+  const catalogRef = {
+    get: () => catalog,
+    [Symbol.for('cosmokit.volatile.write')]: (next) => {
+      catalog = next
+    },
+  }
   const ctx = {
     sessionProjections: {
       register: (projection) => projections.push(projection),
@@ -73,6 +90,8 @@ function fakeCtx({ enabled = true, denied = ['edit', 'read'], allowed = [], agen
         tools.push(tool)
         return () => {}
       },
+      // The context-global view the catalog reads: names plus an empty visible map.
+      view: () => ({ knownNames: new Set(catalogNames), visible: new Map() }),
     },
     subagents: {},
     agents: agents ?? { get: () => undefined },
@@ -91,6 +110,7 @@ function fakeCtx({ enabled = true, denied = ['edit', 'read'], allowed = [], agen
       info: (message) => logs.info.push(message),
       warn: (message) => logs.warn.push(message),
     },
+    emit: (event, ...args) => emitted.push([event, ...args]),
   }
   const config = {
     enabled: { get: () => state.enabled },
@@ -103,8 +123,28 @@ function fakeCtx({ enabled = true, denied = ['edit', 'read'], allowed = [], agen
     superviseIntervalSeconds: { get: () => 600 },
     superviseMaxNoticesPerChild: { get: () => 3 },
     superviseNotifyOnNoProgress: { get: () => false },
+    toolCatalog: catalogRef,
   }
-  return { ctx, config, state, denied, allowed, projections, tools, handlers, effects, logs }
+  return {
+    ctx,
+    config,
+    state,
+    denied,
+    allowed,
+    projections,
+    tools,
+    handlers,
+    effects,
+    logs,
+    emitted,
+    catalogNames,
+    catalog: () => catalog,
+    // The Loader commits a volatile field from the profile's raw value on every settings
+    // write, which for an unset key means the empty array. Tests replay that.
+    resetCatalog: () => {
+      catalog = []
+    },
+  }
 }
 
 /** A stand-in agent with its own tool registry, so gate side effects are observable. */
@@ -321,12 +361,16 @@ test('the blocked-tools clause follows the effective list without re-registering
 
   allowed.push('read')
   denied.push('custom_tool', 'delegate', 'orchestrate')
-  const expected = [...mod.DEFAULT_DENIED_TOOLS.filter((name) => name !== 'read'), 'custom_tool'].join(', ')
+  // Nothing is exempt: the clause names exactly what the gate refuses, so a profile that
+  // denies the delegation tools sees them in the prompt too.
+  const expected = [
+    ...mod.DEFAULT_DENIED_TOOLS.filter((name) => name !== 'read'),
+    'custom_tool',
+    'delegate',
+    'orchestrate',
+  ].join(', ')
   assert.equal(blockedOf(delegate), expected)
   assert.equal(blockedOf(orchestrate), expected)
-  // The delegation tools can never appear in the clause, even when a profile lists them.
-  assert.equal(blockedOf(delegate).includes('delegate,'), false)
-  assert.equal(orchestrate.description.includes('orchestrate,'), false)
 })
 /** Only the members supervision adapters use, with recording friendly defaults. */
 function fakeSupervisionHost({ parents = new Map(), sessions = new Map(), stateOf, flush } = {}) {
@@ -394,6 +438,117 @@ test('onStarted tracks the child and forgets it once the receipt settles', async
   await failed.catch(() => {})
   await Promise.resolve()
   assert.deepEqual(forgotten, ['child-1', 'child-2'])
+})
+
+/** The supervisor surface the hooks touch, with real add/remove semantics. */
+function recordingSupervisor() {
+  const entries = new Map()
+  const tracked = []
+  return {
+    entries,
+    tracked,
+    track: (entry) => {
+      tracked.push(entry)
+      entries.set(entry.childId, entry)
+    },
+    forget: (childId) => entries.delete(childId),
+    has: (childId) => entries.has(childId),
+  }
+}
+
+test('a cold-resumed worker is tracked again with the log head as its baseline', async () => {
+  // Regression: interrupt settles the receipt, the receipt forgets the child, and the
+  // send_message cold resume created it again without registering it — supervision was
+  // silently lost for the rest of that worker's life.
+  const registry = recordingSupervisor()
+  const hooks = mod.createSupervisionHooks(registry, { headSeq: (childId) => (childId === 'child-1' ? 42 : 0) })
+  let settle
+  const result = new Promise((resolve) => {
+    settle = resolve
+  })
+  hooks.onStarted({ id: 'parent-1' }, { childId: 'child-1', result }, { description: '慢活' })
+  assert.equal(registry.entries.size, 1)
+
+  settle('done')
+  await result
+  await Promise.resolve()
+  assert.equal(registry.entries.size, 0, 'the settled receipt releases the child')
+
+  hooks.onResumed({ id: 'child-1', session: { header: { parentSession: 'parent-1', delegationDepth: 1 } } })
+  const entry = registry.entries.get('child-1')
+  assert.ok(entry, 'the resumed worker must be supervised again')
+  assert.equal(entry.parentId, 'parent-1', 'the dispatch record names the real parent')
+  assert.equal(entry.label, '慢活', 'the task description survives the interrupt')
+  assert.equal(entry.resumed, true)
+  assert.equal(entry.sinceSeq, 42, 'pre-interrupt history is not reported as new')
+  assert.ok(entry.startedAt > 0)
+})
+
+test('a resumed agent this plugin never dispatched stays unsupervised', () => {
+  const registry = recordingSupervisor()
+  const hooks = mod.createSupervisionHooks(registry, { headSeq: () => 7 })
+  // The host's own subagent tool also creates delegated children; they never entered
+  // supervision, so a resume of one must not start a notice timer on it.
+  hooks.onResumed({ id: 'host-child', session: { header: { parentSession: 'parent-1', delegationDepth: 1 } } })
+  assert.equal(registry.entries.size, 0)
+  assert.equal(registry.tracked.length, 0)
+})
+
+test('a repeated resume event does not restart the clock', () => {
+  const registry = recordingSupervisor()
+  const hooks = mod.createSupervisionHooks(registry, { headSeq: () => 5 })
+  hooks.onStarted({ id: 'p' }, { childId: 'c', result: null }, { description: 'job' })
+  registry.forget('c')
+  hooks.onResumed({ id: 'c' })
+  const first = registry.entries.get('c')
+  const count = registry.tracked.length
+
+  hooks.onResumed({ id: 'c' })
+  assert.equal(registry.tracked.length, count, 'no second registration')
+  assert.equal(registry.entries.get('c'), first, 'the deadline and budget are untouched')
+})
+
+test('an unreadable log head falls back to the zero baseline and still tracks', () => {
+  const registry = recordingSupervisor()
+  const hooks = mod.createSupervisionHooks(registry, {
+    headSeq: () => {
+      throw new Error('session log unavailable')
+    },
+  })
+  hooks.onStarted({ id: 'p' }, { childId: 'c', result: null }, { description: 'job' })
+  registry.forget('c')
+  assert.doesNotThrow(() => hooks.onResumed({ id: 'c' }))
+  assert.equal(registry.entries.get('c').sinceSeq, 0)
+})
+
+test('the dispatch memory is bounded, so a very old worker is not re-armed', async () => {
+  const registry = recordingSupervisor()
+  const hooks = mod.createSupervisionHooks(registry, { headSeq: () => 0 })
+  const total = 129
+  for (let index = 0; index < total; index += 1) {
+    hooks.onStarted({ id: 'p' }, { childId: `child-${index}`, result: null }, { description: 'job' })
+  }
+  // Every registration is released, as a batch of finished receipts would leave them.
+  registry.entries.clear()
+  // The oldest dispatch record is evicted; the newest is still remembered.
+  hooks.onResumed({ id: 'child-0' })
+  assert.equal(registry.entries.has('child-0'), false)
+  hooks.onResumed({ id: `child-${total - 1}` })
+  assert.equal(registry.entries.has(`child-${total - 1}`), true)
+})
+
+test('headSeq reads the highest seq in the child log, and 0 when it cannot', () => {
+  const parent = { id: 'p', session: { id: 's' } }
+  const child = { id: 'c', log: [{ seq: 3, type: 'x' }, { seq: 9, type: 'y' }, { type: 'no-seq' }] }
+  const host = fakeSupervisionHost({
+    parents: new Map([['p', parent]]),
+    sessions: new Map([['c', child]]),
+  })
+  const supervision = mod.createSupervision({ ctx: host.ctx, config: {} })
+  assert.equal(supervision.headSeq('c'), 9)
+  // The baseline is a cold-resume detail; an unreadable log must never throw into the hook.
+  assert.equal(supervision.headSeq('gone'), 0)
+  assert.doesNotThrow(() => supervision.headSeq(undefined))
 })
 
 test('hasPendingNotice recognises its own source and tolerates a broken projection', () => {
@@ -598,4 +753,62 @@ test('a refresh without agents.roots, or a broken registry, is not fatal', () =>
   const broken = start({ agents: { get: () => undefined, roots: () => { throw new Error('registry gone') } } })
   assert.doesNotThrow(() => broken.handlers.get('loader/volatile-update')())
   assert.match(broken.logs.warn.join('\n'), /cannot enumerate live agents/)
+})
+
+// ---- Live tool catalog -----------------------------------------------------------------
+
+test('the plugin publishes the tool catalog at start and refreshes it on tools/change', async () => {
+  const harness = start({ catalogNames: ['read', 'delegate'] })
+  const change = harness.handlers.get('tools/change')
+  assert.equal(typeof change, 'function', 'apply must subscribe to tools/change')
+  // The first read runs during apply, so a panel opened before any change has a catalog.
+  assert.deepEqual(harness.catalog(), ['delegate', 'read'])
+  assert.deepEqual(harness.emitted[0], ['settings/document-updated', 'orchestrator', 1])
+  assert.equal(harness.logs.warn.length, 0)
+
+  // An unchanged burst publishes nothing: no write, no announcement and no gate refresh.
+  change()
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  assert.equal(harness.emitted.length, 1)
+
+  // A plugin registering a tool moves the catalog, with no plugin reload and no restart.
+  harness.catalogNames.push('mcp__demo__ping')
+  change()
+  change()
+  await new Promise((resolve) => setTimeout(resolve, 250))
+  assert.deepEqual(harness.catalog(), ['delegate', 'mcp__demo__ping', 'read'])
+  assert.equal(harness.emitted.length, 2)
+  assert.deepEqual(harness.emitted[1], ['settings/document-updated', 'orchestrator', 2])
+})
+
+test('the write that empties the published catalog repairs it in the same event', () => {
+  // A volatile field is re-committed from the profile's raw value on every settings write,
+  // so a panel write lands with toolCatalog already empty. The write has announced
+  // loader/volatile-update by then, so the repair rides that event: no timer, no polling.
+  const harness = start({ catalogNames: ['read', 'delegate'] })
+  assert.deepEqual(harness.catalog(), ['delegate', 'read'])
+
+  harness.resetCatalog()
+  assert.deepEqual(harness.catalog(), [], 'the loader wiped the field')
+  harness.handlers.get('loader/volatile-update')()
+  assert.deepEqual(harness.catalog(), ['delegate', 'read'], 'the catalog is back before the write returns')
+
+  // The repair is not a one-off: every write repeats the same commit.
+  harness.resetCatalog()
+  harness.handlers.get('loader/volatile-update')()
+  assert.deepEqual(harness.catalog(), ['delegate', 'read'])
+  // And the panel is told to re-read, so its rows do not stay on the empty snapshot.
+  assert.deepEqual(harness.emitted.at(-1), ['settings/document-updated', 'orchestrator', 3])
+})
+
+test('the published catalog includes tools a scope registers for a root agent', async () => {
+  const scoped = {
+    id: 'root',
+    ctx: { tools: { view: () => ({ knownNames: new Set(['subagent']), visible: new Map() }) } },
+  }
+  const harness = start({
+    catalogNames: ['read'],
+    agents: { get: () => undefined, roots: () => [scoped] },
+  })
+  assert.deepEqual(harness.catalog(), ['read', 'subagent'])
 })
