@@ -1,5 +1,5 @@
 <div align="center">
-# DSH Orchestrator
+**DSH Orchestrator**
 </div>
 <div align="center">
 
