@@ -69,6 +69,9 @@ function fakeCtx({
   const projections = []
   const tools = []
   const handlers = new Map()
+  // The options each subscription was made with: a lifecycle edge of a child is dispatched
+  // with the child's parent as carrier, so the retry listener has to be registered global.
+  const handlerOptions = new Map()
   const effects = []
   const logs = { info: [], warn: [] }
   const emitted = []
@@ -103,8 +106,9 @@ function fakeCtx({
         if (typeof dispose === 'function') dispose()
       }
     },
-    on(event, handler) {
+    on(event, handler, options) {
       handlers.set(event, handler)
+      handlerOptions.set(event, options)
     },
     logger: {
       info: (message) => logs.info.push(message),
@@ -134,6 +138,7 @@ function fakeCtx({
     projections,
     tools,
     handlers,
+    handlerOptions,
     effects,
     logs,
     emitted,
@@ -753,6 +758,109 @@ test('a refresh without agents.roots, or a broken registry, is not fatal', () =>
   const broken = start({ agents: { get: () => undefined, roots: () => { throw new Error('registry gone') } } })
   assert.doesNotThrow(() => broken.handlers.get('loader/volatile-update')())
   assert.match(broken.logs.warn.join('\n'), /cannot enumerate live agents/)
+})
+
+// ---- Automatic retry of a child that died without a closing message ---------------------
+
+test('onStarted hands the dispatched child to the retry policy, and only for a real dispatch', () => {
+  const tracked = []
+  const retry = {
+    track: (childId, record) => {
+      tracked.push({ childId, ...record })
+      return true
+    },
+  }
+  const hooks = mod.createSupervisionHooks({ track() {}, forget() {} }, { retry })
+  const result = Promise.resolve('done')
+  hooks.onStarted({ id: 'parent-1' }, { childId: 'child-1', result }, { description: '慢活' })
+  assert.deepEqual(tracked, [{ childId: 'child-1', parentId: 'parent-1', label: '慢活' }])
+  // An event without the two ids is not a dispatch: nothing can be retried later.
+  hooks.onStarted({}, { childId: 'child-2', result })
+  hooks.onStarted({ id: 'parent-1' }, { result })
+  assert.equal(tracked.length, 1)
+})
+
+test('a retry bookkeeping failure never breaks the dispatch', () => {
+  const tracked = []
+  const hooks = mod.createSupervisionHooks(
+    { track: (entry) => tracked.push(entry), forget() {} },
+    {
+      retry: {
+        track: () => {
+          throw new Error('the policy is broken')
+        },
+      },
+    },
+  )
+  assert.doesNotThrow(() => hooks.onStarted({ id: 'parent-1' }, { childId: 'child-1' }, {}))
+  assert.equal(tracked.length, 1)
+})
+
+test('apply listens for the settlement edge globally, so a child-scoped emission reaches it', () => {
+  const harness = start()
+  const listener = harness.handlers.get('subagent/end')
+  assert.equal(typeof listener, 'function', 'apply must subscribe to subagent/end')
+  // The host dispatches this edge with the child's parent as carrier: a scoped listener is
+  // filtered out, so the option is what makes the retry possible at all.
+  assert.deepEqual(harness.handlerOptions.get('subagent/end'), { global: true })
+  // A malformed event is ignored rather than thrown into the emitter.
+  assert.doesNotThrow(() => listener(undefined))
+  assert.doesNotThrow(() => listener({ id: '' }))
+})
+
+test('the retry prompt goes through the host protocol entry, as a queued turn of the child', async () => {
+  const calls = []
+  const parent = { id: 'parent-1' }
+  const deliverPrompt = mod.deliverRetryPrompt
+  const host = {
+    agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
+    subagents: {
+      [Symbol.for('dsh.subagent.deliverPrompt')]: async (...args) => {
+        calls.push(args)
+        return true
+      },
+    },
+  }
+  assert.equal(await deliverPrompt(host, 'parent-1', 'child-1', '继续'), true)
+  assert.equal(calls.length, 1)
+  const [sender, childId, content, source, signal, delivery] = calls[0]
+  assert.equal(sender, parent, 'the live parent is the sender the host requires')
+  assert.equal(childId, 'child-1')
+  assert.deepEqual(content, [{ type: 'text', text: '继续' }])
+  assert.deepEqual(source, { kind: 'orchestrator-retry', form: 'notice' })
+  assert.equal(delivery, 'queue', 'a retry is a new turn, not a steer into a dead one')
+  assert.equal(typeof signal?.aborted, 'boolean')
+})
+
+test('the retry prompt refuses a host without the entry, and a parent that is gone', async () => {
+  const parent = { id: 'parent-1' }
+  await assert.rejects(
+    mod.deliverRetryPrompt({ agents: { get: () => parent }, subagents: {} }, 'parent-1', 'child-1', '继续'),
+    /does not expose dsh\.subagent\.deliverPrompt/,
+  )
+  const withEntry = {
+    agents: { get: () => undefined },
+    subagents: { [Symbol.for('dsh.subagent.deliverPrompt')]: async () => true },
+  }
+  await assert.rejects(mod.deliverRetryPrompt(withEntry, 'parent-1', 'child-1', '继续'), /is not live/)
+})
+
+test('the retry notice has its own source kind, so it cannot mask a supervision notice', async () => {
+  const queued = []
+  const parent = { id: 'p', session: { id: 'parent-session' }, followup: (message) => queued.push(message) }
+  const host = fakeSupervisionHost({ parents: new Map([['p', parent]]) })
+  const supervision = mod.createSupervision({
+    ctx: host.ctx,
+    config: {},
+    loadLlm: async () => ({ createUserMessage: (input) => input }),
+  })
+  assert.equal(await supervision.deliverRetry('p', '重试正文', ['child-1']), 'queued')
+  assert.equal(queued.length, 1)
+  assert.equal(queued[0].content[0].text, '重试正文')
+  assert.deepEqual(queued[0].source, { kind: 'orchestrator-retry', form: 'notice', senderSessionId: 'child-1' })
+  // The supervision notice keeps the kind `hasPendingNotice` looks for.
+  assert.equal(await supervision.deliver('p', '巡检正文', ['child-1']), 'queued')
+  assert.deepEqual(queued[1].source, { kind: mod.SUPERVISE_SOURCE_KIND, form: 'notice', senderSessionId: 'child-1' })
 })
 
 // ---- Live tool catalog -----------------------------------------------------------------

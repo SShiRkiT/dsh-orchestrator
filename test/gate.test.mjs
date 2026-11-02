@@ -420,6 +420,58 @@ test('a denied delegation tool lands in the mask and is refused, then comes back
   assert.deepEqual([...mask].sort(), [...SHIPPED].sort())
 })
 
+/**
+ * A nested call from inside \`run_code\` reaches the same registry pipeline as a
+ * model-direct one: the transport builds its sub-dispatch with the SAME \`agent\`
+ * and a \`parent\` execution token (dsh-tools \`lib/index.js\`: \`parent: exec.token\`),
+ * then runs it through \`scheduler.prepare\` -> \`prepareExecution\` -> \`guardReason\`.
+ * The guard therefore has to decide on the name alone and must NOT treat a
+ * \`parent\` token as an exemption, or every denied tool becomes callable from
+ * inside a program.
+ */
+test('a run_code sub-dispatch is refused by name, exactly like a direct call', () => {
+  const { agent, getGuard } = fakeAgent()
+  installGate({ agent, names: () => HIDDEN, enabled: () => true })
+  const guard = getGuard()
+  // The shape the transport builds: same agent, a parent token set, a sub-call id.
+  const nested = (name) => ({
+    name,
+    agent,
+    parent: Symbol('parent-execution'),
+    callId: 'call:ptc:1',
+    rootCallId: 'call',
+    arguments: {},
+  })
+  for (const name of ['edit', 'write', 'ops_bash', 'subagent', 'pwsh']) {
+    assert.match(guard(nested(name)), new RegExp('"' + name + '" is not available'), name)
+  }
+  // An allowed tool stays callable through the same nested shape: no over-blocking.
+  assert.equal(guard(nested('delegate')), undefined)
+  assert.equal(guard(nested('todo_write')), undefined)
+})
+
+test('a denial is decided before the body runs, so the nested call has no effect', () => {
+  const { agent, getGuard } = fakeAgent()
+  installGate({ agent, names: () => ['write'], enabled: () => true })
+  const guard = getGuard()
+  const ran = []
+  // A stand-in body: the guard runs first in the pipeline, so a denial must mean
+  // the body is never reached.
+  const dispatch = (exec) => {
+    const reason = guard(exec)
+    if (reason !== undefined) return { denied: reason }
+    ran.push(exec.name)
+    return { ok: true }
+  }
+  const outcome = dispatch({ name: 'write', agent, parent: Symbol('parent-execution'), arguments: { path: 'x' } })
+  assert.match(outcome.denied, /"write" is not available/)
+  assert.deepEqual(ran, [], 'a denied body must never run')
+  // The allowed tool in the same nested shape does reach its body: the denial is
+  // by name, not a blanket block on run_code sub-dispatch.
+  assert.equal(dispatch({ name: 'todo_write', agent, parent: Symbol('parent-execution') }).ok, true)
+  assert.deepEqual(ran, ['todo_write'])
+})
+
 test('dispose lifts the mask and unregisters the guard', () => {
   const { agent, mask, counts } = maskAgent({ globals: ['edit', 'read'] })
   const gate = installGate({ agent, names: () => ['edit', 'read'], enabled: () => true })
@@ -428,4 +480,85 @@ test('dispose lifts the mask and unregisters the guard', () => {
   assert.equal(counts.lift, 2)
   gate.dispose()
   assert.equal(counts.lift, 2, 'a second dispose must not re-run a lifted handle')
+})
+
+/**
+ * `run_code` is the PTC transport: the one tool a main agent calls directly, and the
+ * one the host refuses to hide (`tools.restrict` throws on it). A name check is
+ * therefore not enough — the program itself runs in a Node.js subprocess, where
+ * `import('node:fs')` or a `sandbox_permissions` escalation reaches the host without
+ * ever naming a denied tool. The gate reads the call's arguments instead, and it reads
+ * them lexically: the program body is mostly a prompt, so only code positions count.
+ */
+test('a run_code program that reaches the host runtime is refused', () => {
+  const { agent, getGuard } = fakeAgent()
+  installGate({ agent, names: () => HIDDEN, enabled: () => true })
+  const guard = getGuard()
+  const program = (code) => ({ name: 'run_code', agent, arguments: { code, description: 'x' } })
+
+  // The reported bypass: read and execute from inside the program.
+  assert.match(
+    guard(program('const fs = await import("node:fs/promises")\nconst cp = await import("node:child_process")')),
+    /"run_code" cannot reach the Node\.js or host runtime \("import"\)/,
+  )
+  assert.match(guard(program('process.getBuiltinModule("fs")')), /\("process"\)/)
+  assert.match(guard(program('await fetch("https://example.com")')), /\("fetch"\)/)
+  assert.match(guard(program('(()=>{}).constructor("return process")()')), /\("constructor"\)/)
+  assert.match(guard(program('\\u0070rocess.exit(0)')), /\("process"\)/)
+
+  // Escalating the call itself is a different refusal, decided on the arguments.
+  for (const permissions of ['workspace-write', 'danger-full-access']) {
+    assert.match(
+      guard({ name: 'run_code', agent, arguments: { code: 'return 1', sandbox_permissions: permissions } }),
+      /sandbox escalation is not available to the main agent/,
+      permissions,
+    )
+  }
+  assert.match(
+    guard({ name: 'run_code', agent, arguments: { code: 'return 1', justification: 'push it' } }),
+    /sandbox escalation is not available/,
+  )
+
+  // A delegation program is the normal case and stays untouched, prompts included.
+  const delegated =
+    'await tools.delegate({ description: "w", prompt: `write a script that calls import("node:fs") and process.env` })'
+  assert.equal(guard(program(delegated)), undefined)
+  assert.equal(guard(program('await tools.orchestrate({ items: [1], stages: [{ name: "s", prompt: "x" }] })')), undefined)
+})
+
+test('run_code is refused only while the gate is on', () => {
+  const { agent, getGuard } = fakeAgent()
+  let on = false
+  installGate({ agent, names: () => HIDDEN, enabled: () => on })
+  const guard = getGuard()
+  const escalated = { name: 'run_code', agent, arguments: { code: 'await import("node:fs")', sandbox_permissions: 'danger-full-access' } }
+  // Off means off: the profile denied nothing, so the program is the profile's business.
+  assert.equal(guard(escalated), undefined)
+  assert.equal(guard({ name: 'edit', agent }), undefined)
+  on = true
+  assert.match(guard(escalated), /sandbox escalation is not available/)
+  assert.match(guard({ name: 'edit', agent }), /"edit" is not available/)
+})
+
+test('an empty deny list leaves run_code alone, a non-empty one does not', () => {
+  const { agent, getGuard } = fakeAgent()
+  installGate({ agent, names: () => [], enabled: () => true })
+  const guard = getGuard()
+  const call = { name: 'run_code', agent, arguments: { code: 'await import("node:fs")' } }
+  assert.equal(guard(call), undefined, 'an empty list denies nothing')
+})
+
+test('an explicitly denied run_code keeps the plain tool-level refusal', () => {
+  const { agent, getGuard } = fakeAgent()
+  installGate({ agent, names: () => ['run_code', 'edit'], enabled: () => true })
+  const guard = getGuard()
+  // The name check runs first and is unchanged: a profile that denies run_code itself
+  // gets the same sentence as any other denied tool, not the argument-level one.
+  assert.equal(
+    guard({ name: 'run_code', agent, arguments: { code: 'return 1' } }),
+    'orchestrator: "run_code" is not available to the main agent. The main agent only plans; hand every action to a worker with the delegate or orchestrate tools.',
+  )
+  assert.match(guard({ name: 'run_code', agent, arguments: {} }), /"run_code" is not available/)
+  // denyGuard, the fixed-list form, behaves the same way.
+  assert.match(denyGuard(['run_code'])({ name: 'run_code', arguments: {} }), /"run_code" is not available/)
 })
