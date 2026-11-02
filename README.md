@@ -1,12 +1,20 @@
 # DSH Orchestrator
 
-<p align="center">
-  <strong>强模型主脑规划 + 便宜模型统一打工 —— DeepSeek Harness 的「硬隔离调度模式」插件</strong>
-</p>
+<div align="center">
 
-<p align="center">
-  <a href="README.en.md">English</a>
-</p>
+**强模型主脑规划 + 便宜模型统一打工 —— DeepSeek Harness 的「硬隔离调度模式」插件**
+
+[![version](https://img.shields.io/badge/version-0.6.1-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
+[![dsh-plugin](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
+[![platform](https://img.shields.io/badge/platform-Web%20GUI%20%7C%20Desktop-5c6bc0?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
+[![node](https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
+[![module](https://img.shields.io/badge/module-ESM-F7DF1E?style=flat-square&logo=javascript&logoColor=black)](package.json)
+[![license](https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/SShiRkiT/dsh-orchestrator?style=flat-square&logo=github)](https://github.com/SShiRkiT/dsh-orchestrator/stargazers)
+
+**简体中文** | [English](README.en.md) · [核心差异](#为什么有了原生-subagent-和-agent-team还需要这个插件) · [核心特性](#核心特性) · [安装](#安装) · [配置说明](#配置说明)
+
+</div>
 
 ---
 
@@ -65,6 +73,17 @@ DSH 客户端自带了 `subagent` / `workflow`，官方也有 `@deepseek-ai/dsh-
 
 ---
 
+## 环境要求
+
+| 项目 | 要求 |
+| --- | --- |
+| **宿主环境** | DeepSeek Harness Desktop / Web GUI |
+| **Node.js** | `>= 22`（内置于 DSH Desktop 运行时） |
+| **插件形态** | Cordis 后端服务补丁（`cordis.patch.yml`）+ Web GUI 客户端扩展（`lib/client.js`） |
+| **界面语言** | 中 / 英双语自适应（`zh-CN` / `en-US`） |
+
+---
+
 ## 安装
 
 在 DSH 插件页选择从 GitHub 添加，或使用 CLI：
@@ -100,4 +119,4 @@ dsh plugin --profile desktop add SShiRkiT/dsh-orchestrator#main
 
 ## License
 
-MIT © 2026 SShiRkiT
+[MIT](LICENSE) © 2026 [SShiRkiT](https://github.com/SShiRkiT)
