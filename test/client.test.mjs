@@ -721,23 +721,53 @@ test('the column is headed Denied Tools and lists one checkbox row per tool', ()
   const rows = panel.rows()
   assert.equal(rows.length, HOST_DEFAULT_DENIED_TOOLS.length)
   const first = rows[0]
-  assert.equal(first.kids[0].type, 'span')
-  assert.equal(first.kids[1].type, 'input')
-  assert.equal(first.kids[1].props.type, 'checkbox')
-  assert.equal(first.kids[1].props.checked, true)
-  assert.equal(first.kids[1].props.disabled, false)
+  assert.equal(first.kids[0].type, 'input')
+  assert.equal(first.kids[1].type, 'span')
+  assert.equal(first.kids[0].props.type, 'checkbox')
+  assert.equal(first.kids[0].props.checked, true)
+  assert.equal(first.kids[0].props.disabled, false)
   // The five tools the shipped list omits are ordinary rows once the catalog names them,
   // with a working checkbox: the panel no longer locks anything.
   const withCatalog = mountDenied(fakeScope({ initial: { toolCatalog: ['delegate', 'orchestrate', 'send_message', 'todo_write', 'compress'] } }))
   const extra = withCatalog.rows().filter((row) => row.props['data-tool'] === 'delegate' || row.props['data-tool'] === 'compress')
   assert.equal(extra.length, 2)
   for (const row of extra) {
-    assert.equal(row.kids[1].type, 'input')
-    assert.equal(row.kids[1].props.disabled, false)
-    assert.equal(row.kids[1].props.checked, false)
+    assert.equal(row.kids[0].type, 'input')
+    assert.equal(row.kids[0].props.disabled, false)
+    assert.equal(row.kids[0].props.checked, false)
   }
   // The search box sits above the list.
   assert.equal(panel.search().props.type, 'search')
+})
+
+test('every row leads with the checkbox so a long name cannot scroll it out of the column', () => {
+  const panel = mountDenied(fakeScope({ initial: { toolCatalog: ['mcp__a_very_long_server__a_very_long_tool_name_that_will_not_fit'] } }))
+  const rows = panel.rows()
+  assert.ok(rows.length > 0)
+  // The list is one column pinned to the container, not an `auto` track that a long name
+  // would widen (and scroll) sideways.
+  const list = nodes(panel.view.tree).find((node) => node.props?.role === 'group')
+  assert.equal(list.props.style.display, 'grid')
+  assert.equal(list.props.style.gridTemplateColumns, 'minmax(0, 1fr)')
+  for (const row of rows) {
+    // Checkbox first, name second: the reading order follows the visual order, so the box
+    // stays inside the 232px column however long the name is.
+    assert.equal(row.kids[0].type, 'input', row.props['data-tool'])
+    assert.equal(row.kids[0].props.type, 'checkbox', row.props['data-tool'])
+    assert.equal(row.kids[1].type, 'span', row.props['data-tool'])
+    assert.equal(row.kids[1].kids[0], row.props['data-tool'])
+    // The row cannot be widened past the column by its content, so nothing scrolls sideways.
+    assert.equal(row.props.style.minWidth, 0)
+    // The box never shrinks; the name absorbs the remaining width and truncates.
+    assert.equal(row.kids[0].props.style.flex, 'none')
+    assert.equal(row.kids[1].props.style.flex, '1 1 auto')
+    assert.equal(row.kids[1].props.style.minWidth, 0)
+    assert.equal(row.kids[1].props.style.overflow, 'hidden')
+    assert.equal(row.kids[1].props.style.textOverflow, 'ellipsis')
+  }
+  // The long name keeps its full value in the tooltip instead of being cut in the markup.
+  const long = rows.find((row) => row.props['data-tool'].startsWith('mcp__a_very_long'))
+  assert.equal(long.kids[1].props.title, 'mcp__a_very_long_server__a_very_long_tool_name_that_will_not_fit')
 })
 
 test('the search narrows the rows case-insensitively and explains an empty result', () => {
@@ -758,11 +788,11 @@ test('a tool published by another plugin is listed, searchable and unchecked', a
   panel.search().props.onChange({ target: { value: 'DEMO' } })
   const rows = panel.rows()
   assert.deepEqual(rows.map((row) => row.props['data-tool']), ['mcp__demo__ping'])
-  assert.equal(rows[0].kids[1].props.type, 'checkbox')
-  assert.equal(rows[0].kids[1].props.checked, false)
+  assert.equal(rows[0].kids[0].props.type, 'checkbox')
+  assert.equal(rows[0].kids[0].props.checked, false)
 
   // Checking it writes the name as a deny addition, not as an allowance.
-  await rows[0].kids[1].props.onChange({ target: { checked: true } })
+  await rows[0].kids[0].props.onChange({ target: { checked: true } })
   assert.deepEqual(plain(scope.calls[0].ops), [
     { op: 'set', path: ['deniedTools'], value: ['mcp__demo__ping'] },
     { op: 'unset', path: ['allowedTools'] },
@@ -773,15 +803,15 @@ test('unchecking a shipped name writes allowedTools and re-renders from the stor
   const scope = fakeScope()
   const panel = mountDenied(scope)
   const row = () => panel.rows().find((entry) => entry.props['data-tool'] === 'edit')
-  assert.equal(row().kids[1].props.checked, true)
-  await row().kids[1].props.onChange({ target: { checked: false } })
+  assert.equal(row().kids[0].props.checked, true)
+  await row().kids[0].props.onChange({ target: { checked: false } })
   assert.equal(scope.calls.length, 1)
   assert.deepEqual(plain(scope.calls[0].ops), [
     { op: 'unset', path: ['deniedTools'] },
     { op: 'set', path: ['allowedTools'], value: ['edit'] },
   ])
   assert.equal(scope.calls[0].expected, 1)
-  assert.equal(row().kids[1].props.checked, false)
+  assert.equal(row().kids[0].props.checked, false)
 })
 
 test('unchecking a name a profile added removes it from deniedTools', async () => {
@@ -789,7 +819,7 @@ test('unchecking a name a profile added removes it from deniedTools', async () =
   const panel = mountDenied(scope)
   const row = panel.rows().find((entry) => entry.props['data-tool'] === 'custom_tool')
   assert.ok(row, 'a config-added name is listed')
-  await row.kids[1].props.onChange({ target: { checked: false } })
+  await row.kids[0].props.onChange({ target: { checked: false } })
   assert.deepEqual(plain(scope.calls[0].ops), [
     { op: 'unset', path: ['deniedTools'] },
     { op: 'unset', path: ['allowedTools'] },
@@ -802,13 +832,13 @@ test('reset to defaults clears both keys', async () => {
   assert.equal(panel.button().kids[0], 'denied.reset')
   await panel.button().props.onClick()
   assert.deepEqual(plain(scope.calls[0].ops), plain(T.resetDenyOps()))
-  assert.equal(panel.rows().find((entry) => entry.props['data-tool'] === 'edit').kids[1].props.checked, true)
+  assert.equal(panel.rows().find((entry) => entry.props['data-tool'] === 'edit').kids[0].props.checked, true)
 })
 
 test('a read-only scope disables the boxes and never writes', async () => {
   const scope = fakeScope({ writable: false })
   const panel = mountDenied(scope)
-  const box = panel.rows().find((row) => row.props['data-tool'] === 'edit').kids[1]
+  const box = panel.rows().find((row) => row.props['data-tool'] === 'edit').kids[0]
   assert.equal(box.props.disabled, true)
   assert.equal(panel.button().props.disabled, true)
   await panel.button().props.onClick()
@@ -819,10 +849,10 @@ test('a rejected write is reported without dropping the stored state', async () 
   const scope = fakeScope({ reject: 'settings changed since it was read' })
   const panel = mountDenied(scope)
   const row = () => panel.rows().find((entry) => entry.props['data-tool'] === 'edit')
-  await row().kids[1].props.onChange({ target: { checked: false } })
+  await row().kids[0].props.onChange({ target: { checked: false } })
   const alert = nodes(panel.view.tree).find((node) => node.props?.role === 'alert')
   assert.match(alert.kids[0], /settings changed/)
-  assert.equal(row().kids[1].props.checked, true)
+  assert.equal(row().kids[0].props.checked, true)
 })
 
 test('the popover is two columns, the original panel then the denied tools column', () => {
