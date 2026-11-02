@@ -1,5 +1,6 @@
+<div align="center">
 # DSH Orchestrator
-
+</div>
 <div align="center">
 
 **强模型主脑规划 + 便宜模型统一打工 —— DeepSeek Harness 的「硬隔离调度模式」插件**
