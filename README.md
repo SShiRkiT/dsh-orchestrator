@@ -1,57 +1,73 @@
 # DSH Orchestrator
 
-DeepSeek Harness 的「调度模式」插件。
-  
-  主代理只做澄清、规划、切片与验收
-    
-  每个具体动作都通过 `delegate`（异步、按需）或 `orchestrate`（声明式批量）交给子代理执行。
-    
-  主代理与子代理的默认模型、思考强度各自独立配置，所有子代理共用同一条子代理路由。
+<p align="center">
+  <strong>强模型主脑规划 + 便宜模型统一打工 —— DeepSeek Harness 的「硬隔离调度模式」插件</strong>
+</p>
 
-[English](README.en.md)
+<p align="center">
+  <a href="README.en.md">English</a>
+</p>
 
-## 与单代理会话的区别
+---
 
-| | 普通单代理会话 | 调度模式 |
+## 为什么有了原生 `subagent` 和 `Agent Team`，还需要这个插件？
+
+DSH 客户端自带了 `subagent` / `workflow`，官方也有 `@deepseek-ai/dsh-experimental-agent-team-profile`（Agent Team），但它们在实际高强度开发中仍有三个痛点——而这正是 **DSH Orchestrator** 独有的设计核心：
+
+| 痛点场景 | 原生 `subagent` / 官方 `Agent Team` | DSH Orchestrator（本插件独有） |
 | --- | --- | --- |
-| 谁执行 | 主模型自己调工具 | worker 执行，主代理只派发 |
-| 上下文 | 工具输出堆在主代理上下文 | worker 各自承担自己的上下文 |
-| 并行 | 工具调用依次完成 | 多个 worker 同时跑 |
-| 模型 | 一个模型全包 | 主代理、子代理两套路由 |
-| 越权 | 靠模型自觉 | 闸门强制拒绝 |
+| **如何省钱配模型？**<br>*(最核心差异)* | **无独立子代理面板**：子代理要么默认继承昂贵的主模型，要么靠主模型每次调用时自己传参选模型（容易忘传或乱选，改默认模型还得改静态配置） | **双路由独立面板 + 强制锁定便宜模型**：在 UI 面板直接把 Main Agent 设为昂贵强模型（如 `gemini-4-argon-high`），把 Subagent 统一锁死为廉价快模型（如 `gemini-3.8-flash`），改完下一次委派立即生效 |
+| **主代理总忍不住自己动手？** | **靠自觉（软提示词）**：主代理 / Team Lead 手里依然握有 `read`、`edit`、`bash` 等全套工具，聊几轮就经常脱轨亲自去读文件、跑命令，瞬间撑爆主上下文 | **底层闸门物理缴械（Hard Gate）**：直接对主代理隐藏并在执行层强制拦截 42 项读写/命令行工具（连 `run_code` 嵌套偷调也拦），**逼迫 Main Agent 100% 只做规划与验收，Subagent 100% 只干苦力活** |
+| **便宜模型干活卡死/跑偏怎么办？** | **运行期黑盒**：派出后只能干等结束或超时，或者靠 `wait_agent` 阻塞轮询 | **零 Token 后台巡检唤醒**：后台定时静默扫描子代理事件日志（不调模型、零 Token 消耗），超时或卡壳时自动汇总摘要唤醒主代理，由强模型发消息精准纠偏 |
+| **大批量同构任务怎么跑？** | 原生 `workflow` 让模型手写任意 JS 脚本，容易失控且模型路由不统一 | **声明式 `orchestrate` 流水线**：`items × stages` 结构化扇出与多阶段流水线，单项失败隔离、支持 JSON Schema 强校验，全部 Worker 强制走便宜的子代理路由 |
 
+---
 
-## 关键特性
+## 核心特性
 
-- **主代理只规划，闸门强制**：
-  
-     内置一份 42 项的拒绝名单，隐藏并在执行时拒绝读写、shell、web 等工具；主代理只保留 `delegate`、`orchestrate`、`send_message`、`todo_write`、`ask_user_question`、`compress`，以及会话读取工具（`session_*`）和 `interrupt_agent`。
-  
-- **并行派发独立子任务**：
+### 1. 强模型当 Main Agent，便宜模型当 Subagent（独立面板、即时生效）
 
-    互不依赖的子任务在同一回合一起派出；`delegate` 没有插件侧并发上限，`orchestrate` 用 `maxConcurrency`（1–16，默认 4）限制同时存活的 worker 数。
-  
-- **巡检与纠偏**：
-  
-    `delegate` 派出的 worker 跑久了，插件按其会话日志合并成一条通知唤醒主代理；主代理用 `send_message` 给出具体指令纠偏，或判断无需干预、回一行说明结束回合。
+在输入框下方的**「调度模式」专属面板**中，主代理与子代理的模型路由完全解耦：
+- **主代理（Main Agent）**：配置为你最强的旗舰模型（例如 `gpt-astra-6`、`claude-opus-5.5` 等），专门负责需求澄清、任务切分、途中纠偏与最终结果验收。
+- **子代理（Subagent）**：配置为能力稍弱但极其便宜、高吞吐的模型（例如 `deepseek-v4.1-flash`、`gpt-luna-6` 等），**所有通过 `delegate` 和 `orchestrate` 派出的 Worker 强制共用这条便宜路由**（除非用户在当前消息里明确点名要求临时换模型）。
+- **防烧钱保护**：如果未配置子代理模型，派发时会直接报错拦截，**绝不静默回退去烧昂贵的主代理模型**。
 
-    worker 被 `interrupt_agent` 中断、之后又被 `send_message` 唤醒时，巡检会重新接管它：通知次数重新从第 1 次算起，中断前的日志不算作新活动。
-  
-    ![巡检通知与纠偏示例](docs/images/patrol-notice.png)
-  
-    *巡检通知按间隔逐个汇总运行中的子代理：已运行时长、轮次、步骤、自上次巡检新增的工具调用、最近工具和最后输出；主代理据此选择 A) 不干预（回一行「巡检：正常」）、B) 用 `send_message` 纠偏，或 C) 终止。图中主代理向卡在 shell 引号和反斜杠上的子代理发出了纠偏指令。*
-  
-- **结果回收**：
+![调度模式面板](docs/images/dispatch-panel.png)
 
-    `delegate` 立即返回 `{ kind: "activation", subagentId }`，worker 结束时由宿主把结果作为消息投给主代理；`orchestrate` 在工具调用内同步收齐全部结果。
-  
-- **声明式编排**：
+*调度模式面板：左侧独立配置主代理（如 `gemini-4-argon-high`）与子代理（如 `gemini-3.8-flash`）各自的模型、思考强度及巡检间隔；右侧 Denied Tools 实时拉取宿主全部工具（含 MCP 与其他插件工具），勾选/取消勾选无需重启，下一条消息立即对当前会话生效。*
 
-    `orchestrate` 支持单阶段扇出和多阶段逐条目流水线（没有全量屏障），结果与输入同序，单项失败不影响其他项，阶段可声明 object schema 拿结构化结果。
+### 2. 主代理「规划与验收」、子代理「纯粹 Work」的硬性闸门
+
+不同于靠 Prompt 劝主模型“多用子代理”，本插件在 DSH 工具层安装了双重守卫（`tools.restrict` + `tools.guard`）：
+- **主代理被彻底收缴执行工具**：默认封禁 42 项文件读写（`read` / `edit` / `write` / `apply_patch`）、搜索（`grep` / `glob`）、终端（`bash` / `pwsh`）、网页抓取乃至原生 `subagent` / `workflow`。主代理只保留 `delegate`、`orchestrate`、`send_message`、`interrupt_agent`、`todo_write`、`ask_user_question`、`compress` 与只读会话日志工具。
+- **子代理独享完整工具链**：被派出的 Worker 不受闸门限制，在各自独立的上下文中读写文件、跑测试、看报错，完工后只把干净的结论交回主代理验收。
+- **一键随时切换**：需要主代理临时亲自操作时，关掉面板上的「启用调度模式」开关即可立刻恢复主代理的全部工具，无需重开会话。
+
+### 3. 零 Token 后台巡检与强模型动态纠偏
+
+便宜模型充当 Subagent 时，偶尔会在复杂的 shell 转义或报错上打转。插件内置了纯日志驱动的后台巡检器：
+- **零额外 Token 消耗**：后台定时器直接读取运行中 Worker 的会话事件日志（不调用任何 LLM），按设定的巡检间隔（默认 600 秒）汇总它的运行时长、轮次、新增工具调用与最后输出，合并成一条通知唤醒主代理。
+- **强模型一眼把关**：主代理收到巡检摘要后，只需极少 Token 即可做出决策：
+  - **A) 进展正常**：回复一行 `巡检：正常` 结束回合，让子代理继续跑；
+  - **B) 途中纠偏**：调用 `send_message` 直接向运行中的子代理注入修正指令（指明正确写法或跳过卡点）；
+  - **C) 及时止损**：调用 `interrupt_agent` 中断失控的子代理（若后续再用 `send_message` 重新唤醒它，巡检会自动重新接管并重置通知计数）。
+
+![巡检通知与纠偏示例](docs/images/patrol-notice.png)
+
+*巡检通知与纠偏实录：便宜的子代理卡在了 shell 引号和反斜杠转义上，巡检机制按间隔唤醒主代理后，主代理通过 `send_message` 直接给出正确写法完成纠偏。*
+
+### 4. 专为调度模式定制的 `delegate` 与 `orchestrate`
+
+- **`delegate`（按需异步单派 / 并行扇出）**：
+  用于派发自包含的独立任务（目标 + 允许修改的文件 + 验收命令 + 失败兜底）。同一回合多次调用即可同时启动多个 Worker 并行施工；插件还会根据任务语言自动为子代理注入回复语言约束。
+- **`orchestrate`（声明式批量流水线）**：
+  用于处理「一组条目（`items`，1–64）× 固定多阶段步骤（`stages`，1–8）」的批量任务，通过 `maxConcurrency`（1–16，默认 4）控制并发。支持单阶段并行扇出与多阶段**逐条目无屏障流水线**（先做完阶段 1 的条目立刻进入阶段 2，不用傻等慢条目），支持阶段级 JSON Schema 强校验与单项失败隔离。
+
+---
 
 ## 安装
 
-在 DSH 插件页选择从 GitHub 添加，或用 CLI：
+在 DSH 插件页选择从 GitHub 添加，或使用 CLI：
 
 ```text
 SShiRkiT/dsh-orchestrator#main
@@ -61,71 +77,26 @@ SShiRkiT/dsh-orchestrator#main
 dsh plugin --profile desktop add SShiRkiT/dsh-orchestrator#main
 ```
 
-装完**完全退出并重新打开 DSH**：客户端插件在启动时组合，不支持热更新。
+装完后请**完全退出并重新打开 DSH**（客户端插件在启动时组合，不支持热更新）。
 
-## 启用
+---
 
-1. 安装重启后调度模式默认已开启（`enabled` 默认 `true`）。
-2. 在 composer 的「调度模式」面板里配置 `workerProvider` 与 `workerModel`（必填）、`workerReasoningEffort`（可留空，交给模型决定默认强度）；未配置就派发会直接报错，不会静默继承主代理模型。
-3. 关闭「启用调度模式」开关可临时恢复主代理的全部工具，对已打开的会话立即生效。
-4. 面板右侧的 Denied Tools 清单列出宿主当前提供的全部工具（插件启动时和之后每次工具注册变化时从宿主实时拉取，其他插件和 MCP 注册的工具也在内），勾选即拒绝、取消勾选即放行，没有任何工具被锁在外面——调度工具（`delegate`、`orchestrate`、`send_message`、`todo_write`、`compress`）也在清单里，同样可以勾选；「恢复默认」回到内置的 42 项。勾选变化会立刻重建主代理的工具表，已打开的会话在下一条消息里就能看到，不需要新开会话，也不需要关开总开关。
+## 配置说明
 
-![调度模式面板](docs/images/dispatch-panel.png)
-
-*调度模式面板：启用开关、主代理与子代理各自的模型和思考强度、子代理巡检间隔（默认 600 秒，范围 10–86400），右侧是 Denied Tools 清单。*
-
-## 配置
-
-全部字段都是 volatile：宿主保存、插件每次使用时重读，改配置不需要重启。
+所有配置项均为 volatile（动态热配置），在面板中修改后立即生效，无需重启 DSH：
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
-| `enabled` | `true` | 调度模式总开关。关闭时撤销隐藏，守卫仍安装但放行。 |
-| `deniedTools` | 42 项内置名单 | 主代理不可用的工具；在内置名单之上追加。 |
-| `allowedTools` | `[]` | 从内置名单里放行的工具；最终名单 = 内置 + `deniedTools` − `allowedTools`。 |
-| `workerProvider` | `""` | 子代理 provider，空表示未配置。 |
-| `workerModel` | `""` | 子代理模型，空表示未配置。 |
-| `workerReasoningEffort` | `""` | 子代理思考强度，空表示不传，交给模型解析默认值。 |
-| `superviseEnabled` | `true` | 巡检总开关。 |
-| `superviseIntervalSeconds` | `600` | 巡检间隔（秒），整数 10–86400。 |
-| `superviseMaxNoticesPerChild` | `3` | 每个子代理最多通知几次，整数 0–20；`0` 表示不限。 |
-| `superviseNotifyOnNoProgress` | `false` | 日志没有新活动时是否也通知。 |
-| `toolCatalog` | `[]` | 插件自己发布的实时工具目录：宿主当前提供的全部工具名，面板据此把内置 42 项之外的工具（含 MCP 和其他插件注册的）也列出来。由插件写入，不要手工编辑。 |
+| `enabled` | `true` | 调度模式总开关。关闭时立即对当前会话恢复主代理全部工具。 |
+| `workerProvider` / `workerModel` | `""` | 子代理默认模型路由（必填，未配置时派发直接报错，绝不静默继承主代理模型）。 |
+| `workerReasoningEffort` | `""` | 子代理思考强度，留空则由所选模型自行决定默认值。 |
+| `deniedTools` / `allowedTools` | 42 项内置名单 | 主代理禁用/放行的工具清单；面板右侧可直接勾选任意宿主/MCP/插件工具，下一条消息即刻生效。 |
+| `superviseEnabled` | `true` | 子代理后台巡检总开关。 |
+| `superviseIntervalSeconds` | `600` | 巡检间隔（秒），范围 10–86400，运行中修改立即生效。 |
+| `superviseMaxNoticesPerChild` | `3` | 每个子代理最多发送几次巡检通知（0–20，`0` 表示不限）。 |
+| `superviseNotifyOnNoProgress` | `false` | 子代理日志无新活动时是否仍然发送通知。 |
 
-主代理的默认路由不在这份配置里：它写在宿主的 `agent-default-model`（`provider` / `model` / `reasoningEffort`），由同一个面板写入，创建新 agent 时读取。
-
-## 使用
-
-### delegate：一个自包含的动态任务
-
-参数只有 `prompt`（完整任务，必填）、`description`（3–5 个词的展示名，必填）、`cwd`（可选）。worker 看不到主代理的对话，提示词必须自带全部上下文：
-
-```json
-{
-  "description": "迁移配置读取",
-  "prompt": "目标：把配置读取从 config.ts 迁到 settings.ts，行为不变\n允许改的文件：src/config.ts、src/settings.ts\n验收：node --test test/settings.test.mjs\n失败时：不要改公开 API，把原因写进结论并停止"
-}
-```
-
-提示词含中文时插件会在开头追加 `Reply in Simplified Chinese.`，俄语、日语、韩语同理，其他语言要求与请求同语言。互不依赖的几个任务，在同一条消息里各调用一次 `delegate` 就会同时启动。
-
-### orchestrate：批量派发
-
-「一组条目 × 一套固定步骤」交给 `orchestrate`，一次调用收齐全部结果；需要按中间结果分支、循环或边看结果边改派时改用 `delegate`。只有一个阶段时，每个条目各得一个 worker：
-
-```json
-{
-  "items": ["alpha", "beta", "gamma"],
-  "stages": [
-    { "name": "summarize", "prompt": "用一句话概括这个条目。" }
-  ],
-  "maxConcurrency": 2
-}
-```
-
-多个阶段按条目依次推进，后一阶段自动拿到同一项前面阶段的输出。`items` 为 1–64、`stages` 为 1–8；返回 `{ kind: "orchestration", agentsStarted, results, errors }`，`results` 与输入同序，失败项为 `null`。
-
-`delegate` 是异步的：没有进度回调，主代理也没有终止 worker 的工具，要停一个 worker 得在宿主侧操作。
+> 注：主代理的默认模型保存在宿主的 `agent-default-model` 中，由同一个「调度模式」面板直接读写，对新创建的会话生效；子代理模型改动从下一次委派起立即生效。
 
 ## License
 
