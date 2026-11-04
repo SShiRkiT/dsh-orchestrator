@@ -277,6 +277,9 @@ test('the description keeps the main-agent rule and the deny list, and states th
   assert.match(tool.parameters.provider.description, /Never choose one on your own initiative/i)
   assert.match(tool.description, /compress is available to the main agent/)
   assert.match(tool.description, /independent delegations start in the same message/i)
+  assert.doesNotMatch(tool.description, /如无并行必要则让子代理汇报完结果后再进行后续操作/)
+  assert.match(tool.description, /when parallel work is unnecessary, wait for the subagent to report its result before proceeding/i)
+  assert.match(tool.description, /do not repeatedly check its status or start duplicate workers/i)
   // The same one-line reminder belongs on both route parameters, where a model would be typed.
   for (const param of ['provider', 'model']) {
     const description = tool.parameters[param].description
