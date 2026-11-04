@@ -52,12 +52,13 @@ test('buildActivation passes cwd through and leaves out an undefined depth', () 
 })
 
 test('the worker header asks for a final summary instead of a send_message report', () => {
-  const chinese = languageNote('把这段代码重构一下')
-  assert.match(chinese, /^Reply in Simplified Chinese\./)
-  assert.match(chinese, /end your turn with the final summary/i)
-  assert.match(chinese, /do not call send_message to report completion to the parent agent/i)
-  assert.match(chinese, /主代理会自动接收你的收尾消息/)
-  assert.match(languageNote('do it'), /^Reply in the same language as this request\./)
+  const header = languageNote('把这段代码重构一下')
+  assert.match(header, /^用中文回复。/)
+  assert.match(header, /完成任务时直接在回复中输出最终总结并结束本回合/)
+  assert.match(header, /禁止调用 send_message 向父代理发送完成汇报/)
+  assert.match(header, /主代理会自动接收你的收尾消息/)
+  // The wording no longer depends on the request, so any prompt gets the same header.
+  assert.equal(languageNote('do it'), header)
 })
 
 test('the tool is concurrency-safe, named delegate, and takes optional route overrides', () => {

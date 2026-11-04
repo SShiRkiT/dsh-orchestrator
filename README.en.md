@@ -107,7 +107,7 @@ It has only three parameters: `prompt` (the complete task, required), `descripti
 }
 ```
 
-When a prompt contains Chinese, the plugin prepends `Reply in Simplified Chinese.` at the start; Russian, Japanese, and Korean work the same way, and any other language is answered in the same language as the request. For several independent tasks, call `delegate` once each in the same message and they all start at once.
+Every worker gets the same fixed instruction at the start of its prompt: `用中文回复。` (answer in Simplified Chinese), followed by the requirement to end the turn with the final summary in the reply and not to call `send_message` to report completion, because the parent receives the closing message automatically. For several independent tasks, call `delegate` once each in the same message and they all start at once.
 
 ### orchestrate: batch dispatch
 
