@@ -280,6 +280,11 @@ test('the description keeps the main-agent rule and the deny list, and states th
   assert.doesNotMatch(tool.description, /如无并行必要则让子代理汇报完结果后再进行后续操作/)
   assert.match(tool.description, /when parallel work is unnecessary, wait for the subagent to report its result before proceeding/i)
   assert.match(tool.description, /do not repeatedly check its status or start duplicate workers/i)
+  assert.match(tool.description, /disconnects quickly three times within 2 minutes \(two automatic retries\)/)
+  assert.ok(tool.description.includes('【插件重试｜子代理 <id>】它在 2 分钟内连续 3 次快速断联（failed before it finished / It left no closing message），插件已停止自动重试'))
+  assert.match(tool.description, /只提供通知中的A\/B选项并等待用户答复，不要建议继续唤醒旧子代理/)
+  assert.match(tool.description, /未经用户选择A，不要另派子代理重复工作/)
+  assert.match(tool.description, /结果为空时不要立即重复派遣，先确认插件状态/)
   // The same one-line reminder belongs on both route parameters, where a model would be typed.
   for (const param of ['provider', 'model']) {
     const description = tool.parameters[param].description
