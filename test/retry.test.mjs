@@ -86,6 +86,8 @@ test('a silent failure is retried once, on the same child, with its own id in th
   assert.equal(prompts[0].childId, 'child-1')
   assert.match(prompts[0].text, /插件自动重试（第 1 次）/)
   assert.ok(prompts[0].text.includes('"child-1"'))
+  assert.doesNotMatch(prompts[0].text, /用 send_message 把结论发给父代理/)
+  assert.match(prompts[0].text, /主代理会自动接收你的收尾消息，无需额外调用 send_message 汇报/)
   // The record survives, so the next settlement is still actionable.
   assert.equal(retry.has('child-1'), true)
 })

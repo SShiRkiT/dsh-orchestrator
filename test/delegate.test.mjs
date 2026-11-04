@@ -51,6 +51,15 @@ test('buildActivation passes cwd through and leaves out an undefined depth', () 
   assert.equal('maxDepth' in spec.request, false)
 })
 
+test('the worker header asks for a final summary instead of a send_message report', () => {
+  const chinese = languageNote('把这段代码重构一下')
+  assert.match(chinese, /^Reply in Simplified Chinese\./)
+  assert.match(chinese, /end your turn with the final summary/i)
+  assert.match(chinese, /do not call send_message to report completion to the parent agent/i)
+  assert.match(chinese, /主代理会自动接收你的收尾消息/)
+  assert.match(languageNote('do it'), /^Reply in the same language as this request\./)
+})
+
 test('the tool is concurrency-safe, named delegate, and takes optional route overrides', () => {
   const tool = createDelegateTool({ defineTool: (d) => d, subagents: {}, config: cfg('p', 'm') })
   assert.equal(tool.name, DELEGATE_TOOL)
@@ -276,9 +285,15 @@ test('the description keeps the main-agent rule and the deny list, and states th
   assert.match(tool.description, /if unsure, ask/i)
   assert.match(tool.parameters.provider.description, /Never choose one on your own initiative/i)
   assert.match(tool.description, /compress is available to the main agent/)
+  assert.match(tool.description, /runtime notifies you when it finishes/i)
+  assert.match(
+    tool.description,
+    /do not instruct the worker to send a message back or report results via send_message/i,
+  )
+  assert.match(tool.description, /its closing message is delivered automatically when it ends/i)
   assert.match(tool.description, /independent delegations start in the same message/i)
   assert.doesNotMatch(tool.description, /如无并行必要则让子代理汇报完结果后再进行后续操作/)
-  assert.match(tool.description, /when parallel work is unnecessary, wait for the subagent to report its result before proceeding/i)
+  assert.match(tool.description, /when parallel work is unnecessary, wait for the subagent to finish before proceeding/i)
   assert.match(tool.description, /do not repeatedly check its status or start duplicate workers/i)
   assert.match(tool.description, /disconnects quickly three times within 2 minutes \(two automatic retries\)/)
   assert.ok(tool.description.includes('【插件重试｜子代理 <id>】它在 2 分钟内连续 3 次快速断联（failed before it finished / It left no closing message），插件已停止自动重试'))
