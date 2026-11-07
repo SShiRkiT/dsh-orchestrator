@@ -1,6 +1,6 @@
 # DSH Orchestrator
 
-[![version](https://img.shields.io/badge/version-0.7.1-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
+[![version](https://img.shields.io/badge/version-0.7.2-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
 
 The "dispatch mode" plugin for DeepSeek Harness.
   

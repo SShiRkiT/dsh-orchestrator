@@ -66,6 +66,16 @@ const React = {
   createElement: (type, props, ...kids) => ({ type, props, kids }),
 }
 
+// The host loader registers `react-dom` beside `react`. Portals come back as ordinary nodes, so
+// the same tree walker sees the list that landed in the body.
+const portals = []
+const ReactDOM = {
+  createPortal: (node, target) => {
+    portals.push({ node, target })
+    return { type: 'portal', props: { target }, kids: [node] }
+  },
+}
+
 /** Render a component with the hook runtime above; effects are committed after each pass. */
 function mount(component, props) {
   const owner = { states: [], refs: [], effects: [], committed: [], index: 0, dirty: false, rendering: false, tree: null }
@@ -156,6 +166,7 @@ const fakeWindow = {
     load: (def) => {
       mod = def.factory((id) => {
         if (id === 'react') return React
+        if (id === 'react-dom') return ReactDOM
         throw new Error('unexpected require ' + id)
       })
     },
@@ -169,7 +180,22 @@ const fakeWindow = {
     fakeWindow.listeners = fakeWindow.listeners.filter((entry) => entry !== type)
   },
 }
-const fakeDocument = { listeners: [], addEventListener() {}, removeEventListener() {} }
+// The portalled list needs a body to mount into, and the row's outside-click test registers a
+// capture listener on the document: record both so tests can drive them.
+const fakeDocument = {
+  body: { nodeName: 'BODY' },
+  listeners: [],
+  addEventListener(type, fn, capture) {
+    fakeDocument.listeners.push({ type, fn, capture })
+  },
+  removeEventListener(type, fn) {
+    fakeDocument.listeners = fakeDocument.listeners.filter((entry) => entry.fn !== fn)
+  },
+}
+/** Deliver one pointerdown to every live document listener. */
+const pointerDown = (target) => {
+  for (const entry of [...fakeDocument.listeners]) entry.fn({ target })
+}
 vm.runInNewContext(src, {
   window: fakeWindow,
   document: fakeDocument,
@@ -1315,5 +1341,87 @@ test('a row with no measurable box still opens, on the static upward-or-downward
   assert.equal(list.props.style.maxHeight, '260px')
   assert.equal(row.choices().length, 4)
   row.view.unmount()
+})
+
+test('the open model list is portalled to the document body, not the composer subtree', () => {
+  portals.length = 0
+  const row = mountRow({
+    groups: ROW_GROUPS,
+    rect: { top: 120, bottom: 154, left: 40, width: 320 },
+  })
+  row.open()
+  // The composer's ancestors are the containing block of a fixed child (`container-type` on the
+  // row, `will-change: transform` on the seat), so the list has to leave that subtree entirely.
+  assert.ok(portals.length >= 1, 'opening the list mounts it through a portal')
+  assert.deepEqual(
+    portals.map((entry) => entry.target),
+    portals.map(() => fakeDocument.body),
+  )
+  const portal = nodes(row.view.tree).find((node) => node.type === 'portal')
+  assert.ok(portal, 'the portal node stays in the rendered tree')
+  const list = portal.kids[0]
+  assert.equal(list.props.role, 'listbox')
+  // The body has no fixed containing block, so the measured viewport rect applies as written.
+  assert.equal(list.props.style.position, 'fixed')
+  assert.equal(list.props.style.top, 158)
+  assert.equal(list.props.style.left, 40)
+  assert.equal(list.props.style.width, 320)
+  const field = nodes(portal).find((node) => node.type === 'input')
+  // The filter is focused from an effect with `preventScroll`; a plain `autoFocus` would make the
+  // browser scroll the composer's scroll containers to reveal the field.
+  assert.equal(field.props.autoFocus, undefined)
+  assert.equal(typeof field.props.ref, 'object')
+  row.view.unmount()
+})
+
+test('a click inside the portalled list keeps it open, a click outside closes it', () => {
+  // Rows opened by earlier tests keep their listeners; start from a clean document.
+  fakeDocument.listeners = []
+  const row = mountRow({ groups: ROW_GROUPS })
+  row.open()
+  const list = row.listbox()
+  const anchor = nodes(row.view.tree).find((node) => node.props?.style?.position === 'relative')
+  const trigger = {}
+  const inside = {}
+  const elsewhere = {}
+  anchor.props.ref.current = { contains: (target) => target === trigger }
+  // The list lives under `document.body`, so `box.contains` is false for its own options. Without
+  // the list's own ref the pointerdown capture would close it before the option click fired.
+  list.props.ref.current = { contains: (target) => target === inside }
+  pointerDown(inside)
+  assert.ok(row.listbox(), 'a pointerdown inside the list leaves it open')
+  pointerDown(trigger)
+  assert.ok(row.listbox(), 'a pointerdown on the trigger leaves it open')
+  pointerDown(elsewhere)
+  assert.equal(row.listbox(), undefined, 'a pointerdown outside closes it')
+  row.view.unmount()
+  assert.deepEqual(fakeDocument.listeners, [], 'unmounting releases the document listener')
+})
+
+test('the list paints above the composer menus once it is portalled', () => {
+  assert.equal(T.dropdownStyle.zIndex, 1100)
+  assert.equal(T.dropdownStyleOf(null).zIndex, 1100)
+})
+
+test('the allowed-tools card fills the stretched column instead of capping its height', () => {
+  const card = T.allowedListBoxStyle
+  // The popover is a row flex box with stretch alignment: the left column sets the height and
+  // this card grows into it. A `maxHeight` is what left the column short of the bottom edge.
+  assert.equal(card.maxHeight, undefined)
+  assert.equal(card.flex, '1 1 0%')
+  assert.equal(card.height, 0)
+  assert.equal(card.minHeight, '120px')
+  // A zero basis keeps the card's hypothetical height at 0, so fifty host tools can never stretch
+  // the popover past the left column; the rows then scroll inside the card.
+  const list = T.allowedListStyle
+  assert.equal(list.flex, '1 1 0%')
+  assert.equal(list.height, 0)
+  assert.equal(list.minHeight, 0)
+  assert.equal(list.overflowY, 'auto')
+  // The stretch that hands the height down is what makes the two styles above add up.
+  assert.equal(T.panelStyle.alignItems, 'stretch')
+  assert.equal(T.panelColumnStyle.display, 'grid')
+  assert.equal(T.allowedColumnStyle.flexDirection, 'column')
+  assert.equal(T.allowedColumnStyle.minHeight, 0)
 })
 
