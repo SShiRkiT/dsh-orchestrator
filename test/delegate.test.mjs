@@ -81,9 +81,9 @@ test('the tool is concurrency-safe, named delegate, and takes optional route ove
     assert.equal('required' in tool.parameters[key], false)
   }
   for (const key of ['provider', 'model']) {
-    assert.match(tool.parameters[key].description, /only when the user explicitly names/)
+    assert.match(tool.parameters[key].description, /仅当用户显式点名/)
   }
-  assert.match(tool.parameters.reasoning_effort.description, /set it only when the user names it/)
+  assert.match(tool.parameters.reasoning_effort.description, /仅当用户点名时才设置/)
 })
 
 test('execute rejects a missing prompt or description before touching the route', async () => {
@@ -264,7 +264,7 @@ test('reasoning_effort passes through with the override and is trimmed', async (
   ])
 })
 
-test('the description keeps the main-agent rule and the whitelist, and states the explicit-request condition', () => {
+test('the description keeps the main-agent rule, the whitelist and the execute contract', () => {
   // The rule names exactly what the gate lets through, so the test drives it with a
   // whitelist rather than a deny list: every other tool is blocked by not being named.
   const allowed = ['delegate', 'orchestrate', 'todo_write']
@@ -275,78 +275,68 @@ test('the description keeps the main-agent rule and the whitelist, and states th
     allowedTools: allowed,
   })
   assert.equal(tool.description.startsWith(mainAgentRule(allowed)), true)
-  assert.match(
-    tool.description,
-    /Allowed for the main agent \(whitelist-driven; every other tool is blocked\): delegate, orchestrate, todo_write\./,
+  assert.match(tool.description, /主代理可用工具（白名单驱动，其余全部禁用）: delegate, orchestrate, todo_write。/)
+  // The planning-only rule, in one dense Chinese paragraph.
+  assert.match(tool.description, /主代理规则：主代理只负责规划/)
+  assert.match(tool.description, /都只在子代理中通过 delegate（单个任务）或 orchestrate（同构批量）执行/)
+  assert.match(tool.description, /也不为试探可用性调用一次/)
+  assert.match(tool.description, /子代理不受门禁限制/)
+  assert.match(tool.description, /新会话或压缩后无需重新确认/)
+  assert.match(tool.description, /独立任务在同一消息内并发派发/)
+  assert.match(tool.description, /无需并行时等待子代理完成再进行后续操作/)
+  assert.match(tool.description, /不要轮询其状态/)
+  assert.match(tool.description, /也不要为同一任务重复派发/)
+  assert.match(tool.description, /主代理可以直接调用 compress/)
+  // The retry contract: the plugin's own notice text and the A/B-only answer.
+  assert.match(tool.description, /插件会在同一会话自动重试/)
+  assert.match(tool.description, /结果为空时先确认插件状态，不要立即重派/)
+  assert.match(tool.description, /2 分钟内连续 3 次快速断联（插件自动重试 2 次）/)
+  assert.ok(
+    tool.description.includes(
+      '【插件重试｜子代理 <id>】它在 2 分钟内连续 3 次快速断联（failed before it finished / It left no closing message），插件已停止自动重试',
+    ),
   )
-  assert.match(tool.description, /the main agent plans only/)
-  assert.match(tool.description, /runs ONLY in a worker/i)
-  assert.match(tool.description, /workers are not gated/i)
-  assert.match(tool.description, /not even once/)
-  assert.match(tool.description, /never re-check on a new session or after compression/i)
-  assert.match(tool.description, /only when the current message explicitly names them for this dispatch/i)
-  assert.match(tool.description, /A named model is for this dispatch only/i)
-  assert.match(tool.description, /never reuse one from earlier turns, dispatch or summary/i)
-  assert.match(tool.description, /never assume an unstated default/i)
-  assert.match(tool.description, /if unsure, ask/i)
-  assert.match(tool.parameters.provider.description, /Never choose one on your own initiative/i)
-  assert.match(tool.description, /compress is available to the main agent/)
-  assert.match(tool.description, /runtime notifies you when it finishes/i)
-  assert.match(
-    tool.description,
-    /do not instruct the worker to send a message back or report results via send_message/i,
-  )
-  assert.match(tool.description, /its closing message is delivered automatically when it ends/i)
-  assert.match(tool.description, /independent delegations start in the same message/i)
-  assert.doesNotMatch(tool.description, /如无并行必要则让子代理汇报完结果后再进行后续操作/)
-  assert.match(tool.description, /when parallel work is unnecessary, wait for the subagent to finish before proceeding/i)
-  assert.match(tool.description, /do not repeatedly check its status or start duplicate workers/i)
-  assert.match(tool.description, /disconnects quickly three times within 2 minutes \(two automatic retries\)/)
-  assert.ok(tool.description.includes('【插件重试｜子代理 <id>】它在 2 分钟内连续 3 次快速断联（failed before it finished / It left no closing message），插件已停止自动重试'))
-  assert.match(tool.description, /只提供通知中的A\/B选项并等待用户答复，不要建议继续唤醒旧子代理/)
-  assert.match(tool.description, /未经用户选择A，不要另派子代理重复工作/)
-  assert.match(tool.description, /结果为空时不要立即重复派遣，先确认插件状态/)
-  // The same one-line reminder belongs on both route parameters, where a model would be typed.
+  assert.match(tool.description, /只提供通知中的 A\/B 选项（A 派生新子代理重做 \/ B 更换子代理模型后重试）并等待用户答复/)
+  assert.match(tool.description, /不要建议继续唤醒旧子代理/)
+  assert.match(tool.description, /未经用户选择 A 不要另派子代理重复工作/)
+  assert.match(tool.description, /也不要私自换模型重发/)
+  // run_code cannot reach the host, and the route override is opt-in per dispatch.
+  assert.match(tool.description, /严禁通过 run_code 触达宿主/)
+  assert.match(tool.description, /禁用 import\/require\/process\/fetch\/eval/)
+  assert.match(tool.description, /run_code 内只能调用 delegate 和 orchestrate/)
+  assert.match(tool.description, /仅当当前用户消息显式点名时才传 provider\/model\/reasoning_effort/)
+  assert.match(tool.description, /点名的模型仅限本次派发/)
+  assert.match(tool.description, /严禁复用历史轮次、历史派发或摘要中的模型/)
+  assert.match(tool.description, /严禁假定未声明的默认模型/)
+  // The body's handoff contract.
+  assert.match(tool.description, /prompt 必须写清目标、允许修改的文件、验收命令与兜底方案/)
+  assert.match(tool.description, /按用户配置的 worker 路由运行/)
+  assert.match(tool.description, /结束时由运行时自动通知你/)
+  assert.match(tool.description, /严禁要求子代理调用 send_message 汇报结果/)
+  assert.match(tool.description, /收尾消息会在结束时自动送达/)
+  assert.match(tool.description, /严禁两个子代理修改同一文件/)
+  assert.match(tool.description, /【插件巡检…】/)
+  // The route parameters carry the same one-line condition, where a model would be typed.
   for (const param of ['provider', 'model']) {
     const description = tool.parameters[param].description
-    assert.match(description, /this one dispatch only/i, param)
-    assert.match(description, /never reuse a model from earlier turns or a summary/i, param)
+    assert.match(description, /仅限本次派发，禁止复用历史轮次或摘要中的模型/, param)
+    assert.match(description, /严禁自行选择模型/, param)
   }
 })
 
-test('the worker variant drops the main-agent rule and keeps the same contract', async () => {
-  // A delegated child reads the global description too; its scoped shadow must not
-  // repeat a rule about a role it does not have.
-  const allowed = ['delegate', 'orchestrate']
-  const seen = []
-  const subagents = {
-    resolveMaxDepth: () => 1,
-    startActivation: async (spec) => {
-      seen.push(spec.request.agentOptions)
-      return { childId: 'child-1' }
-    },
-  }
+test('a delegated child no longer sees this tool, so there is no worker variant', () => {
+  // `lib/index.js` restricts the pair away from a child; the description is written for
+  // the planner only and has no role-neutral twin.
   const tool = createDelegateTool({
     defineTool: (definition) => definition,
-    subagents,
+    subagents: {},
     config: cfg('p', 'm'),
-    allowedTools: allowed,
-    forWorker: true,
+    allowedTools: ['delegate', 'orchestrate'],
   })
-  assert.equal(/main[- ]agent/i.test(tool.description), false)
-  assert.equal(tool.description.includes('Main-agent rule:'), false)
-  assert.equal(tool.description.includes('runs ONLY in a worker'), false)
-  assert.equal(tool.description.includes('delegate, orchestrate'), false)
-  assert.ok(tool.description.length < 400)
-  assert.match(tool.description, /self-contained task/)
-  assert.match(tool.description, /configured worker route/)
-  // The parameters and the execution path are shared with the main-agent variant.
+  assert.match(tool.description, /主代理规则：主代理只负责规划/)
+  assert.equal('workerText' in tool, false)
   for (const key of ['provider', 'model']) {
-    assert.match(tool.parameters[key].description, /only when the user explicitly names/)
+    assert.match(tool.parameters[key].description, /仅当用户显式点名/)
   }
-  assert.deepEqual(await tool.execute({ description: 'a', prompt: 'x' }, exec()), {
-    kind: 'activation',
-    subagentId: 'child-1',
-  })
-  assert.deepEqual(seen, [{ provider: 'p', model: 'm' }])
 })
+
