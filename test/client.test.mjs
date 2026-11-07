@@ -1403,25 +1403,69 @@ test('the list paints above the composer menus once it is portalled', () => {
   assert.equal(T.dropdownStyleOf(null).zIndex, 1100)
 })
 
-test('the allowed-tools card fills the stretched column instead of capping its height', () => {
+test('the allowed-tools card fills the stretched column without reporting a content height', () => {
+  // The popover is a row flex box with an auto height, so it takes its cross size from the
+  // children's intrinsic heights. Flexbox §9.9.1 measures a column container's intrinsic main
+  // size from its children's max-content contributions, where neither `flex-basis: 0` nor
+  // `height: 0` hides a fifty-row stack: a host with that many tools reported ~1400px and the
+  // popover was pushed through the top of the window. Size containment is what zeroes it.
+  const column = T.allowedColumnStyle
+  assert.equal(column.contain, 'size')
+  assert.equal(column.flexDirection, 'column')
+  assert.equal(column.width, '232px')
+  assert.equal(column.minHeight, 0)
   const card = T.allowedListBoxStyle
-  // The popover is a row flex box with stretch alignment: the left column sets the height and
-  // this card grows into it. A `maxHeight` is what left the column short of the bottom edge.
+  assert.equal(card.contain, 'size')
+  // A definite pixel basis, not a percentage: `0%` degrades to `content` while the column's
+  // own height is still indefinite, which is exactly the measurement being defended against.
+  assert.equal(card.flex, '1 1 0px')
+  assert.equal(card.minHeight, 0)
+  assert.equal(card.height, undefined)
   assert.equal(card.maxHeight, undefined)
-  assert.equal(card.flex, '1 1 0%')
-  assert.equal(card.height, 0)
-  assert.equal(card.minHeight, '120px')
-  // A zero basis keeps the card's hypothetical height at 0, so fifty host tools can never stretch
-  // the popover past the left column; the rows then scroll inside the card.
   const list = T.allowedListStyle
-  assert.equal(list.flex, '1 1 0%')
-  assert.equal(list.height, 0)
+  assert.equal(list.contain, 'size')
+  assert.equal(list.flex, '1 1 0px')
   assert.equal(list.minHeight, 0)
   assert.equal(list.overflowY, 'auto')
-  // The stretch that hands the height down is what makes the two styles above add up.
+  // The stretch that hands the height down is what makes the three styles above add up.
   assert.equal(T.panelStyle.alignItems, 'stretch')
+  // A short window still cannot push the popover past the viewport, and the left column then
+  // scrolls instead of being clipped.
+  assert.equal(T.panelStyle.maxHeight, 'calc(100vh - 96px)')
   assert.equal(T.panelColumnStyle.display, 'grid')
-  assert.equal(T.allowedColumnStyle.flexDirection, 'column')
-  assert.equal(T.allowedColumnStyle.minHeight, 0)
+  assert.equal(T.panelColumnStyle.overflowY, 'auto')
+})
+
+test('the popover height is capped to the room above its trigger, not just the viewport', () => {
+  // `100vh` alone let the top of the panel hang outside the window when the composer sat low:
+  // the panel opens upward, so the measured trigger position is the real ceiling.
+  assert.equal(T.panelStyleOf(null).maxHeight, 'calc(100vh - 96px)')
+  assert.equal(T.panelStyleOf(undefined).maxHeight, 'calc(100vh - 96px)')
+  const measure = T.panelStyleOf(417)
+  assert.equal(measure.maxHeight, '417px')
+  // Everything else stays the popover's own style, and the static one is not mutated.
+  assert.equal(measure.position, 'absolute')
+  assert.equal(measure.display, 'flex')
+  assert.equal(measure.alignItems, 'stretch')
+  assert.equal(T.panelStyle.maxHeight, 'calc(100vh - 96px)')
+})
+
+test('the popover reserves the host top chrome, so its rounded top is never clipped', () => {
+  // A centred composer in an empty session: trigger.top 493 leaves 437px, which puts the panel's
+  // top edge at y = 48 — right under the session header — instead of the 8px that was being
+  // painted over the header's 48px and hiding "Enable dispatch mode" and "Allowed Tools".
+  assert.equal(T.panelRoom(493, 900), 437)
+  // A composer at the bottom of a live session has room for the whole panel, so the left column
+  // never needs to scroll there.
+  assert.equal(T.panelRoom(820, 900), 764)
+  // Floor and viewport guard still apply.
+  assert.equal(T.panelRoom(120, 900), 240)
+  assert.equal(T.panelRoom(4000, 900), 804)
+  assert.equal(T.panelRoom(undefined, 900), null)
+  // A vertical scrollbar must never turn into a sideways one in the left column.
+  assert.equal(T.panelColumnStyle.gridTemplateColumns, 'minmax(0, 1fr)')
+  assert.equal(T.panelColumnStyle.overflowX, 'hidden')
+  assert.equal(T.panelColumnStyle.overflowY, 'auto')
+  assert.equal(T.panelColumnStyle.gap, '8px')
 })
 
