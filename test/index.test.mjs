@@ -164,6 +164,7 @@ function fakeCtx({
     superviseEnabled: { get: () => true },
     superviseIntervalSeconds: { get: () => 600 },
     superviseMaxNoticesPerChild: { get: () => 3 },
+    superviseUnlimited: { get: () => false },
     superviseNotifyOnNoProgress: { get: () => false },
     toolCatalog: catalogRef,
   }
@@ -704,6 +705,59 @@ test('deliver queues exactly one notice with followup, never steer', async () =>
     senderSessionId: 'child-1',
   })
   assert.equal(calls.flush.length, 1)
+})
+
+test('liveConfig reads superviseUnlimited on every tick, so the panel switch applies at once', async () => {
+  const state = { unlimited: false, max: 0 }
+  const config = {
+    superviseEnabled: { get: () => true },
+    superviseIntervalSeconds: { get: () => 600 },
+    superviseMaxNoticesPerChild: { get: () => state.max },
+    superviseNotifyOnNoProgress: { get: () => false },
+    superviseUnlimited: { get: () => state.unlimited },
+  }
+  const queued = []
+  const parent = { id: 'p', session: { id: 'parent-session' }, followup: (message) => queued.push(message) }
+  const child = { id: 'child-1', log: [] }
+  const host = fakeSupervisionHost({
+    parents: new Map([
+      ['p', parent],
+      ['child-1', child],
+    ]),
+    sessions: new Map([['child-1', child]]),
+  })
+  const supervision = mod.createSupervision({
+    ctx: host.ctx,
+    config,
+    loadLlm: async () => ({ createUserMessage: (input) => input }),
+  })
+  const base = Date.now()
+  supervision.supervisor.track({
+    childId: 'child-1',
+    parentId: 'p',
+    label: '慢活',
+    startedAt: base - 11 * 60_000,
+  })
+
+  // A zero budget with the unlimited switch off is "supervision off": nothing is sent,
+  // but the running child stays registered.
+  await supervision.supervisor.tick(base)
+  assert.equal(queued.length, 0)
+  assert.equal(supervision.supervisor.size(), 1)
+
+  // Flipping the switch on the live config is enough: no rebuild, no re-dispatch.
+  state.unlimited = true
+  await supervision.supervisor.tick(base + 600_000)
+  assert.equal(queued.length, 1)
+  assert.match(queued[0].content[0].text, /第 1 次/)
+  assert.equal(queued[0].content[0].text.includes('/0'), false)
+
+  // Turning it back off restores the numeric budget, which is already spent.
+  state.unlimited = false
+  state.max = 1
+  await supervision.supervisor.tick(base + 1_200_000)
+  assert.equal(queued.length, 1)
+  assert.equal(supervision.supervisor.size(), 1)
 })
 
 /**

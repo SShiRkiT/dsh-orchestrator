@@ -1,6 +1,6 @@
 # DSH Orchestrator
 
-[![version](https://img.shields.io/badge/version-0.7.0-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
+[![version](https://img.shields.io/badge/version-0.7.1-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
 
 The "dispatch mode" plugin for DeepSeek Harness.
   
@@ -89,8 +89,9 @@ Every field is volatile: the host stores it and the plugin re-reads it on each u
 | `workerReasoningEffort` | `""` | Subagent reasoning effort; empty means it is not passed and the model resolves the default. |
 | `superviseEnabled` | `true` | Master switch for supervision. |
 | `superviseIntervalSeconds` | `600` | Supervision interval in seconds, an integer 10–86400. |
-| `superviseMaxNoticesPerChild` | `3` | Most notices per subagent, an integer 0–20; `0` means unlimited. |
-| `superviseNotifyOnNoProgress` | `false` | Whether to also notify when the log has no new activity. |
+| `superviseMaxNoticesPerChild` | `3` | Most notices per subagent, an integer 0–20. `0` turns supervision off; the running child stays registered, so raising the number or switching unlimited on resumes it at once. |
+| `superviseUnlimited` | `false` | Unlimited supervision. When on, the `superviseMaxNoticesPerChild` cap (including `0`) is ignored: as long as the child has not stopped, delivered or ended, it is reported every interval, and the notice header drops the denominator (`第 N 次`). |
+| `superviseNotifyOnNoProgress` | `false` | Whether to also notify when the log has no new activity (unlimited supervision always reports). |
 | `toolCatalog` | `[]` | The live tool catalog the plugin publishes: every tool name the host currently offers, which is how the panel lists tools beyond the 12 built-in allowed tools (MCP servers and other plugins included). Written by the plugin; do not edit it by hand. |
 
 The main agent's default route is not part of this configuration: it lives in the host's `agent-default-model` (`provider` / `model` / `reasoningEffort`), is written by the same panel, and is read when a new agent is created.

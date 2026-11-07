@@ -483,6 +483,244 @@ test('the interval field follows a value changed elsewhere', () => {
   assert.equal(field.input().props.value, '1200')
 })
 
+// ---- The patrol notice count and the unlimited switch --------------------------------
+
+function mountCountField(scope) {
+  const view = mount(mod.__test.SuperviseCountField, { scope, t })
+  return {
+    view,
+    input: () => nodes(view.tree).find((node) => node.type === 'input'),
+    toggle: () => nodes(view.tree).find((node) => node.type === T.EnableSwitch),
+    alert: () => nodes(view.tree).find((node) => node.props?.role === 'alert'),
+  }
+}
+
+test('the patrol count field shows the stored value, or 3 when it is absent or malformed', () => {
+  const cases = [
+    [{}, '3'],
+    [{ superviseMaxNoticesPerChild: 0 }, '0'],
+    [{ superviseMaxNoticesPerChild: 1 }, '1'],
+    [{ superviseMaxNoticesPerChild: 20 }, '20'],
+    [{ superviseMaxNoticesPerChild: -1 }, '3'],
+    [{ superviseMaxNoticesPerChild: 21 }, '3'],
+    [{ superviseMaxNoticesPerChild: 12.5 }, '3'],
+    [{ superviseMaxNoticesPerChild: '5' }, '3'],
+    [{ superviseMaxNoticesPerChild: null }, '3'],
+  ]
+  for (const [initial, shown] of cases) {
+    const field = mountCountField(fakeScope({ initial }))
+    const input = field.input()
+    assert.equal(input.props.value, shown, JSON.stringify(initial))
+    // Text plus a numeric keypad keeps "abc" observable; a number input would blank it.
+    assert.equal(input.props.type, 'text')
+    assert.equal(input.props.inputMode, 'numeric')
+    assert.equal(input.props.min, 0)
+    assert.equal(input.props.max, 20)
+    assert.equal(input.props.step, 1)
+    assert.equal(input.props['aria-label'], 'supervise.countLabel')
+    field.view.unmount()
+  }
+})
+
+test('patrolCountOf and parsePatrolCount agree on the 0-20 range and the 3 default', () => {
+  assert.equal(T.patrolCountOf(undefined), 3)
+  assert.equal(T.patrolCountOf({ superviseMaxNoticesPerChild: 0 }), 0)
+  assert.equal(T.patrolCountOf({ superviseMaxNoticesPerChild: 20 }), 20)
+  assert.equal(T.patrolCountOf({ superviseMaxNoticesPerChild: 21 }), 3)
+  assert.equal(T.patrolCountOf({ superviseMaxNoticesPerChild: -1 }), 3)
+  assert.equal(T.patrolCountOf({ superviseMaxNoticesPerChild: 2.5 }), 3)
+  assert.equal(T.patrolCountOf({ superviseMaxNoticesPerChild: '7' }), 3)
+  assert.deepEqual(plain(T.parsePatrolCount('')), { ok: true, count: 3, empty: true })
+  assert.deepEqual(plain(T.parsePatrolCount('   ')), { ok: true, count: 3, empty: true })
+  assert.deepEqual(plain(T.parsePatrolCount(' 0 ')), { ok: true, count: 0, empty: false })
+  assert.deepEqual(plain(T.parsePatrolCount('20')), { ok: true, count: 20, empty: false })
+  for (const bad of ['-1', '21', 'abc', '1.5', '1e3', '+3']) {
+    assert.deepEqual(plain(T.parsePatrolCount(bad)), { ok: false, empty: false }, bad)
+  }
+})
+
+test('unlimitedOf only accepts a literal true', () => {
+  assert.equal(T.unlimitedOf({ superviseUnlimited: true }), true)
+  assert.equal(T.unlimitedOf({ superviseUnlimited: false }), false)
+  assert.equal(T.unlimitedOf({ superviseUnlimited: 'true' }), false)
+  assert.equal(T.unlimitedOf({}), false)
+  assert.equal(T.unlimitedOf(undefined), false)
+})
+
+test('a valid patrol count, including 0, is written on blur with the snapshot revision', async () => {
+  for (const [typed, stored] of [
+    ['0', 0],
+    ['1', 1],
+    ['20', 20],
+    [' 7 ', 7],
+  ]) {
+    const scope = fakeScope({ initial: { superviseMaxNoticesPerChild: 3 } })
+    const field = mountCountField(scope)
+    field.input().props.onChange({ target: { value: typed } })
+    await field.input().props.onBlur()
+    assert.equal(scope.calls.length, 1, typed)
+    assert.deepEqual(plain(scope.calls[0].ops), [{ op: 'set', path: ['superviseMaxNoticesPerChild'], value: stored }])
+    assert.equal(scope.calls[0].expected, 1)
+    assert.equal(scope.getSnapshot().value.superviseMaxNoticesPerChild, stored)
+    assert.equal(field.input().props.value, String(stored))
+    assert.equal(field.alert(), undefined)
+    field.view.unmount()
+  }
+})
+
+test('Enter also commits a valid patrol count', async () => {
+  const scope = fakeScope({ initial: { superviseMaxNoticesPerChild: 3 } })
+  const field = mountCountField(scope)
+  field.input().props.onChange({ target: { value: '0' } })
+  await field.input().props.onKeyDown({ key: 'Enter', preventDefault() {} })
+  assert.deepEqual(plain(scope.calls[0].ops), [{ op: 'set', path: ['superviseMaxNoticesPerChild'], value: 0 }])
+})
+
+test('an empty patrol count writes the 3 default', async () => {
+  const scope = fakeScope({ initial: { superviseMaxNoticesPerChild: 9 } })
+  const field = mountCountField(scope)
+  field.input().props.onChange({ target: { value: '   ' } })
+  await field.input().props.onBlur()
+  assert.equal(scope.calls.length, 1)
+  assert.deepEqual(plain(scope.calls[0].ops), [{ op: 'set', path: ['superviseMaxNoticesPerChild'], value: 3 }])
+  assert.equal(field.input().props.value, '3')
+})
+
+test('invalid patrol counts are rejected, restored, and explained', async () => {
+  for (const bad of ['-1', '21', 'abc', '1.5']) {
+    const scope = fakeScope({ initial: { superviseMaxNoticesPerChild: 5 } })
+    const field = mountCountField(scope)
+    field.input().props.onChange({ target: { value: bad } })
+    await field.input().props.onBlur()
+    assert.equal(scope.calls.length, 0, bad)
+    assert.equal(field.input().props.value, '5', bad)
+    assert.equal(field.alert().kids[0], 'supervise.countInvalid', bad)
+    field.view.unmount()
+  }
+})
+
+test('an unchanged patrol count does not mutate the config', async () => {
+  const scope = fakeScope({ initial: { superviseMaxNoticesPerChild: 3 } })
+  const field = mountCountField(scope)
+  field.input().props.onChange({ target: { value: ' 3 ' } })
+  await field.input().props.onBlur()
+  assert.equal(scope.calls.length, 0)
+  assert.equal(field.input().props.value, '3')
+  assert.equal(field.alert(), undefined)
+})
+
+test('Escape abandons the patrol count edit and restores the stored value', () => {
+  const scope = fakeScope({ initial: { superviseMaxNoticesPerChild: 4 } })
+  const field = mountCountField(scope)
+  field.input().props.onChange({ target: { value: '11' } })
+  field.input().props.onKeyDown({ key: 'Escape', preventDefault() {} })
+  assert.equal(scope.calls.length, 0)
+  assert.equal(field.input().props.value, '4')
+  assert.equal(field.alert(), undefined)
+})
+
+test('a rejected patrol count write is caught and shown without crashing', async () => {
+  const scope = fakeScope({ reject: 'settings changed since it was read', initial: { superviseMaxNoticesPerChild: 3 } })
+  const field = mountCountField(scope)
+  field.input().props.onChange({ target: { value: '8' } })
+  await field.input().props.onBlur()
+  assert.equal(scope.calls.length, 1)
+  assert.equal(field.alert().kids[0], 'supervise.saveFailed')
+  assert.equal(field.input().props.value, '3')
+})
+
+test('the patrol count field follows a value changed elsewhere', () => {
+  const scope = fakeScope({ initial: { superviseMaxNoticesPerChild: 3 } })
+  const field = mountCountField(scope)
+  scope.externalSet({ superviseMaxNoticesPerChild: 12 })
+  assert.equal(field.input().props.value, '12')
+})
+
+test('the unlimited switch reuses EnableSwitch and is labelled for the patrol count', () => {
+  const field = mountCountField(fakeScope())
+  const toggle = field.toggle()
+  assert.ok(toggle)
+  assert.equal(toggle.props.label, 'supervise.unlimitedLabel')
+  assert.equal(toggle.props.checked, false)
+  assert.equal(toggle.props.disabled, false)
+  // The label text sits beside the switch, not inside it.
+  const labels = nodes(field.view.tree).filter((node) => node.type === 'span' && node.kids?.[0] === 'supervise.unlimitedLabel')
+  assert.equal(labels.length, 1)
+})
+
+test('toggling unlimited writes superviseUnlimited and locks the count field', async () => {
+  const scope = fakeScope({ initial: { superviseMaxNoticesPerChild: 5 } })
+  const field = mountCountField(scope)
+  assert.equal(field.input().props.disabled, false)
+
+  await field.toggle().props.onChange(true)
+  assert.deepEqual(plain(scope.calls[0].ops), [{ op: 'set', path: ['superviseUnlimited'], value: true }])
+  assert.equal(scope.calls[0].expected, 1)
+  assert.equal(scope.getSnapshot().value.superviseUnlimited, true)
+  assert.equal(field.toggle().props.checked, true)
+  // Locked: the count can no longer be edited, and the field is visibly greyed out.
+  assert.equal(field.input().props.disabled, true)
+  assert.equal(field.input().props.style.opacity, 0.5)
+  assert.equal(field.input().props.style.cursor, 'not-allowed')
+  assert.equal(field.alert(), undefined)
+
+  await field.toggle().props.onChange(false)
+  assert.deepEqual(plain(scope.calls[1].ops), [{ op: 'set', path: ['superviseUnlimited'], value: false }])
+  assert.equal(field.toggle().props.checked, false)
+  // Unlocked again, and the stored count is still there to edit.
+  assert.equal(field.input().props.disabled, false)
+  assert.equal(field.input().props.style.opacity, 1)
+  assert.equal(field.input().props.value, '5')
+})
+
+test('a stored unlimited flag starts with the count field locked', () => {
+  const scope = fakeScope({ initial: { superviseMaxNoticesPerChild: 7, superviseUnlimited: true } })
+  const field = mountCountField(scope)
+  assert.equal(field.toggle().props.checked, true)
+  assert.equal(field.input().props.disabled, true)
+  assert.equal(field.input().props.value, '7')
+})
+
+test('turning unlimited on discards an uncommitted count draft', async () => {
+  const scope = fakeScope({ initial: { superviseMaxNoticesPerChild: 6 } })
+  const field = mountCountField(scope)
+  field.input().props.onChange({ target: { value: '17' } })
+  await field.toggle().props.onChange(true)
+  assert.equal(field.input().props.value, '6')
+  assert.equal(scope.getSnapshot().value.superviseMaxNoticesPerChild, 6)
+})
+
+test('a rejected unlimited write is reported and leaves the switch off', async () => {
+  const scope = fakeScope({ reject: 'settings changed since it was read' })
+  const field = mountCountField(scope)
+  await field.toggle().props.onChange(true)
+  assert.equal(scope.calls.length, 1)
+  assert.equal(field.alert().kids[0], 'supervise.saveFailed')
+  assert.equal(field.toggle().props.checked, false)
+  assert.equal(field.input().props.disabled, false)
+})
+
+test('a read-only scope disables both the count field and the unlimited switch', async () => {
+  const scope = fakeScope({ writable: false })
+  const field = mountCountField(scope)
+  assert.equal(field.input().props.disabled, true)
+  assert.equal(field.toggle().props.disabled, true)
+  await field.toggle().props.onChange(true)
+  assert.equal(scope.calls.length, 0)
+  assert.equal(field.alert().kids[0], 'supervise.readonly')
+})
+
+test('the patrol count hint disappears when its timer fires', async () => {
+  const scope = fakeScope({ initial: { superviseMaxNoticesPerChild: 3 } })
+  const field = mountCountField(scope)
+  field.input().props.onChange({ target: { value: '99' } })
+  await field.input().props.onBlur()
+  assert.ok(field.alert())
+  const timer = timers[timers.length - 1]
+  timer.fn()
+  assert.equal(field.alert(), undefined)
+})
+
 // ---- Allowed tools ------------------------------------------------------------------
 
 // The panel cannot ask the host for a tool catalog (the session remote has no such
@@ -906,6 +1144,14 @@ test('the popover is two columns, the original panel then the allowed tools colu
   const switchRow = nodes(left).find((node) => node.type === T.EnableSwitch)
   assert.ok(switchRow)
   assert.equal(switchRow.props.label, 'route.enable')
+  // Both supervision fields live in the left column, interval first then the count.
+  const intervalField = nodes(left).find((node) => node.type === T.SuperviseIntervalField)
+  const countField = nodes(left).find((node) => node.type === T.SuperviseCountField)
+  assert.ok(intervalField)
+  assert.ok(countField)
+  assert.equal(intervalField.props.scope, scopes.orch)
+  assert.equal(countField.props.scope, scopes.orch)
+  assert.ok(nodes(left).indexOf(intervalField) < nodes(left).indexOf(countField))
   view.unmount()
 })
 
