@@ -87,10 +87,16 @@ const HOST_TOOLS = [
   ...mod.DEFAULT_ALLOWED_TOOLS,
 ]
 
-/** What a whitelist hides out of `HOST_TOOLS`: everything it does not name, transport aside. */
-function hiddenOf(allowed) {
-  return HOST_TOOLS.filter((name) => name !== 'run_code' && !allowed.includes(name))
-}
+/**
+ * What `tools.definitions(scope)` hands back before the plugin wraps it: every name the
+ * scope can see, global and scope-local alike. `run_code` is left out on purpose — a host
+ * in native mode never lists the PTC transport, so the default surface models that; a test
+ * that needs the PTC shape adds it explicitly.
+ */
+const SURFACE_TOOLS = HOST_TOOLS.filter((name) => name !== 'run_code')
+
+/** The names one `definitions()` result carries. */
+const namesOf = (list) => list.map((definition) => definition.name)
 
 /** A minimal ctx: only the members `apply` touches, each recording what it got.
  *  `enabled` and the live `allowedTools` are mutable so a test can flip the switch or the
@@ -103,6 +109,7 @@ function fakeCtx({
   sessions,
   stateOf,
   catalogNames = HOST_TOOLS,
+  surface = SURFACE_TOOLS,
 } = {}) {
   const state = { enabled, allowed }
   const projections = []
@@ -134,6 +141,9 @@ function fakeCtx({
       },
       // The context-global view the catalog reads: names plus an empty visible map.
       view: () => ({ knownNames: new Set(catalogNames), visible: new Map() }),
+      // The one exit a model request is built from. `apply` wraps it, so a test reads back
+      // exactly the declarations a main agent or a child would be offered.
+      definitions: () => surface.map((name) => ({ name })),
     },
     subagents: {},
     agents: agents ?? { get: () => undefined },
@@ -189,8 +199,12 @@ function fakeCtx({
   }
 }
 
-/** A stand-in agent with its own tool registry, so gate side effects are observable. */
-function fakeAgent({ id = 'agent-1', depth, header = {}, hidden = [] } = {}) {
+/**
+ * A stand-in agent with its own tool registry. `restrict` only records calls — the plugin
+ * is expected never to make one, which is what keeps `tools/change` quiet — and `guard`
+ * hands back a disposer so the agent/disposed path is observable.
+ */
+function fakeAgent({ id = 'agent-1', depth, header = {} } = {}) {
   const restricted = []
   const guards = []
   const registered = []
@@ -206,14 +220,17 @@ function fakeAgent({ id = 'agent-1', depth, header = {}, hidden = [] } = {}) {
         },
         guard(fn) {
           guards.push(fn)
+          let live = true
+          return () => {
+            if (!live) return
+            live = false
+            const at = guards.indexOf(fn)
+            if (at !== -1) guards.splice(at, 1)
+          }
         },
         register(tool) {
           registered.push(tool)
           return () => {}
-        },
-        // The per-scope view: a hidden name is what a preset tool filter would return.
-        get(name) {
-          return hidden.includes(name) ? undefined : {}
         },
       },
     },
@@ -235,77 +252,86 @@ test('a child with a persisted delegation depth is never gated', () => {
   // tool and keeping only delegate/orchestrate. Its depth lives in the session header.
   for (const { agent, restricted, guards } of [
     fakeAgent({ header: { delegationDepth: 1 } }),
-    fakeAgent({ header: {} , depth: 1 }),
+    fakeAgent({ header: {}, depth: 1 }),
   ]) {
-    const { created } = start()
+    const { created, ctx } = start()
     created({ agent, source: 'resume' })
-    assert.deepEqual(restricted, [], 'restrict must not run for a child')
+    assert.deepEqual(restricted, [], 'a child triggers no restriction at all')
     assert.equal(guards.length, 0, 'no guard may be registered for a child')
+    assert.equal(namesOf(ctx.tools.definitions(agent)).includes('read'), true, 'the child keeps its working tools')
   }
 })
 
-test('a delegated child gets a short role-neutral description, never the main-agent rule', () => {
-  // Workers inherit the global table, so without a scoped shadow they would read the
-  // main-agent rule and could take it as a ban on their own tools.
-  const { created } = start()
-  const { agent, registered } = fakeAgent({ header: { delegationDepth: 1 } })
+test('a delegated child loses the delegation tools and keeps the native ones', () => {
+  // Workers inherit the global table, so the surface drops the plugin's own pair — their
+  // descriptions are written for a planner. The host's `subagent`, `workflow` and every
+  // scope-local `ops_*` tool stay untouched: nothing is restricted.
+  const { created, ctx } = start()
+  const { agent, restricted, registered } = fakeAgent({ header: { delegationDepth: 1 } })
   created({ agent, source: 'resume' })
-  assert.deepEqual(registered.map((tool) => tool.name).sort(), ['delegate', 'orchestrate'])
-  for (const tool of registered) {
-    assert.equal(/main[- ]agent/i.test(tool.description), false, tool.name)
-    assert.equal(tool.description.includes('Main-agent rule:'), false, tool.name)
-    assert.equal(tool.description.includes('runs ONLY in a worker'), false, tool.name)
-    assert.equal(tool.description.includes(mod.DEFAULT_ALLOWED_TOOLS[0]), false, tool.name)
-    assert.ok(tool.description.length < 400, tool.name)
+  const names = namesOf(ctx.tools.definitions(agent))
+  assert.deepEqual(restricted, [], 'a child is masked by the surface, not by restrict')
+  assert.deepEqual(registered, [], 'a child gets no scoped tool registration')
+  assert.equal(names.includes('delegate'), false)
+  assert.equal(names.includes('orchestrate'), false)
+  for (const name of ['subagent', 'workflow', 'ops_bash', 'ops_read_files', 'read', 'edit']) {
+    assert.equal(names.includes(name), true, name)
   }
 })
 
-test('a child a preset hid delegation from gets no shadow that would defeat the filter', () => {
-  const { created } = start()
-  const { agent, registered } = fakeAgent({ header: { delegationDepth: 1 }, hidden: ['delegate'] })
-  created({ agent, source: 'resume' })
-  assert.deepEqual(registered.map((tool) => tool.name), ['orchestrate'])
+test('a child is masked on its very first request, and no restriction is ever installed', () => {
+  // The surface derives the deny list from the scope, so the first `preStep` assembly of a
+  // new worker already lacks the pair: no window, no `tools/change`, no cache churn.
+  const { created, ctx } = start()
+  const { agent, restricted } = fakeAgent({ depth: 1 })
+  created({ agent, source: 'create' })
+  assert.equal(namesOf(ctx.tools.definitions(agent)).includes('delegate'), false)
+  assert.equal(namesOf(ctx.tools.definitions(agent)).includes('orchestrate'), false)
+  assert.deepEqual(restricted, [])
 })
 
-test('a main agent gets the full rule and no scoped shadows', () => {
+test('a main agent gets the full rule and no scoped registration', () => {
   const { created, tools } = start()
   const { agent, registered } = fakeAgent()
   created({ agent, source: 'create' })
   assert.deepEqual(registered, [], 'the global pair is enough for a main agent')
   const delegate = tools.find((tool) => tool.name === 'delegate')
   const orchestrate = tools.find((tool) => tool.name === 'orchestrate')
-  assert.match(delegate.description, /Main-agent rule: the main agent plans only/)
-  assert.match(orchestrate.description, /Main-agent rule: the main agent plans only/)
+  assert.match(delegate.description, /主代理规则：主代理只负责规划/)
+  // The rule is rendered once: the batch brief only points back at it.
+  assert.match(orchestrate.description, /^主代理规则同 delegate/)
+  assert.equal(orchestrate.description.includes('主代理可用工具'), false)
+  assert.equal(orchestrate.description.includes('【插件重试｜子代理 <id>】'), false)
 })
 
-test('a panel refresh still re-masks main agents and leaves a child shadow in place', () => {
-  const main = maskAgent()
-  const child = maskAgent({ id: 'child-1', depth: 1 })
-  const childShadows = []
-  child.agent.ctx.tools.register = (tool) => {
-    childShadows.push(tool.name)
-    return () => {}
-  }
-  const roots = () => [main.agent, child.agent]
-  const { handlers, created, state } = start({ agents: { get: () => undefined, roots } })
+test('a panel write reaches the next request without a re-mask or a new registration', () => {
+  const { created, ctx, state, tools } = start()
+  const delegated = tools.length
+  const main = fakeAgent()
   created({ agent: main.agent, source: 'create' })
-  created({ agent: child.agent, source: 'startup' })
-  assert.deepEqual(childShadows, ['delegate', 'orchestrate'])
+  assert.deepEqual(namesOf(ctx.tools.definitions(main.agent)), mod.DEFAULT_ALLOWED_TOOLS)
+  assert.deepEqual(main.restricted, [], 'the surface needs no restriction')
+
   state.allowed = [...mod.DEFAULT_ALLOWED_TOOLS, 'read']
-  handlers.get('loader/volatile-update')()
-  assert.equal(main.mask.has('read'), false, 'the main mask follows the panel write')
-  assert.deepEqual(childShadows, ['delegate', 'orchestrate'], 'a refresh must not register anything else')
+  assert.equal(namesOf(ctx.tools.definitions(main.agent)).includes('read'), true)
+  state.allowed = mod.DEFAULT_ALLOWED_TOOLS
+  assert.equal(namesOf(ctx.tools.definitions(main.agent)).includes('read'), false)
+  assert.equal(tools.length, delegated, 'a whitelist change registers nothing')
+  assert.deepEqual(main.restricted, [], 'and still restricts nothing')
 })
 
-test('a main agent is masked and guarded, and only the shipped whitelist passes', () => {
-  const { created } = start()
+test('a main agent is guarded, and the surface carries only the shipped whitelist', () => {
+  const { created, ctx } = start()
   const { agent, restricted, guards } = fakeAgent()
   created({ agent, source: 'create' })
-  // Whitelist-driven: every catalog name the shipped list does not cover is hidden, and
-  // `run_code` is never among them because `tools.restrict` refuses to hide the transport.
-  assert.deepEqual(restricted, hiddenOf(mod.DEFAULT_ALLOWED_TOOLS))
-  assert.equal(restricted.includes('run_code'), false)
+  // No mask any more: every name the whitelist leaves out is filtered at definitions(),
+  // own-scope tools such as `ops_bash` and the native `subagent` included.
+  assert.deepEqual(restricted, [])
   assert.equal(guards.length, 1)
+  assert.deepEqual(namesOf(ctx.tools.definitions(agent)), mod.DEFAULT_ALLOWED_TOOLS)
+  for (const name of ['read', 'edit', 'ops_bash', 'ops_read_files', 'subagent', 'workflow']) {
+    assert.equal(namesOf(ctx.tools.definitions(agent)).includes(name), false, name)
+  }
   for (const name of mod.DEFAULT_ALLOWED_TOOLS) assert.equal(guards[0]({ name }), undefined, name)
   assert.match(guards[0]({ name: 'edit' }), /"edit" is not available to the main agent/)
   assert.match(guards[0]({ name: 'subagent' }), /"subagent" is not available to the main agent/)
@@ -357,10 +383,11 @@ test('the shipped whitelist is twelve planning tools, and every other name is re
     assert.match(allowGuard(shipped)({ name }), /is not available to the main agent/, name)
   }
 
-  const { created } = start()
-  const { agent, restricted, guards } = fakeAgent()
+  const { created, ctx } = start()
+  const { agent, guards } = fakeAgent()
   created({ agent, source: 'create' })
-  assert.equal(restricted.includes('compress'), false, 'compress is whitelisted, so not hidden')
+  const names = namesOf(ctx.tools.definitions(agent))
+  assert.equal(names.includes('compress'), true, 'compress is whitelisted, so it stays declared')
   assert.equal(guards[0]({ name: 'compress' }), undefined, 'compress must pass the guard')
   for (const name of ['ops_bash', 'read', 'decompress']) {
     assert.match(guards[0]({ name }), /is not available to the main agent/, name)
@@ -369,10 +396,11 @@ test('the shipped whitelist is twelve planning tools, and every other name is re
 })
 
 test('a resumed agent with a parentSession but no depth is gated and warns', () => {
-  const { created, logs } = start()
+  const { created, ctx, logs } = start()
   const { agent, restricted, guards } = fakeAgent({ id: 'cold-child', header: { parentSession: 'root-session' } })
   created({ agent, source: 'resume' })
-  assert.deepEqual(restricted, hiddenOf(mod.DEFAULT_ALLOWED_TOOLS))
+  assert.deepEqual(restricted, [], 'the surface replaces the old mask entirely')
+  assert.deepEqual(namesOf(ctx.tools.definitions(agent)), mod.DEFAULT_ALLOWED_TOOLS)
   assert.equal(guards.length, 1)
   assert.equal(logs.warn.length, 1)
   assert.match(logs.warn[0], /cold-child/)
@@ -392,16 +420,22 @@ test('the warning fires only for a resume that fell through the depth test', () 
   assert.equal(resumedChild.logs.warn.length, 0)
 })
 
-test('the switch being off still installs the guard and stays quiet', () => {
+test('the switch being off still installs the guard and hands the host surface back intact', () => {
   // The gate is installed even while dispatch mode is off, so flipping the switch on
   // in an open conversation takes effect without a restart; the info log follows the switch.
-  const { created, logs } = start({ enabled: false })
+  const { created, ctx, state, logs } = start({ enabled: false })
   const { agent, restricted, guards } = fakeAgent()
   created({ agent, source: 'create' })
   assert.deepEqual(restricted, [])
   assert.equal(guards.length, 1)
+  assert.deepEqual(namesOf(ctx.tools.definitions(agent)), SURFACE_TOOLS, 'off means host behaviour')
   assert.equal(logs.info.length, 0)
   assert.equal(logs.warn.length, 0)
+
+  // Turning it on filters the next request even though nothing was re-installed.
+  state.enabled = true
+  assert.deepEqual(namesOf(ctx.tools.definitions(agent)), mod.DEFAULT_ALLOWED_TOOLS)
+  assert.deepEqual(restricted, [], 'still no restriction')
 })
 
 test('a whitelist written in the panel reaches an open conversation, live', () => {
@@ -429,22 +463,23 @@ test('a whitelist written in the panel reaches an open conversation, live', () =
 
 test('the whitelist clause follows the live config without re-registering', () => {
   // The description is a getter, so the same registered tool renders the new list: a
-  // settings change reaches the prompt without a restart or a new session.
+  // settings change reaches the prompt without a restart or a new session. The clause is
+  // rendered by `delegate` only — `orchestrate` points at it instead of repeating it.
   const { tools, state } = start()
   const delegate = tools.find((tool) => tool.name === 'delegate')
   const orchestrate = tools.find((tool) => tool.name === 'orchestrate')
   const allowedOf = (tool) =>
-    /Allowed for the main agent \(whitelist-driven; every other tool is blocked\): ([^.]+)\./.exec(tool.description)?.[1]
+    /主代理可用工具（白名单驱动，其余全部禁用）: ([^。]+)。/.exec(tool.description)?.[1]
   assert.equal(allowedOf(delegate), mod.DEFAULT_ALLOWED_TOOLS.join(', '))
-  assert.equal(allowedOf(orchestrate), mod.DEFAULT_ALLOWED_TOOLS.join(', '))
+  assert.equal(allowedOf(orchestrate), undefined)
 
   state.allowed = ['delegate', 'orchestrate', 'read']
   assert.equal(allowedOf(delegate), 'delegate, orchestrate, read')
-  assert.equal(allowedOf(orchestrate), 'delegate, orchestrate, read')
+  assert.equal(orchestrate.description.includes('read'), false)
 
   // The rule has a second sentence for the case where the panel unchecks everything.
   state.allowed = []
-  assert.match(delegate.description, /No tools are currently allowed for the main agent\./)
+  assert.match(delegate.description, /当前主代理无可用工具（白名单为空）。/)
   assert.equal(allowedOf(delegate), undefined)
 })
 /** Only the members supervision adapters use, with recording friendly defaults. */
@@ -760,127 +795,117 @@ test('liveConfig reads superviseUnlimited on every tick, so the panel switch app
   assert.equal(supervision.supervisor.size(), 1)
 })
 
-/**
- * An agent whose deny mask is a real set with real disposers. `lifts` counts released
- * handles, so a refresh that leaks (or double-disposes) one is visible here.
- */
-function maskAgent({ id = 'agent-1', globals = HOST_TOOLS, depth, header = {} } = {}) {
-  const mask = new Set()
-  const counts = { restrict: 0, lift: 0 }
-  let guard
-  return {
-    mask,
-    counts,
-    getGuard: () => guard,
-    agent: {
-      id,
-      options: { provider: 'p', model: 'm', ...(depth === undefined ? {} : { subagentDepth: depth }) },
-      session: { header },
-      ctx: {
-        tools: {
-          restrict({ deny }) {
-            const [tool] = deny
-            if (!globals.includes(tool)) throw new Error('tools.restrict() names unknown global tool "' + tool + '"')
-            counts.restrict += 1
-            mask.add(tool)
-            let live = true
-            return () => {
-              if (!live) throw new Error('a restriction was disposed twice')
-              live = false
-              counts.lift += 1
-              mask.delete(tool)
-            }
-          },
-          guard(fn) {
-            guard = fn
-          },
-        },
-      },
-    },
-  }
-}
-
-test('a panel write re-applies the mask on every live main agent, in the open session', () => {
-  const main = maskAgent()
-  const child = maskAgent({ id: 'child-1', depth: 1 })
-  const { handlers, created, state } = start({ agents: { get: () => undefined, roots: () => [main.agent, child.agent] } })
+test('a panel write reaches every live main agent on its next request, not by re-masking', () => {
+  const main = fakeAgent()
+  const child = fakeAgent({ id: 'child-1', depth: 1 })
+  const { created, ctx, state } = start({
+    agents: { get: () => undefined, roots: () => [main.agent, child.agent] },
+  })
   created({ agent: main.agent, source: 'create' })
-  assert.equal(main.mask.has('read'), true)
-  assert.equal(child.mask.size, 0, 'a child is never gated')
+  created({ agent: child.agent, source: 'create' })
+  assert.equal(namesOf(ctx.tools.definitions(main.agent)).includes('read'), false)
+  assert.equal(
+    namesOf(ctx.tools.definitions(child.agent)).includes('read'),
+    true,
+    'a child keeps its working tools',
+  )
 
-  // The panel checks `read`: allowedTools gains it, then the loader announces the write.
+  // The panel checks `read`: allowedTools gains it and the next request sees it, live.
   state.allowed = [...mod.DEFAULT_ALLOWED_TOOLS, 'read']
-  const volatile = handlers.get('loader/volatile-update')
-  assert.equal(typeof volatile, 'function', 'apply must subscribe to loader/volatile-update')
-  volatile()
-  assert.equal(main.mask.has('read'), false, 'the next request sees the table without read')
-  assert.equal(main.mask.has('ops_bash'), true, 'every other name stays hidden')
-  assert.equal(child.mask.size, 0, 'a refresh must not touch a child')
+  assert.equal(namesOf(ctx.tools.definitions(main.agent)).includes('read'), true)
+  assert.equal(
+    namesOf(ctx.tools.definitions(main.agent)).includes('ops_bash'),
+    false,
+    'every other name stays out',
+  )
+  assert.equal(
+    namesOf(ctx.tools.definitions(child.agent)).includes('delegate'),
+    false,
+    'the child deny list never moves',
+  )
 
-  // Unchecking it again hides it again.
   state.allowed = mod.DEFAULT_ALLOWED_TOOLS
-  volatile()
-  assert.equal(main.mask.has('read'), true)
+  assert.equal(namesOf(ctx.tools.definitions(main.agent)).includes('read'), false)
+  assert.deepEqual(main.restricted, [], 'no restriction was ever installed')
+  assert.deepEqual(child.restricted, [])
 })
 
-test('the enable switch flips every restriction in the open session through the same event', () => {
-  const main = maskAgent()
-  const { handlers, created, state } = start({ agents: { get: () => undefined, roots: () => [main.agent] } })
+test('the enable switch flips the surface in the open session through the same live read', () => {
+  const main = fakeAgent()
+  const { created, ctx, handlers, state } = start({
+    agents: { get: () => undefined, roots: () => [main.agent] },
+  })
   created({ agent: main.agent, source: 'create' })
   const volatile = handlers.get('loader/volatile-update')
-  assert.equal(main.mask.size, hiddenOf(mod.DEFAULT_ALLOWED_TOOLS).length)
+  assert.equal(typeof volatile, 'function', 'apply must subscribe to loader/volatile-update')
+  assert.deepEqual(namesOf(ctx.tools.definitions(main.agent)), mod.DEFAULT_ALLOWED_TOOLS)
 
   state.enabled = false
   volatile()
-  assert.equal(main.mask.size, 0, 'off lifts every restriction')
-  assert.equal(main.getGuard()({ name: 'edit' }), undefined, 'and lets every call through')
+  assert.deepEqual(namesOf(ctx.tools.definitions(main.agent)), SURFACE_TOOLS, 'off hands the host table back')
+  assert.equal(main.guards[0]({ name: 'edit' }), undefined, 'and lets every call through')
 
   state.enabled = true
   volatile()
-  assert.equal(main.mask.size, hiddenOf(mod.DEFAULT_ALLOWED_TOOLS).length, 'on restores the table')
-  assert.match(main.getGuard()({ name: 'edit' }), /not available to the main agent/)
+  assert.deepEqual(namesOf(ctx.tools.definitions(main.agent)), mod.DEFAULT_ALLOWED_TOOLS)
+  assert.match(main.guards[0]({ name: 'edit' }), /not available to the main agent/)
 })
 
-test('a disposed agent releases its mask and is not refreshed afterwards', () => {
-  const main = maskAgent()
+test('a disposed agent drops its guard, and a later write reinstalls nothing', () => {
+  const main = fakeAgent()
   const roots = [main.agent]
-  const { handlers, created, state } = start({ agents: { get: () => undefined, roots: () => roots } })
+  const { created, handlers, state } = start({ agents: { get: () => undefined, roots: () => roots } })
   created({ agent: main.agent, source: 'create' })
   const volatile = handlers.get('loader/volatile-update')
   const disposed = handlers.get('agent/disposed')
   assert.equal(typeof disposed, 'function', 'apply must subscribe to agent/disposed')
+  assert.equal(main.guards.length, 1)
+  assert.deepEqual(main.restricted, [])
 
   disposed({ agent: main.agent })
-  assert.equal(main.mask.size, 0, 'the mask is lifted when the agent goes away')
-  assert.equal(main.counts.lift, hiddenOf(mod.DEFAULT_ALLOWED_TOOLS).length)
+  assert.equal(main.guards.length, 0, 'the guard is unregistered with the agent')
 
-  // A later write with the agent gone has nothing to reinstall.
+  // A later write with the agent gone has nothing to reinstall, and must not throw.
   roots.length = 0
   state.allowed = [...mod.DEFAULT_ALLOWED_TOOLS, 'read']
-  volatile()
-  assert.equal(main.mask.size, 0)
+  assert.doesNotThrow(() => volatile())
+  assert.deepEqual(main.restricted, [])
 })
 
-test('an agent created before the plugin mounted is gated on the first panel write', () => {
-  // The registry is the source of truth, so a missed creation hook self-heals.
-  const main = maskAgent({ id: 'pre-existing' })
-  const { handlers, state } = start({ agents: { get: () => undefined, roots: () => [main.agent] } })
-  const volatile = handlers.get('loader/volatile-update')
-  assert.equal(main.mask.size, 0)
+test('an agent created before the plugin mounted is already covered by the surface', () => {
+  // The wrapper reads the scope, not a registry of hooked agents: a missed creation hook
+  // only means no guard for that agent, never an unfiltered request.
+  const preExisting = fakeAgent({ id: 'pre-existing' })
+  const { ctx, state } = start()
+  assert.deepEqual(namesOf(ctx.tools.definitions(preExisting.agent)), mod.DEFAULT_ALLOWED_TOOLS)
   state.allowed = [...mod.DEFAULT_ALLOWED_TOOLS, 'read']
-  volatile()
-  assert.equal(main.mask.has('edit'), true)
-  assert.equal(main.mask.has('read'), false)
+  assert.equal(namesOf(ctx.tools.definitions(preExisting.agent)).includes('read'), true)
 })
 
-test('a refresh without agents.roots, or a broken registry, is not fatal', () => {
+test('a volatile write is never fatal, with or without a usable registry', () => {
   const { handlers } = start()
   const volatile = handlers.get('loader/volatile-update')
   assert.doesNotThrow(() => volatile())
 
-  const broken = start({ agents: { get: () => undefined, roots: () => { throw new Error('registry gone') } } })
+  const broken = start({
+    agents: {
+      get: () => undefined,
+      roots: () => {
+        throw new Error('registry gone')
+      },
+    },
+  })
   assert.doesNotThrow(() => broken.handlers.get('loader/volatile-update')())
-  assert.match(broken.logs.warn.join('\n'), /cannot enumerate live agents/)
+})
+
+test('the surface is owned by one effect and hands the host method back on dispose', () => {
+  const harness = start()
+  const installed = harness.effects.find(({ label }) => label === 'orchestrator: tool surface')
+  assert.equal(typeof installed?.dispose, 'function', 'apply must own the wrapper through an effect')
+  const main = fakeAgent()
+  assert.deepEqual(namesOf(harness.ctx.tools.definitions(main.agent)), mod.DEFAULT_ALLOWED_TOOLS)
+  installed.dispose()
+  assert.deepEqual(namesOf(harness.ctx.tools.definitions(main.agent)), SURFACE_TOOLS)
 })
 
 // ---- Automatic retry of a child that died without a closing message ---------------------

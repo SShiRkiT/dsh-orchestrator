@@ -9,7 +9,6 @@ import {
   readStageOutput,
   runOrchestration,
 } from '../lib/orchestrate.js'
-import { mainAgentRule } from '../lib/rules.js'
 
 const ROUTE = { provider: 'nexus-deepseek', model: 'deepseek-v4.1-flash' }
 const cfg = (provider = ROUTE.provider, model = ROUTE.model, effort = '') => ({
@@ -88,9 +87,9 @@ test('the tool is named orchestrate, takes optional route overrides and defaults
     assert.equal('required' in definition.parameters[key], false)
   }
   for (const key of ['provider', 'model']) {
-    assert.match(definition.parameters[key].description, /only when the user explicitly names/)
+    assert.match(definition.parameters[key].description, /仅当用户显式点名/)
   }
-  assert.match(definition.parameters.reasoning_effort.description, /set it only when the user names it/)
+  assert.match(definition.parameters.reasoning_effort.description, /仅当用户点名时才设置/)
   assert.deepEqual(parseOrchestrateArgs({ items: [1], stages: [{ name: 's', prompt: 'p' }] }), {
     cwd: undefined,
     items: [1],
@@ -245,7 +244,7 @@ test('a pipeline has no global barrier and feeds the previous stage output forwa
   const stage2 = calls.find((spec) => itemOf(spec) === 1 && stageOf(spec) === 1)
   assert.match(stage2.request.prompt[0].text, /Verify\./)
   assert.match(stage2.request.prompt[0].text, /"id":"b"/)
-  assert.match(stage2.request.prompt[0].text, /Previous stage "extract" output \(JSON\):/)
+  assert.match(stage2.request.prompt[0].text, /上一阶段 "extract" 输出 \(JSON\):/)
   assert.match(stage2.request.prompt[0].text, /"i1s0"/)
   assert.equal(result.results[1].output, 'fast')
 })
@@ -581,10 +580,10 @@ test('stage prompts carry the instruction, the original item and the previous ou
     itemCount: 2,
   })
   assert.match(first, /^Extract facts\./)
-  assert.match(first, /Stage "extract" \(1 of 2\) for item 1 of 2\./)
-  assert.match(first, /Original item \(JSON\):\n\{"id":"a","nested":\[1,2\]\}/)
-  assert.match(first, /first stage/)
-  assert.equal(first.includes('Previous stage'), false)
+  assert.match(first, /阶段 "extract"（1\/2），条目 1\/2。/)
+  assert.match(first, /原始条目 \(JSON\):\n\{"id":"a","nested":\[1,2\]\}/)
+  assert.match(first, /这是第一个阶段/)
+  assert.equal(first.includes('上一阶段'), false)
 
   const second = buildStagePrompt({
     stage: { name: 'verify', prompt: 'Verify facts.' },
@@ -595,8 +594,8 @@ test('stage prompts carry the instruction, the original item and the previous ou
     itemCount: 2,
     previous: { stageName: 'extract', output: { facts: ['x'] } },
   })
-  assert.match(second, /Previous stage "extract" output \(JSON\):\n\{"facts":\["x"\]\}/)
-  assert.match(second, /Continue from that output/)
+  assert.match(second, /上一阶段 "extract" 输出 \(JSON\):\n\{"facts":\["x"\]\}/)
+  assert.match(second, /在此基础上继续/)
 
   // A schema stage asks for structured_output first and JSON-only text otherwise.
   assert.equal(first.includes('structured_output'), false)
@@ -609,9 +608,9 @@ test('stage prompts carry the instruction, the original item and the previous ou
     itemIndex: 0,
     itemCount: 1,
   })
-  assert.match(structured, /Prefer the structured_output tool/)
-  assert.match(structured, /reply with only the JSON object that matches the stage schema/)
-  assert.match(structured, /No explanation, no markdown, no code fences\.$/)
+  assert.match(structured, /优先调用一次 structured_output 工具/)
+  assert.match(structured, /只输出符合阶段 schema 的 JSON 对象/)
+  assert.match(structured, /不要解释、不要 Markdown、不要代码块。$/)
 })
 
 test('readStageOutput handles text, a missing result, an empty result and text parts', () => {
@@ -712,60 +711,56 @@ test('reasoning_effort passes through with the override for every worker', async
   })
 })
 
-test('the description keeps the main-agent rule and the whitelist, and states the explicit-request condition', () => {
-  // The rule names exactly what the gate lets through: the whitelist, and nothing else.
-  const allowed = ['delegate', 'orchestrate', 'todo_write']
+test('the description is a compact pipeline brief and does not repeat the main-agent rule', () => {
+  // The rule and the whitelist are rendered by `delegate` only; this text points at them
+  // and then describes the fan-out, so a main agent reads the long rule once.
   const definition = createOrchestrateTool({
     defineTool: (d) => d,
     subagents: {},
     config: cfg(),
-    allowedTools: allowed,
+    allowedTools: ['delegate', 'orchestrate', 'todo_write'],
   })
-  assert.equal(definition.description.startsWith(mainAgentRule(allowed, ORCHESTRATE_TOOL)), true)
-  assert.match(
-    definition.description,
-    /Allowed for the main agent \(whitelist-driven; every other tool is blocked\): delegate, orchestrate, todo_write\./,
-  )
-  assert.match(definition.description, /the main agent plans only/)
-  assert.match(definition.description, /runs ONLY in a worker/i)
-  assert.match(definition.description, /workers are not gated/i)
-  assert.match(definition.description, /not even once/)
-  assert.match(definition.description, /never re-check on a new session or after compression/i)
-  assert.match(definition.description, /only when the current message explicitly names them for this dispatch/i)
-  assert.match(definition.description, /A named model is for this dispatch only/i)
-  assert.match(definition.description, /never reuse one from earlier turns, dispatch or summary/i)
-  assert.match(definition.description, /never assume an unstated default/i)
-  assert.match(definition.description, /if unsure, ask/i)
-  assert.match(definition.description, /compress is available to the main agent/)
-  assert.match(definition.description, /independent delegations start in the same message/i)
-  // The same one-line reminder belongs on both route parameters, where a model would be typed.
+  assert.equal(definition.description.includes('主代理规则：主代理只负责规划'), false)
+  assert.equal(definition.description.includes('主代理可用工具'), false)
+  assert.match(definition.description, /^主代理规则同 delegate/)
+  assert.match(definition.description, /按 item 派发子代理/)
+  assert.match(definition.description, /只有一个 stage 时即批量扇出/)
+  assert.match(definition.description, /不存在全局阶段屏障/)
+  assert.match(definition.description, /阶段指令、原始 item、上一阶段输出会一并给出/)
+  assert.match(definition.description, /所有子代理统一走配置的 worker 路由/)
+  assert.match(definition.description, /其输出是校验过的 JSON 对象/)
+  assert.match(definition.description, /置为 null 并记入 errors/)
+  assert.match(definition.description, /maxConcurrency 限制同时运行的子代理数/)
+  assert.match(definition.description, /可并发安全调用/)
+  // The route parameters carry the same one-line condition, where a model would be typed.
   for (const param of ['provider', 'model']) {
     const description = definition.parameters[param].description
-    assert.match(description, /this one dispatch only/i, param)
-    assert.match(description, /never reuse a model from earlier turns or a summary/i, param)
+    assert.match(description, /仅当用户显式点名/, param)
+    assert.match(description, /仅限本次派发，禁止复用历史轮次或摘要中的模型/, param)
+    assert.match(description, /严禁自行选择模型/, param)
   }
+  assert.match(definition.parameters.reasoning_effort.description, /仅当用户点名时才设置/)
   assert.equal(definition.description.includes('takes no provider or model parameters'), false)
 })
 
-test('the worker variant drops the main-agent rule and keeps the same contract', () => {
-  // A delegated child reads the global description too; its scoped shadow must not
-  // repeat a rule about a role it does not have.
-  const definition = createOrchestrateTool({
+test('the description has no worker variant and does not follow the live whitelist', () => {
+  const bare = createOrchestrateTool({ defineTool: (x) => x, subagents: {}, config: cfg() })
+  const listed = createOrchestrateTool({
     defineTool: (x) => x,
     subagents: {},
     config: cfg(),
     allowedTools: ['delegate', 'orchestrate'],
-    forWorker: true,
   })
-  assert.equal(/main[- ]agent/i.test(definition.description), false)
-  assert.equal(definition.description.includes('Main-agent rule:'), false)
-  assert.equal(definition.description.includes('runs ONLY in a worker'), false)
-  assert.equal(definition.description.includes('delegate, orchestrate'), false)
-  assert.ok(definition.description.length < 400)
-  assert.match(definition.description, /one worker per item/)
-  assert.match(definition.description, /configured route/)
-  // The parameters and the execution path are shared with the main-agent variant.
-  assert.equal(definition.name, ORCHESTRATE_TOOL)
-  assert.equal(definition.parameters.items.required, true)
-  assert.match(definition.parameters.provider.description, /only when the user explicitly names/)
+  assert.equal(bare.description, listed.description)
+  assert.match(bare.description, /按 item 派发子代理/)
+  assert.equal(bare.parameters.items.required, true)
+  assert.deepEqual(Object.keys(bare.parameters).sort(), [
+    'cwd',
+    'items',
+    'maxConcurrency',
+    'model',
+    'provider',
+    'reasoning_effort',
+    'stages',
+  ])
 })
