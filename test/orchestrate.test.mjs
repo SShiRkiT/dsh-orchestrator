@@ -9,6 +9,8 @@ import {
   readStageOutput,
   runOrchestration,
 } from '../lib/orchestrate.js'
+import { createWriteLeases } from '../lib/write-lease.js'
+import { WRITE_SCOPE_TOOL_CODES } from '../lib/write-scope-tool.js'
 
 const ROUTE = { provider: 'nexus-deepseek', model: 'deepseek-v4.1-flash' }
 const cfg = (provider = ROUTE.provider, model = ROUTE.model, effort = '') => ({
@@ -17,8 +19,11 @@ const cfg = (provider = ROUTE.provider, model = ROUTE.model, effort = '') => ({
   workerReasoningEffort: { get: () => effort },
 })
 const exec = (signal = new AbortController().signal) => ({ agent: { id: 'main' }, signal })
-const tool = (config = cfg(), subagents = { resolveMaxDepth: () => 3, startActivation: async () => ({}) }) =>
-  createOrchestrateTool({ defineTool: (definition) => definition, subagents, config })
+const tool = (
+  config = cfg(),
+  subagents = { resolveMaxDepth: () => 3, startActivation: async () => ({}) },
+  leases,
+) => createOrchestrateTool({ defineTool: (definition) => definition, subagents, config, leases })
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 async function waitUntil(predicate, timeoutMs = 1500) {
@@ -82,6 +87,7 @@ test('the tool is named orchestrate, takes optional route overrides and defaults
     'provider',
     'reasoning_effort',
     'stages',
+    'writeScope',
   ])
   for (const key of ['provider', 'model', 'reasoning_effort']) {
     assert.equal('required' in definition.parameters[key], false)
@@ -90,12 +96,30 @@ test('the tool is named orchestrate, takes optional route overrides and defaults
     assert.match(definition.parameters[key].description, /仅当用户显式点名/)
   }
   assert.match(definition.parameters.reasoning_effort.description, /仅当用户点名时才设置/)
+  // The batch-level declaration is optional and has no default, exactly like `delegate`:
+  // omitting it means "not declared", which must stay distinguishable from `[]`.
+  assert.equal('required' in definition.parameters.writeScope, false)
+  assert.equal('default' in definition.parameters.writeScope, false)
+  assert.equal(definition.parameters.writeScope.type, 'array')
+  assert.equal(definition.parameters.writeScope.items.type, 'string')
+  assert.match(definition.parameters.writeScope.description, /write-scope-conflict/)
   assert.deepEqual(parseOrchestrateArgs({ items: [1], stages: [{ name: 's', prompt: 'p' }] }), {
     cwd: undefined,
     items: [1],
     stages: [{ name: 's', prompt: 'p' }],
     maxConcurrency: 4,
   })
+  // The key exists only when the caller declared it, so an undeclared plan keeps the
+  // exact shape every existing caller and test compares against.
+  assert.equal(
+    'writeScope' in parseOrchestrateArgs({ items: [1], stages: [{ name: 's', prompt: 'p' }] }),
+    false,
+  )
+  assert.deepEqual(
+    parseOrchestrateArgs({ items: [1], stages: [{ name: 's', prompt: 'p' }], writeScope: ['src/a.js'] })
+      .writeScope,
+    ['src/a.js'],
+  )
   assert.equal(parseOrchestrateArgs({ cwd: '  work  ', items: [1], stages: [{ name: 's', prompt: 'p' }] }).cwd, 'work')
   assert.equal(LIMITS.items.max, 64)
   assert.equal(LIMITS.stages.max, 8)
@@ -160,6 +184,9 @@ test('invalid arguments and stage schemas fail globally before any worker starts
     [{ items: [1], stages: [stage], extra: true }, /arguments has unknown field "extra"/],
     [{ items: [1], stages: [{ ...stage, provider: 'nexus-deepseek' }] }, /stage 1 has unknown field "provider"/],
     [{ items: [1], stages: [{ ...stage, model: 'deepseek-v4.1-flash' }] }, /stage 1 has unknown field "model"/],
+    // A batch is one write unit: per-stage scope is not part of the contract, and silently
+    // accepting it would promise an isolation the first version does not provide.
+    [{ items: [1], stages: [{ ...stage, writeScope: ['src/a.js'] }] }, /stage 1 has unknown field "writeScope"/],
     [{ items: [1], stages: [{ ...stage, schema: { type: 'array' } }] }, /unsupported stage schema.*must be "object"/],
     [{ items: [1], stages: [{ ...stage, schema: { type: 'object', nope: true } }] }, /nope is not a supported keyword/],
   ]
@@ -762,5 +789,195 @@ test('the description has no worker variant and does not follow the live whiteli
     'provider',
     'reasoning_effort',
     'stages',
+    'writeScope',
   ])
+})
+
+test('buildStagePrompt appends the batch scope only when one was declared', () => {
+  const base = {
+    stage: { name: 's', prompt: 'p' },
+    stageIndex: 0,
+    stageCount: 1,
+    item: { a: 1 },
+    itemIndex: 0,
+    itemCount: 1,
+  }
+  const undeclared = buildStagePrompt(base)
+  // Byte-identical when nothing was declared: an omitted scope must not add a paragraph,
+  // a blank line or a trailing separator.
+  assert.equal(buildStagePrompt({ ...base, writeScope: undefined }), undeclared)
+  assert.equal(buildStagePrompt({ ...base, writeScope: [] }), undeclared)
+  assert.equal(undeclared.includes('写作用域'), false)
+  const declared = buildStagePrompt({ ...base, writeScope: ['C:/repo/src/a.js'] })
+  assert.equal(declared.startsWith(undeclared), true, 'the constraint is appended, never interleaved')
+  assert.match(declared, /本批次的写作用域/)
+  assert.match(declared, /C:\/repo\/src\/a\.js/)
+  assert.match(declared, /声明而非授权/)
+})
+
+test('a declared batch holds one lease from before the first worker until the last settles', async () => {
+  const leases = createWriteLeases()
+  let release
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  const seen = []
+  const { subagents, calls } = trackedSubagents(async () => {
+    seen.push(leases.size)
+    await gate
+    return textResult('done')
+  })
+  const running = tool(cfg(), subagents, leases).execute(
+    {
+      cwd: 'C:/repo',
+      writeScope: ['src/a.js'],
+      items: [1, 2],
+      stages: [{ name: 's', prompt: 'p' }],
+      maxConcurrency: 2,
+    },
+    exec(),
+  )
+
+  await waitUntil(() => calls.length === 2)
+  assert.equal(leases.size, 1, 'the whole batch holds exactly one lease')
+  const [lease] = leases.list()
+  assert.equal(lease.scope[0], 'C:/repo/src/a.js')
+  assert.equal(lease.childId.startsWith('batch-'), true, 'the owner is the aggregate batch id')
+  assert.deepEqual(seen, [1, 1], 'both workers run under the batch lease')
+  assert.equal(leases.size, 1, 'one item finishing never releases the batch')
+
+  release()
+  const result = await running
+  assert.equal(result.agentsStarted, 2)
+  assert.equal(leases.size, 0, 'settling the batch released the lease')
+})
+
+test('two overlapping batches: the second is refused and starts no worker', async () => {
+  const leases = createWriteLeases()
+  let releaseFirst
+  const gate = new Promise((resolve) => {
+    releaseFirst = resolve
+  })
+  const first = trackedSubagents(async () => {
+    await gate
+    return textResult('first')
+  })
+  const second = trackedSubagents(async () => textResult('second'))
+  const claim = {
+    cwd: 'C:/repo',
+    writeScope: ['src/a.js'],
+    items: [1],
+    stages: [{ name: 's', prompt: 'p' }],
+  }
+
+  const running = tool(cfg(), first.subagents, leases).execute(claim, exec())
+  await waitUntil(() => first.calls.length === 1)
+
+  await assert.rejects(
+    () => tool(cfg(), second.subagents, leases).execute(claim, exec()),
+    (error) => {
+      assert.equal(error.code, WRITE_SCOPE_TOOL_CODES.conflict)
+      assert.match(error.message, /写作用域冲突/)
+      assert.deepEqual(
+        error.details.map(({ path, owner }) => [path, owner.startsWith('batch-')]),
+        [['C:/repo/src/a.js', true]],
+      )
+      assert.equal('label' in error.details[0], true, 'label is present even when unknown')
+      assert.equal(error.details[0].label, null)
+      return true
+    },
+  )
+  assert.equal(second.calls.length, 0, 'the refused batch started no worker')
+
+  releaseFirst()
+  const result = await running
+  assert.equal(result.agentsStarted, 1)
+  assert.equal(leases.size, 0)
+})
+
+test('an unusable declaration is refused before a lease exists or a worker starts', async () => {
+  const leases = createWriteLeases()
+  const { subagents, calls } = trackedSubagents(async () => textResult('x'))
+  const definition = tool(cfg(), subagents, leases)
+  const stages = [{ name: 's', prompt: 'p' }]
+  const cases = [
+    [[], 'C:/repo', WRITE_SCOPE_TOOL_CODES.invalid],
+    [['ok.js', 42], 'C:/repo', WRITE_SCOPE_TOOL_CODES.invalid],
+    [{ path: 'src/a.js' }, 'C:/repo', WRITE_SCOPE_TOOL_CODES.invalid],
+    // A relative declaration with no `cwd` to resolve against is refused, not guessed.
+    [['src/a.js'], undefined, WRITE_SCOPE_TOOL_CODES.cwdMissing],
+  ]
+  for (const [writeScope, cwd, code] of cases) {
+    await assert.rejects(
+      () => definition.execute({ cwd, writeScope, items: [1], stages }, exec()),
+      (error) => error?.code === code,
+      JSON.stringify(writeScope),
+    )
+  }
+  assert.equal(leases.size, 0)
+  assert.equal(calls.length, 0)
+})
+
+test('an aborted batch still releases its lease', async () => {
+  const leases = createWriteLeases()
+  const controller = new AbortController()
+  const { subagents, calls } = trackedSubagents(async () => new Promise(() => {}))
+  const running = tool(cfg(), subagents, leases).execute(
+    { cwd: 'C:/repo', writeScope: ['src/a.js'], items: [1], stages: [{ name: 's', prompt: 'p' }] },
+    exec(controller.signal),
+  )
+  await waitUntil(() => calls.length === 1)
+  assert.equal(leases.size, 1)
+
+  controller.abort(new Error('user cancelled'))
+  await assert.rejects(() => running, /user cancelled/)
+  assert.equal(leases.size, 0, 'abort must not leak the batch lease')
+})
+
+test('the declared scope reaches the worker prompt but never the result payload', async () => {
+  const leases = createWriteLeases()
+  const { subagents, calls } = trackedSubagents(async () => textResult('done'))
+  const result = await tool(cfg(), subagents, leases).execute(
+    {
+      cwd: 'C:/repo',
+      writeScope: ['src/a.js', 'src/b/'],
+      items: [{ id: 'a' }],
+      stages: [{ name: 's', prompt: 'p' }],
+    },
+    exec(),
+  )
+
+  const prompt = calls[0].request.prompt[0].text
+  assert.match(prompt, /本批次的写作用域/)
+  assert.match(prompt, /C:\/repo\/src\/a\.js/)
+  assert.match(prompt, /C:\/repo\/src\/b/, 'a directory claim is named as its normalized path')
+  assert.match(prompt, /"id":"a"/, 'the item still reaches the worker unchanged')
+
+  // §6.7.2: the declaration is dispatch metadata, not part of the result channel.
+  assert.deepEqual(Object.keys(result).sort(), ['agentsStarted', 'errors', 'kind', 'results'])
+  assert.equal(JSON.stringify(result).includes('writeScope'), false)
+  assert.equal(JSON.stringify(result).includes('src/a.js'), false)
+  for (const entry of result.results) {
+    assert.deepEqual(Object.keys(entry).sort(), ['index', 'output', 'stopReason'])
+  }
+})
+
+test('an undeclared batch keeps the old prompt, the old payload and registers no lease', async () => {
+  const leases = createWriteLeases()
+  const { subagents, calls } = trackedSubagents(async () => textResult('x'))
+  const result = await tool(cfg(), subagents, leases).execute(
+    { items: [1, 2], stages: [{ name: 's', prompt: 'p' }] },
+    exec(),
+  )
+  assert.equal(leases.size, 0, 'an undeclared batch claims nothing')
+  assert.equal(calls[0].request.prompt[0].text.includes('写作用域'), false)
+  assert.deepEqual(result, {
+    kind: 'orchestration',
+    agentsStarted: 2,
+    results: [
+      { index: 0, output: 'x', stopReason: 'completed' },
+      { index: 1, output: 'x', stopReason: 'completed' },
+    ],
+    errors: [],
+  })
 })

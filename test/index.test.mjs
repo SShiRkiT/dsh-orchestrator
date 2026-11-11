@@ -1025,6 +1025,60 @@ test('a disposed worker releases its write lease without a settlement edge', asy
   assert.equal(next.subagentId, 'child-2', 'disposal released the lease')
 })
 
+test('apply injects the one lease table into both tools, so delegate and orchestrate exclude each other', async () => {
+  const started = []
+  const harness = start({
+    subagents: {
+      resolveMaxDepth: () => 1,
+      // `delegate` reads only the child id; a batch also reads the worker's result.
+      startActivation: async (spec) => {
+        const index = started.length
+        started.push(spec)
+        return {
+          childId: `child-${index + 1}`,
+          result: Promise.resolve({ output: [{ type: 'text', text: 'ok' }], stopReason: 'completed' }),
+          dispose: async () => {},
+        }
+      },
+    },
+  })
+  const delegate = harness.tools.find(({ name }) => name === 'delegate')
+  const orchestrate = harness.tools.find(({ name }) => name === 'orchestrate')
+  assert.equal(typeof orchestrate?.execute, 'function', 'apply must register the orchestrate tool')
+  const exec = { agent: { id: 'main-1' }, signal: new AbortController().signal }
+  const claim = {
+    description: 'edit',
+    prompt: 'edit src/a.js',
+    cwd: 'C:/repo',
+    writeScope: ['src/a.js'],
+    provider: 'p',
+    model: 'm',
+  }
+  const batch = {
+    cwd: 'C:/repo',
+    writeScope: ['src/a.js'],
+    items: [1],
+    stages: [{ name: 's', prompt: 'p' }],
+    provider: 'p',
+    model: 'm',
+  }
+
+  const held = await delegate.execute(claim, exec)
+  assert.equal(held.subagentId, 'child-1')
+  await assert.rejects(
+    () => orchestrate.execute(batch, exec),
+    (error) =>
+      error?.code === 'write-scope-conflict' &&
+      error.details[0].path === 'C:/repo/src/a.js' &&
+      error.details[0].owner === 'child-1',
+  )
+  assert.equal(started.length, 1, 'the refused batch never reached the host')
+
+  harness.handlers.get('subagent/end')({ id: 'child-1', stopReason: 'completed' })
+  const result = await orchestrate.execute(batch, exec)
+  assert.equal(result.agentsStarted, 1, 'settlement released the delegate lease for the batch')
+})
+
 test('disposing the plugin clears the lease table', async () => {
   const started = []
   const harness = start({

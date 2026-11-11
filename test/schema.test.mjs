@@ -98,10 +98,17 @@ test('orchestrate schemas stay inside the host author dialect and expose the sta
     'provider',
     'reasoning_effort',
     'stages',
+    'writeScope',
   ])
   assert.equal(tool.parameters.items.required, true)
   assert.equal(tool.parameters.items.items.type, 'json')
   assert.equal(tool.parameters.stages.required, true)
+  // The batch scope is optional, has no default and no minItems — the same three
+  // conventions as `delegate`, so "not declared" and "declared empty" stay distinct.
+  assert.equal(tool.parameters.writeScope.type, 'array')
+  assert.equal(tool.parameters.writeScope.items.type, 'string')
+  assert.equal('required' in tool.parameters.writeScope, false)
+  assert.equal('default' in tool.parameters.writeScope, false)
   const stage = tool.parameters.stages.items
   assert.equal(stage.type, 'object')
   assert.deepEqual(Object.keys(stage.properties).sort(), ['name', 'prompt', 'schema'])
