@@ -181,13 +181,16 @@ test('a relative scope without an inheritable cwd is refused instead of guessed'
   assert.equal(started.length, 0)
 })
 
-test('omitting writeScope keeps the old dispatch path and registers no lease', async () => {
+test('omitting writeScope is refused with write-scope-missing and registers no lease', async () => {
   const leases = createWriteLeases()
-  const { tool } = makeTool({ leases })
+  const { tool, started } = makeTool({ leases })
 
-  const value = await tool.execute({ description: 'edit', prompt: 'p', cwd: 'C:/repo' }, exec())
-  assert.deepEqual(value, { kind: 'activation', subagentId: 'child-1' })
-  assert.equal(leases.size, 0)
+  await assert.rejects(
+    () => tool.execute({ description: 'edit', prompt: 'p', cwd: 'C:/repo' }, exec()),
+    (error) => error?.code === WRITE_SCOPE_TOOL_CODES.missing,
+  )
+  assert.equal(leases.size, 0, 'the refused dispatch never reached the lease table')
+  assert.equal(started.length, 0, 'the refused dispatch never reached the host')
 })
 
 test('a lease held by delegate refuses an overlapping orchestrate batch', async () => {
@@ -258,19 +261,20 @@ test('a batch result never carries the declaration, even while another lease is 
   assert.equal(leases.size, 0)
 })
 
-test('an undeclared batch neither claims a lease nor is blocked by another writer', async () => {
+test('a batch without writeScope is refused and starts no worker', async () => {
   const leases = createWriteLeases()
   const delegate = makeTool({ leases })
   const held = await delegate.tool.execute(claim(['src/a.js']), exec())
 
-  const { tool: orchestrate } = makeOrchestrator({ leases })
-  const result = await orchestrate.execute(
-    { cwd: 'C:/repo', items: [1], stages: [{ name: 's', prompt: 'p' }] },
-    exec(),
+  const { tool: orchestrate, started } = makeOrchestrator({ leases })
+  await assert.rejects(
+    () => orchestrate.execute(
+      { cwd: 'C:/repo', items: [1], stages: [{ name: 's', prompt: 'p' }] },
+      exec(),
+    ),
+    (error) => error?.code === WRITE_SCOPE_TOOL_CODES.missing,
   )
-  // Compatibility promise of §6.7.1: an omitted declaration is "not declared", so the
-  // batch keeps running exactly as it did before this feature existed.
-  assert.equal(result.agentsStarted, 1)
-  assert.equal(leases.size, 1, 'the undeclared batch registered nothing')
+  assert.equal(started.length, 0, 'a refused batch never reaches the host')
+  assert.equal(leases.size, 1, 'the refused batch registered nothing')
   leases.releaseByChild(held.subagentId)
 })

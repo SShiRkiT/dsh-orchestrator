@@ -19,11 +19,21 @@ const cfg = (provider = ROUTE.provider, model = ROUTE.model, effort = '') => ({
   workerReasoningEffort: { get: () => effort },
 })
 const exec = (signal = new AbortController().signal) => ({ agent: { id: 'main' }, signal })
+/** An absolute declaration, so no batch in this file needs a `cwd` to resolve it. */
+const TEST_SCOPE = ['C:/repo/src/test.js']
 const tool = (
   config = cfg(),
   subagents = { resolveMaxDepth: () => 3, startActivation: async () => ({}) },
-  leases,
-) => createOrchestrateTool({ defineTool: (definition) => definition, subagents, config, leases })
+  leases = createWriteLeases(),
+) => {
+  const definition = createOrchestrateTool({ defineTool: (d) => d, subagents, config, leases })
+  // `writeScope` is required now, so every batch call in this file carries one. The
+  // missing-declaration case drives `createOrchestrateTool` directly instead.
+  return {
+    ...definition,
+    execute: (args, runExec) => definition.execute({ writeScope: TEST_SCOPE, ...args }, runExec),
+  }
+}
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 async function waitUntil(predicate, timeoutMs = 1500) {
@@ -96,29 +106,22 @@ test('the tool is named orchestrate, takes optional route overrides and defaults
     assert.match(definition.parameters[key].description, /仅当用户显式点名/)
   }
   assert.match(definition.parameters.reasoning_effort.description, /仅当用户点名时才设置/)
-  // The batch-level declaration is optional and has no default, exactly like `delegate`:
-  // omitting it means "not declared", which must stay distinguishable from `[]`.
-  assert.equal('required' in definition.parameters.writeScope, false)
+  // The batch-level declaration is required and has no default: every batch declares it.
+  assert.equal(definition.parameters.writeScope.required, true)
   assert.equal('default' in definition.parameters.writeScope, false)
   assert.equal(definition.parameters.writeScope.type, 'array')
   assert.equal(definition.parameters.writeScope.items.type, 'string')
+  assert.match(definition.parameters.writeScope.description, /^必填/)
   assert.match(definition.parameters.writeScope.description, /write-scope-conflict/)
-  assert.deepEqual(parseOrchestrateArgs({ items: [1], stages: [{ name: 's', prompt: 'p' }] }), {
-    cwd: undefined,
-    items: [1],
-    stages: [{ name: 's', prompt: 'p' }],
-    maxConcurrency: 4,
-  })
-  // The key exists only when the caller declared it, so an undeclared plan keeps the
-  // exact shape every existing caller and test compares against.
-  assert.equal(
-    'writeScope' in parseOrchestrateArgs({ items: [1], stages: [{ name: 's', prompt: 'p' }] }),
-    false,
-  )
   assert.deepEqual(
-    parseOrchestrateArgs({ items: [1], stages: [{ name: 's', prompt: 'p' }], writeScope: ['src/a.js'] })
-      .writeScope,
-    ['src/a.js'],
+    parseOrchestrateArgs({ items: [1], stages: [{ name: 's', prompt: 'p' }], writeScope: ['src/a.js'] }),
+    {
+      cwd: undefined,
+      items: [1],
+      stages: [{ name: 's', prompt: 'p' }],
+      maxConcurrency: 4,
+      writeScope: ['src/a.js'],
+    },
   )
   assert.equal(parseOrchestrateArgs({ cwd: '  work  ', items: [1], stages: [{ name: 's', prompt: 'p' }] }).cwd, 'work')
   assert.equal(LIMITS.items.max, 64)
@@ -138,7 +141,8 @@ test('every worker uses the configured route, caller delivery and the stage outp
         { name: 'second', prompt: 'check it', schema },
       ],
     },
-    exec(),
+    // The relative `cwd` is resolved against the parent's directory for the scope.
+    { ...exec(), cwd: 'C:/repo' },
   )
   assert.equal(calls.length, 4)
   for (const spec of calls) {
@@ -605,6 +609,7 @@ test('stage prompts carry the instruction, the original item and the previous ou
     item: { id: 'a', nested: [1, 2] },
     itemIndex: 0,
     itemCount: 2,
+    writeScope: TEST_SCOPE,
   })
   assert.match(first, /^Extract facts\./)
   assert.match(first, /阶段 "extract"（1\/2），条目 1\/2。/)
@@ -620,6 +625,7 @@ test('stage prompts carry the instruction, the original item and the previous ou
     itemIndex: 0,
     itemCount: 2,
     previous: { stageName: 'extract', output: { facts: ['x'] } },
+    writeScope: TEST_SCOPE,
   })
   assert.match(second, /上一阶段 "extract" 输出 \(JSON\):\n\{"facts":\["x"\]\}/)
   assert.match(second, /在此基础上继续/)
@@ -634,10 +640,14 @@ test('stage prompts carry the instruction, the original item and the previous ou
     item: { id: 'a' },
     itemIndex: 0,
     itemCount: 1,
+    writeScope: TEST_SCOPE,
   })
   assert.match(structured, /优先调用一次 structured_output 工具/)
   assert.match(structured, /只输出符合阶段 schema 的 JSON 对象/)
-  assert.match(structured, /不要解释、不要 Markdown、不要代码块。$/)
+  assert.match(structured, /不要解释、不要 Markdown、不要代码块。/)
+  // The scope constraint is always the closing paragraph of the prompt.
+  assert.match(structured, /本批次的写作用域/)
+  assert.match(structured, /声明而非授权/)
 })
 
 test('readStageOutput handles text, a missing result, an empty result and text parts', () => {
@@ -648,7 +658,7 @@ test('readStageOutput handles text, a missing result, an empty result and text p
   assert.throws(() => readStageOutput({}, { output: [], stopReason: 'error' }), /stopped with reason "error"/)
 })
 
-test('runOrchestration can be driven directly with a plan', async () => {
+test('runOrchestration can be driven directly with a plan and a declared scope', async () => {
   const { subagents } = trackedSubagents(async () => textResult('direct'))
   const result = await runOrchestration({
     plan: { cwd: undefined, items: [1], stages: [{ name: 's', prompt: 'p' }], maxConcurrency: 1 },
@@ -657,6 +667,7 @@ test('runOrchestration can be driven directly with a plan', async () => {
     maxDepth: 2,
     subagents,
     signal: new AbortController().signal,
+    writeScope: TEST_SCOPE,
   })
   assert.deepEqual(result, {
     kind: 'orchestration',
@@ -793,7 +804,7 @@ test('the description has no worker variant and does not follow the live whiteli
   ])
 })
 
-test('buildStagePrompt appends the batch scope only when one was declared', () => {
+test('buildStagePrompt always appends the batch scope as a closing constraint', () => {
   const base = {
     stage: { name: 's', prompt: 'p' },
     stageIndex: 0,
@@ -802,17 +813,15 @@ test('buildStagePrompt appends the batch scope only when one was declared', () =
     itemIndex: 0,
     itemCount: 1,
   }
-  const undeclared = buildStagePrompt(base)
-  // Byte-identical when nothing was declared: an omitted scope must not add a paragraph,
-  // a blank line or a trailing separator.
-  assert.equal(buildStagePrompt({ ...base, writeScope: undefined }), undeclared)
-  assert.equal(buildStagePrompt({ ...base, writeScope: [] }), undeclared)
-  assert.equal(undeclared.includes('写作用域'), false)
-  const declared = buildStagePrompt({ ...base, writeScope: ['C:/repo/src/a.js'] })
-  assert.equal(declared.startsWith(undeclared), true, 'the constraint is appended, never interleaved')
+  const declared = buildStagePrompt({ ...base, writeScope: TEST_SCOPE })
   assert.match(declared, /本批次的写作用域/)
-  assert.match(declared, /C:\/repo\/src\/a\.js/)
+  assert.match(declared, /C:\/repo\/src\/test\.js/)
   assert.match(declared, /声明而非授权/)
+  // The constraint is the last paragraph, after the item and the schema instructions.
+  assert.match(declared, /声明而非授权[^]*$/)
+  // Every batch declares a scope, so a direct caller without one breaks the contract.
+  assert.throws(() => buildStagePrompt(base), TypeError)
+  assert.throws(() => buildStagePrompt({ ...base, writeScope: [] }), TypeError)
 })
 
 test('a declared batch holds one lease from before the first worker until the last settles', async () => {
@@ -962,22 +971,20 @@ test('the declared scope reaches the worker prompt but never the result payload'
   }
 })
 
-test('an undeclared batch keeps the old prompt, the old payload and registers no lease', async () => {
+test('a batch without writeScope is refused with write-scope-missing and starts no worker', async () => {
   const leases = createWriteLeases()
   const { subagents, calls } = trackedSubagents(async () => textResult('x'))
-  const result = await tool(cfg(), subagents, leases).execute(
+  const definition = createOrchestrateTool({ defineTool: (d) => d, subagents, config: cfg(), leases })
+  for (const args of [
     { items: [1, 2], stages: [{ name: 's', prompt: 'p' }] },
-    exec(),
-  )
-  assert.equal(leases.size, 0, 'an undeclared batch claims nothing')
-  assert.equal(calls[0].request.prompt[0].text.includes('写作用域'), false)
-  assert.deepEqual(result, {
-    kind: 'orchestration',
-    agentsStarted: 2,
-    results: [
-      { index: 0, output: 'x', stopReason: 'completed' },
-      { index: 1, output: 'x', stopReason: 'completed' },
-    ],
-    errors: [],
-  })
+    { items: [1], stages: [{ name: 's', prompt: 'p' }], writeScope: null },
+  ]) {
+    await assert.rejects(
+      () => definition.execute(args, exec()),
+      (error) => error?.code === WRITE_SCOPE_TOOL_CODES.missing,
+      JSON.stringify(args),
+    )
+  }
+  assert.equal(leases.size, 0, 'a refused batch claims nothing')
+  assert.equal(calls.length, 0, 'a refused batch starts no worker')
 })

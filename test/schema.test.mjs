@@ -82,6 +82,7 @@ test('delegate schemas stay inside the host author dialect', () => {
   assert.deepEqual(authorProblems(tool), [])
   assert.equal(tool.parameters.description.required, true)
   assert.equal(tool.parameters.prompt.required, true)
+  assert.equal(tool.parameters.writeScope.required, true)
   assert.equal('required' in tool.parameters.cwd, false)
   assert.equal(JSON.stringify(tool.parameters).includes('"required":['), false)
   assert.equal(JSON.stringify(tool.output.schema).includes('"required":['), false)
@@ -103,11 +104,11 @@ test('orchestrate schemas stay inside the host author dialect and expose the sta
   assert.equal(tool.parameters.items.required, true)
   assert.equal(tool.parameters.items.items.type, 'json')
   assert.equal(tool.parameters.stages.required, true)
-  // The batch scope is optional, has no default and no minItems — the same three
-  // conventions as `delegate`, so "not declared" and "declared empty" stay distinct.
+  // The batch scope is required, has no default and no minItems — the same conventions
+  // as `delegate`, so a batch without a declaration is refused.
   assert.equal(tool.parameters.writeScope.type, 'array')
   assert.equal(tool.parameters.writeScope.items.type, 'string')
-  assert.equal('required' in tool.parameters.writeScope, false)
+  assert.equal(tool.parameters.writeScope.required, true)
   assert.equal('default' in tool.parameters.writeScope, false)
   const stage = tool.parameters.stages.items
   assert.equal(stage.type, 'object')
