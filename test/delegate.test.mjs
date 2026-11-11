@@ -72,11 +72,15 @@ test('the tool is concurrency-safe, named delegate, and takes optional route ove
     'prompt',
     'provider',
     'reasoning_effort',
+    'writeScope',
   ])
   // The author dialect spells requiredness per property, not as a `required` array.
   assert.equal(tool.parameters.prompt.required, true)
   assert.equal(tool.parameters.description.required, true)
   assert.equal('required' in tool.parameters.cwd, false)
+  assert.equal('required' in tool.parameters.writeScope, false)
+  assert.equal(tool.parameters.writeScope.type, 'array')
+  assert.match(tool.parameters.writeScope.description, /write-scope-conflict/)
   for (const key of ['provider', 'model', 'reasoning_effort']) {
     assert.equal('required' in tool.parameters[key], false)
   }
