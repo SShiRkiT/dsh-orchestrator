@@ -2,12 +2,19 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { DELEGATE_TOOL, buildActivation, createDelegateTool, languageNote, readRoute } from '../lib/delegate.js'
 import { mainAgentRule } from '../lib/rules.js'
+import { createWriteLeases } from '../lib/write-lease.js'
 
 const cfg = (provider, model, effort = '') => ({
   workerProvider: { get: () => provider },
   workerModel: { get: () => model },
   workerReasoningEffort: { get: () => effort },
 })
+
+/** An absolute declaration, so no test needs a `cwd` to resolve it. */
+const SCOPE = ['C:/repo/src/a.js']
+
+/** A fresh lease table per tool: the tool now refuses a dispatch that declares nothing. */
+const leases = () => createWriteLeases()
 
 test('readRoute returns provider and model, and omits an empty effort', () => {
   assert.deepEqual(readRoute(cfg('nexus-deepseek', 'deepseek-v4.1-flash')), {
@@ -62,7 +69,7 @@ test('the worker header asks for a final summary instead of a send_message repor
 })
 
 test('the tool is concurrency-safe, named delegate, and takes optional route overrides', () => {
-  const tool = createDelegateTool({ defineTool: (d) => d, subagents: {}, config: cfg('p', 'm') })
+  const tool = createDelegateTool({ defineTool: (d) => d, subagents: {}, config: cfg('p', 'm'), leases: leases() })
   assert.equal(tool.name, DELEGATE_TOOL)
   assert.equal(tool.isConcurrencySafe(), true)
   assert.deepEqual(Object.keys(tool.parameters).sort(), [
@@ -72,11 +79,19 @@ test('the tool is concurrency-safe, named delegate, and takes optional route ove
     'prompt',
     'provider',
     'reasoning_effort',
+    'writeScope',
   ])
   // The author dialect spells requiredness per property, not as a `required` array.
   assert.equal(tool.parameters.prompt.required, true)
   assert.equal(tool.parameters.description.required, true)
   assert.equal('required' in tool.parameters.cwd, false)
+  // The declaration is required now: nothing may fall back to the old undeclared path.
+  assert.equal(tool.parameters.writeScope.required, true)
+  assert.equal(tool.parameters.writeScope.type, 'array')
+  assert.equal(tool.parameters.writeScope.items.type, 'string')
+  assert.equal('default' in tool.parameters.writeScope, false)
+  assert.match(tool.parameters.writeScope.description, /^必填/)
+  assert.match(tool.parameters.writeScope.description, /write-scope-conflict/)
   for (const key of ['provider', 'model', 'reasoning_effort']) {
     assert.equal('required' in tool.parameters[key], false)
   }
@@ -87,9 +102,58 @@ test('the tool is concurrency-safe, named delegate, and takes optional route ove
 })
 
 test('execute rejects a missing prompt or description before touching the route', async () => {
-  const tool = createDelegateTool({ defineTool: (d) => d, subagents: {}, config: cfg('p', 'm') })
-  await assert.rejects(() => tool.execute({ description: 'x' }, { agent: {} }), /non-empty prompt/)
-  await assert.rejects(() => tool.execute({ prompt: 'x' }, { agent: {} }), /non-empty description/)
+  const tool = createDelegateTool({ defineTool: (d) => d, subagents: {}, config: cfg('p', 'm'), leases: leases() })
+  await assert.rejects(
+    () => tool.execute({ description: 'x', writeScope: SCOPE }, { agent: {} }),
+    /non-empty prompt/,
+  )
+  await assert.rejects(
+    () => tool.execute({ prompt: 'x', writeScope: SCOPE }, { agent: {} }),
+    /non-empty description/,
+  )
+})
+
+test('execute refuses a missing writeScope with write-scope-missing and starts nothing', async () => {
+  let started = false
+  const subagents = { resolveMaxDepth: () => 1, startActivation: async () => { started = true } }
+  const tool = createDelegateTool({
+    defineTool: (d) => d,
+    subagents,
+    config: cfg('p', 'm'),
+    leases: leases(),
+  })
+  const exec = { agent: { id: 'main' }, signal: new AbortController().signal }
+  for (const args of [
+    { description: 'a', prompt: 'x' },
+    { description: 'a', prompt: 'x', writeScope: null },
+  ]) {
+    await assert.rejects(
+      () => tool.execute(args, exec),
+      (error) => error?.code === 'write-scope-missing',
+      JSON.stringify(args),
+    )
+  }
+  assert.equal(started, false, 'no worker may start without a declaration')
+})
+
+test('execute refuses an empty or malformed writeScope without a lease or a worker', async () => {
+  let started = false
+  const subagents = { resolveMaxDepth: () => 1, startActivation: async () => { started = true } }
+  const tool = createDelegateTool({
+    defineTool: (d) => d,
+    subagents,
+    config: cfg('p', 'm'),
+    leases: leases(),
+  })
+  const exec = { agent: { id: 'main' }, signal: new AbortController().signal }
+  for (const writeScope of [[], ['ok.js', 42], { path: 'src/a.js' }]) {
+    await assert.rejects(
+      () => tool.execute({ description: 'a', prompt: 'x', writeScope }, exec),
+      (error) => error?.code === 'write-scope-invalid',
+      JSON.stringify(writeScope),
+    )
+  }
+  assert.equal(started, false)
 })
 
 test('execute reads the route per call, so a changed route applies to the next delegation', async () => {
@@ -107,12 +171,15 @@ test('execute reads the route per call, so a changed route applies to the next d
       return { childId: 'child-' + seen.length }
     },
   }
-  const tool = createDelegateTool({ defineTool: (d) => d, subagents, config })
+  const tool = createDelegateTool({ defineTool: (d) => d, subagents, config, leases: leases() })
   const exec = { agent: { id: 'main' }, signal: new AbortController().signal }
-  const first = await tool.execute({ description: 'a', prompt: 'x' }, exec)
+  const first = await tool.execute({ description: 'a', prompt: 'x', writeScope: SCOPE }, exec)
   route = ['nexus-claude', 'claude-opus-5.5']
-  await tool.execute({ description: 'b', prompt: 'y' }, exec)
-  assert.deepEqual(first, { kind: 'activation', subagentId: 'child-1' })
+  await tool.execute({ description: 'b', prompt: 'y', writeScope: ['C:/repo/src/b.js'] }, exec)
+  assert.equal(first.kind, 'activation')
+  assert.equal(first.subagentId, 'child-1')
+  assert.deepEqual(first.writeScope.scope, SCOPE)
+  assert.equal(typeof first.writeScope.leaseId, 'string')
   assert.equal(seen[0].model, 'deepseek-v4.1-flash')
   assert.equal(seen[1].model, 'claude-opus-5.5')
 })
@@ -120,22 +187,27 @@ test('execute reads the route per call, so a changed route applies to the next d
 test('execute fails loudly without a calling agent and does not start anything', async () => {
   let started = false
   const subagents = { resolveMaxDepth: () => 1, startActivation: async () => { started = true } }
-  const tool = createDelegateTool({ defineTool: (d) => d, subagents, config: cfg('p', 'm') })
-  await assert.rejects(() => tool.execute({ description: 'a', prompt: 'x' }, { signal: new AbortController().signal }), /requires a calling agent/)
+  const tool = createDelegateTool({ defineTool: (d) => d, subagents, config: cfg('p', 'm'), leases: leases() })
+  await assert.rejects(
+    () => tool.execute({ description: 'a', prompt: 'x', writeScope: SCOPE }, { signal: new AbortController().signal }),
+    /requires a calling agent/,
+  )
   assert.equal(started, false)
 })
 
 test('an aborted signal stops execute before a worker is started', async () => {
   let started = false
   const subagents = { resolveMaxDepth: () => 1, startActivation: async () => { started = true } }
-  const tool = createDelegateTool({ defineTool: (d) => d, subagents, config: cfg('p', 'm') })
+  const tool = createDelegateTool({ defineTool: (d) => d, subagents, config: cfg('p', 'm'), leases: leases() })
   const ac = new AbortController()
   ac.abort()
-  await assert.rejects(() => tool.execute({ description: 'a', prompt: 'x' }, { agent: {}, signal: ac.signal }))
+  await assert.rejects(
+    () => tool.execute({ description: 'a', prompt: 'x', writeScope: SCOPE }, { agent: {}, signal: ac.signal }),
+  )
   assert.equal(started, false)
 })
 
-test('a successful start reports the child and leaves the returned result unchanged', async () => {
+test('a successful start reports the child and its declared scope', async () => {
   const seen = []
   const started = { childId: 'child-9', result: Promise.resolve('done') }
   const subagents = { resolveMaxDepth: () => 1, startActivation: async () => started }
@@ -143,13 +215,18 @@ test('a successful start reports the child and leaves the returned result unchan
     defineTool: (d) => d,
     subagents,
     config: cfg('p', 'm'),
+    leases: leases(),
     onStarted(parent, child, args) {
       seen.push({ parent, child, args })
     },
   })
   const exec = { agent: { id: 'main' }, signal: new AbortController().signal }
-  const value = await tool.execute({ description: 'a', prompt: 'x' }, exec)
-  assert.deepEqual(value, { kind: 'activation', subagentId: 'child-9' })
+  const value = await tool.execute({ description: 'a', prompt: 'x', writeScope: SCOPE }, exec)
+  assert.deepEqual(Object.keys(value).sort(), ['kind', 'subagentId', 'writeScope'])
+  assert.equal(value.kind, 'activation')
+  assert.equal(value.subagentId, 'child-9')
+  assert.deepEqual(value.writeScope.scope, SCOPE)
+  assert.equal(typeof value.writeScope.leaseId, 'string')
   assert.equal(seen.length, 1)
   assert.equal(seen[0].parent, exec.agent)
   assert.equal(seen[0].child, started)
@@ -159,33 +236,34 @@ test('a successful start reports the child and leaves the returned result unchan
 test('a broken onStarted cannot affect dispatch or its result', async () => {
   const subagents = { resolveMaxDepth: () => 1, startActivation: async () => ({ childId: 'child-1' }) }
   const exec = { agent: { id: 'main' }, signal: new AbortController().signal }
+  const claim = { description: 'a', prompt: 'x', writeScope: SCOPE }
 
   const throwing = createDelegateTool({
     defineTool: (d) => d,
     subagents,
     config: cfg('p', 'm'),
+    leases: leases(),
     onStarted() {
       throw new Error('supervision is broken')
     },
   })
-  assert.deepEqual(await throwing.execute({ description: 'a', prompt: 'x' }, exec), {
-    kind: 'activation',
-    subagentId: 'child-1',
-  })
+  const thrown = await throwing.execute(claim, exec)
+  assert.equal(thrown.subagentId, 'child-1')
+  assert.deepEqual(thrown.writeScope.scope, SCOPE)
 
   // An async callback that rejects is also swallowed, so it cannot surface later.
   const rejecting = createDelegateTool({
     defineTool: (d) => d,
     subagents,
     config: cfg('p', 'm'),
+    leases: leases(),
     onStarted: async () => {
       throw new Error('async supervision is broken')
     },
   })
-  assert.deepEqual(await rejecting.execute({ description: 'a', prompt: 'x' }, exec), {
-    kind: 'activation',
-    subagentId: 'child-1',
-  })
+  const rejected = await rejecting.execute(claim, exec)
+  assert.equal(rejected.subagentId, 'child-1')
+  assert.deepEqual(rejected.writeScope.scope, SCOPE)
   await new Promise((resolve) => setTimeout(resolve, 0))
 })
 
@@ -201,12 +279,12 @@ function recordingTool(config) {
       return { childId: 'child-' + seen.length }
     },
   }
-  return { seen, tool: createDelegateTool({ defineTool: (d) => d, subagents, config }) }
+  return { seen, tool: createDelegateTool({ defineTool: (d) => d, subagents, config, leases: leases() }) }
 }
 
 test('without an override the configured route is used unchanged', async () => {
   const { seen, tool } = recordingTool(cfg('nexus-deepseek', 'deepseek-v4.1-flash', 'high'))
-  await tool.execute({ description: 'a', prompt: 'x' }, exec())
+  await tool.execute({ description: 'a', prompt: 'x', writeScope: SCOPE }, exec())
   assert.deepEqual(seen, [
     { provider: 'nexus-deepseek', model: 'deepseek-v4.1-flash', reasoningEffort: 'high' },
   ])
@@ -216,7 +294,7 @@ test('an explicit provider and model replace the configured route for that worke
   // An empty configured route would throw if it were read, so the override must short-circuit it.
   const { seen, tool } = recordingTool(cfg('', ''))
   await tool.execute(
-    { description: 'a', prompt: 'x', provider: 'nexus-claude', model: 'claude-opus-5.5' },
+    { description: 'a', prompt: 'x', writeScope: SCOPE, provider: 'nexus-claude', model: 'claude-opus-5.5' },
     exec(),
   )
   assert.deepEqual(seen, [{ provider: 'nexus-claude', model: 'claude-opus-5.5' }])
@@ -231,7 +309,7 @@ test('provider and model must be given together, and nothing starts', async () =
     { reasoning_effort: 'high' },
   ]) {
     await assert.rejects(
-      () => tool.execute({ description: 'a', prompt: 'x', ...args }, exec()),
+      () => tool.execute({ description: 'a', prompt: 'x', writeScope: SCOPE, ...args }, exec()),
       /"provider" and "model" must be given together/,
     )
     assert.equal(seen.length, 0, JSON.stringify(args))
@@ -241,7 +319,7 @@ test('provider and model must be given together, and nothing starts', async () =
 test('a non-string override field is refused instead of coerced', async () => {
   const { seen, tool } = recordingTool(cfg('p', 'm'))
   await assert.rejects(
-    () => tool.execute({ description: 'a', prompt: 'x', provider: 7, model: 'm' }, exec()),
+    () => tool.execute({ description: 'a', prompt: 'x', writeScope: SCOPE, provider: 7, model: 'm' }, exec()),
     /"provider" must be a string/,
   )
   assert.equal(seen.length, 0)
@@ -253,6 +331,7 @@ test('reasoning_effort passes through with the override and is trimmed', async (
     {
       description: 'a',
       prompt: 'x',
+      writeScope: SCOPE,
       provider: ' nexus-claude ',
       model: ' claude-opus-5.5 ',
       reasoning_effort: ' high ',
@@ -272,6 +351,7 @@ test('the description keeps the main-agent rule, the whitelist and the execute c
     defineTool: (d) => d,
     subagents: {},
     config: cfg('p', 'm'),
+    leases: leases(),
     allowedTools: allowed,
   })
   assert.equal(tool.description.startsWith(mainAgentRule(allowed)), true)
@@ -315,6 +395,7 @@ test('the description keeps the main-agent rule, the whitelist and the execute c
   assert.match(tool.description, /严禁要求子代理调用 send_message 汇报结果/)
   assert.match(tool.description, /收尾消息会在结束时自动送达/)
   assert.match(tool.description, /严禁两个子代理修改同一文件/)
+  assert.match(tool.description, /省略该字段或声明为空数组都会被拒绝/)
   assert.match(tool.description, /【插件巡检…】/)
   // The route parameters carry the same one-line condition, where a model would be typed.
   for (const param of ['provider', 'model']) {
@@ -331,6 +412,7 @@ test('a delegated child no longer sees this tool, so there is no worker variant'
     defineTool: (definition) => definition,
     subagents: {},
     config: cfg('p', 'm'),
+    leases: leases(),
     allowedTools: ['delegate', 'orchestrate'],
   })
   assert.match(tool.description, /主代理规则：主代理只负责规划/)
@@ -339,4 +421,3 @@ test('a delegated child no longer sees this tool, so there is no worker variant'
     assert.match(tool.parameters[key].description, /仅当用户显式点名/)
   }
 })
-

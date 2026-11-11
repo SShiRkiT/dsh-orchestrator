@@ -107,6 +107,7 @@ function fakeCtx({
   allowed,
   agents,
   sessions,
+  subagents,
   stateOf,
   catalogNames = HOST_TOOLS,
   surface = SURFACE_TOOLS,
@@ -145,7 +146,7 @@ function fakeCtx({
       // exactly the declarations a main agent or a child would be offered.
       definitions: () => surface.map((name) => ({ name })),
     },
-    subagents: {},
+    subagents: subagents ?? {},
     agents: agents ?? { get: () => undefined },
     sessions: sessions ?? { get: () => undefined, flush: async () => true },
     effect(fn, label) {
@@ -954,6 +955,159 @@ test('apply listens for the settlement edge globally, so a child-scoped emission
   // A malformed event is ignored rather than thrown into the emitter.
   assert.doesNotThrow(() => listener(undefined))
   assert.doesNotThrow(() => listener({ id: '' }))
+})
+
+test('a delegate write lease blocks a second writer until the child settles', async () => {
+  const started = []
+  const harness = start({
+    subagents: {
+      resolveMaxDepth: () => 1,
+      startActivation: async () => {
+        const childId = `child-${started.length + 1}`
+        started.push(childId)
+        return { childId }
+      },
+    },
+  })
+  const tool = harness.tools.find(({ name }) => name === 'delegate')
+  assert.equal(typeof tool?.execute, 'function', 'apply must register the delegate tool')
+  const exec = { agent: { id: 'main-1' }, signal: new AbortController().signal }
+  const claim = {
+    description: 'edit',
+    prompt: 'edit src/a.js',
+    cwd: 'C:/repo',
+    writeScope: ['src/a.js'],
+    provider: 'p',
+    model: 'm',
+  }
+
+  const first = await tool.execute(claim, exec)
+  assert.equal(first.subagentId, 'child-1')
+  assert.deepEqual(first.writeScope.scope, ['C:/repo/src/a.js'])
+  await assert.rejects(
+    () => tool.execute({ ...claim, description: 'overlap' }, exec),
+    (error) => error?.code === 'write-scope-conflict',
+  )
+  assert.equal(started.length, 1, 'the overlapping dispatch never reached the host')
+
+  harness.handlers.get('subagent/end')({ id: 'child-1', stopReason: 'completed' })
+  const third = await tool.execute({ ...claim, description: 'after settle' }, exec)
+  assert.equal(third.subagentId, 'child-2', 'settlement released the lease')
+})
+
+test('a disposed worker releases its write lease without a settlement edge', async () => {
+  const started = []
+  const harness = start({
+    subagents: {
+      resolveMaxDepth: () => 1,
+      startActivation: async () => {
+        const childId = `child-${started.length + 1}`
+        started.push(childId)
+        return { childId }
+      },
+    },
+  })
+  const tool = harness.tools.find(({ name }) => name === 'delegate')
+  const exec = { agent: { id: 'main-1' }, signal: new AbortController().signal }
+  const claim = {
+    description: 'edit',
+    prompt: 'edit src/a.js',
+    cwd: 'C:/repo',
+    writeScope: ['src/a.js'],
+    provider: 'p',
+    model: 'm',
+  }
+
+  const first = await tool.execute(claim, exec)
+  const child = fakeAgent({ id: first.subagentId, depth: 1 })
+  harness.handlers.get('agent/disposed')({ agent: child.agent })
+  const next = await tool.execute({ ...claim, description: 'after dispose' }, exec)
+  assert.equal(next.subagentId, 'child-2', 'disposal released the lease')
+})
+
+test('apply injects the one lease table into both tools, so delegate and orchestrate exclude each other', async () => {
+  const started = []
+  const harness = start({
+    subagents: {
+      resolveMaxDepth: () => 1,
+      // `delegate` reads only the child id; a batch also reads the worker's result.
+      startActivation: async (spec) => {
+        const index = started.length
+        started.push(spec)
+        return {
+          childId: `child-${index + 1}`,
+          result: Promise.resolve({ output: [{ type: 'text', text: 'ok' }], stopReason: 'completed' }),
+          dispose: async () => {},
+        }
+      },
+    },
+  })
+  const delegate = harness.tools.find(({ name }) => name === 'delegate')
+  const orchestrate = harness.tools.find(({ name }) => name === 'orchestrate')
+  assert.equal(typeof orchestrate?.execute, 'function', 'apply must register the orchestrate tool')
+  const exec = { agent: { id: 'main-1' }, signal: new AbortController().signal }
+  const claim = {
+    description: 'edit',
+    prompt: 'edit src/a.js',
+    cwd: 'C:/repo',
+    writeScope: ['src/a.js'],
+    provider: 'p',
+    model: 'm',
+  }
+  const batch = {
+    cwd: 'C:/repo',
+    writeScope: ['src/a.js'],
+    items: [1],
+    stages: [{ name: 's', prompt: 'p' }],
+    provider: 'p',
+    model: 'm',
+  }
+
+  const held = await delegate.execute(claim, exec)
+  assert.equal(held.subagentId, 'child-1')
+  await assert.rejects(
+    () => orchestrate.execute(batch, exec),
+    (error) =>
+      error?.code === 'write-scope-conflict' &&
+      error.details[0].path === 'C:/repo/src/a.js' &&
+      error.details[0].owner === 'child-1',
+  )
+  assert.equal(started.length, 1, 'the refused batch never reached the host')
+
+  harness.handlers.get('subagent/end')({ id: 'child-1', stopReason: 'completed' })
+  const result = await orchestrate.execute(batch, exec)
+  assert.equal(result.agentsStarted, 1, 'settlement released the delegate lease for the batch')
+})
+
+test('disposing the plugin clears the lease table', async () => {
+  const started = []
+  const harness = start({
+    subagents: {
+      resolveMaxDepth: () => 1,
+      startActivation: async () => {
+        const childId = `child-${started.length + 1}`
+        started.push(childId)
+        return { childId }
+      },
+    },
+  })
+  const tool = harness.tools.find(({ name }) => name === 'delegate')
+  const exec = { agent: { id: 'main-1' }, signal: new AbortController().signal }
+  const claim = {
+    description: 'edit',
+    prompt: 'edit src/a.js',
+    cwd: 'C:/repo',
+    writeScope: ['src/a.js'],
+    provider: 'p',
+    model: 'm',
+  }
+
+  await tool.execute(claim, exec)
+  const installed = harness.effects.find(({ label }) => label === 'orchestrator: write leases')
+  assert.equal(typeof installed?.dispose, 'function', 'apply must own the lease table through an effect')
+  installed.dispose()
+  const next = await tool.execute({ ...claim, description: 'after reload' }, exec)
+  assert.equal(next.subagentId, 'child-2', 'a plugin reload drops the old table')
 })
 
 test('the retry prompt goes through the host protocol entry, as a queued turn of the child', async () => {

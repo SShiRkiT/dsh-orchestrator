@@ -1,6 +1,6 @@
 # DSH Orchestrator
 
-[![version](https://img.shields.io/badge/version-0.7.3-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
+[![version](https://img.shields.io/badge/version-0.8.0-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
 
 The "dispatch mode" plugin for DeepSeek Harness.
   
@@ -53,17 +53,20 @@ The "dispatch mode" plugin for DeepSeek Harness.
 
 ## Install
 
-Add it from GitHub in the DSH plugin page, or use the CLI:
+Add it from GitHub in the DSH plugin page — all three spellings are accepted, and the full URL is the least ambiguous:
 
 ```text
+https://github.com/SShiRkiT/dsh-orchestrator
+github:SShiRkiT/dsh-orchestrator#main
 SShiRkiT/dsh-orchestrator#main
 ```
 
 ```bash
-dsh plugin --profile desktop add SShiRkiT/dsh-orchestrator#main
+# equivalent CLI install
+dsh plugin --profile desktop add https://github.com/SShiRkiT/dsh-orchestrator
 ```
 
-After installing, **fully quit and reopen DSH**: client plugins are composed at startup and are not hot-updated.
+After installing, **fully quit and reopen DSH**: client plugins are composed at startup and are not hot-updated. When upgrading, **remove the old version first** and then add this repository — two copies registering the same tools will fight over the same declarations.
 
 ## Enable
 
@@ -100,11 +103,12 @@ The main agent's default route is not part of this configuration: it lives in th
 
 ### delegate: one self-contained dynamic task
 
-It has only three parameters: `prompt` (the complete task, required), `description` (a 3–5 word display name, required), and `cwd` (optional). The worker cannot see the main agent's conversation, so the prompt has to carry all the context itself:
+It takes `prompt` (the complete task, required), `description` (a 3–5 word display name, required), `writeScope` (required — the files or directories this worker may write, see below), and `cwd` (optional). The worker cannot see the main agent's conversation, so the prompt has to carry all the context itself:
 
 ```json
 {
   "description": "move config loading",
+  "writeScope": ["src/config.ts", "src/settings.ts"],
   "prompt": "Goal: move config loading from config.ts to settings.ts without changing behaviour\nFiles you may change: src/config.ts, src/settings.ts\nAcceptance: node --test test/settings.test.mjs\nOn failure: do not change the public API; write the reason into the conclusion and stop"
 }
 ```
@@ -121,11 +125,25 @@ Every worker gets the same fixed instruction at the start of its prompt: `用中
   "stages": [
     { "name": "summarize", "prompt": "Summarize this item in one sentence." }
   ],
-  "maxConcurrency": 2
+  "maxConcurrency": 2,
+  "writeScope": ["out/summaries/"]
 }
 ```
 
 With several stages, items advance one by one and a later stage automatically receives the earlier output of the same item. `items` is 1–64 and `stages` is 1–8; the call returns `{ kind: "orchestration", agentsStarted, results, errors }`, with `results` in input order and `null` for a failed item.
+
+### writeScope: one writer per file, enforced before dispatch
+
+Both dispatch tools require a **top-level `writeScope: string[]`**. It is the structural contract that replaces the old prompt-only promise of "never let two subagents edit the same file":
+
+- **Shapes**: an exact file (`src/index.js`), a directory (`dir/` or `dir/**`, both meaning the whole subtree), or the global root (`*`).
+- **Normalization**: paths are resolved lexically against the dispatch `cwd` (no symlink resolution) and de-duplicated **case-insensitively on Windows**.
+- **Refusals**: omitting the field fails with `write-scope-missing`; an empty array, wildcard abuse or an illegal path fails with `write-scope-invalid`.
+- **Single-writer leases**: `delegate` holds one lease per child for the child's whole lifetime; `orchestrate` holds one lease for the whole batch, atomically. Both share one process-wide lease table, so a `delegate` worker and an `orchestrate` batch can refuse each other.
+- **Blocked before anything starts**: overlapping scopes raise a structured `write-scope-conflict` (conflicting path, holder, `expiresAt`) **before any worker is launched**, with `agentsStarted: 0`.
+- **Always released**: on `subagent/end`, on `agent/disposed`, in `orchestrate`'s `finally` (normal completion, thrown error and abort alike) and on plugin dispose; a **30-minute TTL** is the backstop against a lease leaked by a crashed host.
+
+`writeScope` is a dispatcher-side mutual-exclusion contract, not an OS-level file sandbox: it guarantees no two overlapping dispatches run at once, not that a worker stays inside its declared scope.
 
 `delegate` is asynchronous: there is no progress callback, and the main agent has no tool to stop a worker — stopping one takes a host-side action.
 

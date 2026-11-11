@@ -1,6 +1,6 @@
 {
   "name": "dsh-orchestrator",
-  "version": "0.7.3",
+  "version": "0.8.0",
   "private": true,
   "description": "Main agent that plans and delegates work; orchestrate fans out with pipelines and structured results; long-running workers are supervised by reading session logs",
   "type": "module",
@@ -33,6 +33,7 @@
   },
   "peerDependencies": {
     "@deepseek-ai/schemastery": "*",
+    "@deepseek-ai/dsh-tools": "*",
     "zod": "*"
   },
   "main": "lib/index.js",
