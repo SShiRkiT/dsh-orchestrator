@@ -37,6 +37,13 @@ const STUBS = {
   '@deepseek-ai/dsh-tools': `
     export function defineTool(spec) { return spec }
   `,
+  '@deepseek-ai/dsh-llm': `
+    let seq = 0
+    export function createUserMessage(input) {
+      seq += 1
+      return { id: 'stub-user-msg-' + seq, role: 'user', ...input }
+    }
+  `,
   zod: `
     const z = { object: () => ({ strict: () => ({}) }), enum: () => ({}), boolean: () => ({}) }
     export { z }
@@ -1242,4 +1249,163 @@ test('the published catalog includes tools a scope registers for a root agent', 
     agents: { get: () => undefined, roots: () => [scoped] },
   })
   assert.deepEqual(harness.catalog(), ['read', 'subagent'])
+})
+
+test('deferred switch notice: volatile flip records per main agent and appends once on the next pre-step', async () => {
+  const main = fakeAgent({ id: 'main-1' })
+  const child = fakeAgent({ id: 'child-1', depth: 1, header: { delegationDepth: 1 } })
+  const { created, handlers, handlerOptions, state } = start({ enabled: true })
+
+  const preStep = handlers.get('agent/pre-step')
+  assert.equal(typeof preStep, 'function', 'apply must subscribe to agent/pre-step')
+  assert.deepEqual(handlerOptions.get('agent/pre-step'), { global: true })
+
+  created({ agent: main.agent, source: 'create' })
+  created({ agent: child.agent, source: 'create' })
+  const volatile = handlers.get('loader/volatile-update')
+
+  // Baseline only: no change was made, so the first step carries only the user prompt.
+  const userMsg1 = { id: 'u1', role: 'user', content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } }
+  const d1 = await preStep(
+    { agent: main.agent, messages: [userMsg1], step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'enter', messages: [userMsg1] }),
+  )
+  assert.deepEqual(d1.messages, [userMsg1])
+
+  // Flip dispatch mode off: nothing is pushed immediately; the notice rides with the next step.
+  state.enabled = false
+  volatile()
+
+  const userMsg2 = { id: 'u2', role: 'user', content: [{ type: 'text', text: 'read file' }], source: { kind: 'user' } }
+  const d2 = await preStep(
+    { agent: main.agent, messages: [userMsg2], step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'enter', messages: [userMsg2] }),
+  )
+  assert.equal(d2.messages.length, 2)
+  assert.equal(d2.messages[0], userMsg2)
+  assert.equal(d2.messages[1].role, 'user')
+  assert.equal(d2.messages[1].source.kind, mod.SWITCH_SOURCE_KIND)
+  assert.equal(d2.messages[1].source.form, 'notice')
+  assert.match(d2.messages[1].content[0].text, /关闭/)
+
+  // Consumed once: the following step must not repeat the notice.
+  const userMsg3 = { id: 'u3', role: 'user', content: [{ type: 'text', text: 'next' }], source: { kind: 'user' } }
+  const d3 = await preStep(
+    { agent: main.agent, messages: [userMsg3], step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'enter', messages: [userMsg3] }),
+  )
+  assert.deepEqual(d3.messages, [userMsg3])
+
+  // Flip back on, then round-trip before the next turn: no notice is emitted.
+  state.enabled = true
+  volatile()
+  state.enabled = false
+  volatile()
+  const d4 = await preStep(
+    { agent: main.agent, messages: [userMsg3], step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'enter', messages: [userMsg3] }),
+  )
+  assert.deepEqual(d4.messages, [userMsg3])
+
+  // Children never receive switch notices.
+  state.enabled = true
+  volatile()
+  const dChild = await preStep(
+    { agent: child.agent, messages: [userMsg3], step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'enter', messages: [userMsg3] }),
+  )
+  assert.deepEqual(dChild.messages, [userMsg3])
+})
+
+test('deferred switch notice survives rejected, aborted, and empty steps, and clears on dispose', async () => {
+  const main = fakeAgent({ id: 'main-2' })
+  const { created, handlers, state } = start({ enabled: true })
+  const preStep = handlers.get('agent/pre-step')
+  const volatile = handlers.get('loader/volatile-update')
+  const disposed = handlers.get('agent/disposed')
+
+  created({ agent: main.agent, source: 'create' })
+  state.enabled = false
+  volatile()
+
+  const userMsg = { id: 'u1', role: 'user', content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' } }
+
+  // Rejected step leaves the pending notice intact.
+  const rejected = await preStep(
+    { agent: main.agent, messages: [userMsg], step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'reject', reason: 'blocked' }),
+  )
+  assert.deepEqual(rejected, { kind: 'reject', reason: 'blocked' })
+
+  // Aborted step leaves the pending notice intact.
+  const abortedController = new AbortController()
+  abortedController.abort()
+  const aborted = await preStep(
+    { agent: main.agent, messages: [userMsg], step: 1, signal: abortedController.signal },
+    async () => ({ kind: 'enter', messages: [userMsg] }),
+  )
+  assert.deepEqual(aborted.messages, [userMsg])
+
+  // Step 1 with zero messages (no-op turn) leaves the pending notice intact.
+  const emptyStep1 = await preStep(
+    { agent: main.agent, messages: [], step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'enter', messages: [] }),
+  )
+  assert.deepEqual(emptyStep1.messages, [])
+
+  // Now a real step runs and receives the notice.
+  const delivered = await preStep(
+    { agent: main.agent, messages: [userMsg], step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'enter', messages: [userMsg] }),
+  )
+  assert.equal(delivered.messages.length, 2)
+  assert.match(delivered.messages[1].content[0].text, /关闭/)
+
+  // Flip again, then dispose: recreating the same id must start from a fresh baseline.
+  state.enabled = true
+  volatile()
+  disposed({ agent: main.agent })
+  created({ agent: main.agent, source: 'create' })
+  const afterRecreate = await preStep(
+    { agent: main.agent, messages: [userMsg], step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'enter', messages: [userMsg] }),
+  )
+  assert.deepEqual(afterRecreate.messages, [userMsg])
+})
+
+test('createSwitchPreStep degrades gracefully without dropping the notice when dsh-llm fails to load', async () => {
+  const { createSwitchNotices } = await import('../lib/switch-notice.js')
+  let enabled = true
+  const notices = createSwitchNotices({ readEnabled: () => enabled })
+  notices.observe('main-x')
+  enabled = false
+  notices.observe('main-x')
+
+  const warnings = []
+  let loads = 0
+  const preStep = mod.createSwitchPreStep({
+    switchNotices: notices,
+    loadLlm: async () => {
+      loads += 1
+      throw new Error('llm missing')
+    },
+    logger: { warn: (msg) => warnings.push(msg) },
+  })
+
+  const agent = fakeAgent({ id: 'main-x' }).agent
+  const userMsg = { id: 'u1', role: 'user', content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' } }
+  const first = await preStep(
+    { agent, messages: [userMsg], step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'enter', messages: [userMsg] }),
+  )
+  const second = await preStep(
+    { agent, messages: [userMsg], step: 1, signal: new AbortController().signal },
+    async () => ({ kind: 'enter', messages: [userMsg] }),
+  )
+  assert.deepEqual(first.messages, [userMsg])
+  assert.deepEqual(second.messages, [userMsg])
+  assert.equal(loads, 1)
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /cannot load @deepseek-ai\/dsh-llm/)
+  assert.equal(notices.hasPending('main-x'), true)
 })
