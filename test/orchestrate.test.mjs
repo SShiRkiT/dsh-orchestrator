@@ -988,3 +988,32 @@ test('a batch without writeScope is refused with write-scope-missing and starts 
   assert.equal(leases.size, 0, 'a refused batch claims nothing')
   assert.equal(calls.length, 0, 'a refused batch starts no worker')
 })
+
+test('when dispatch mode is off, orchestrate drops the main-agent rule lead and refuses execution', async () => {
+  let enabled = false
+  const leases = createWriteLeases()
+  const { subagents, calls } = trackedSubagents(async () => textResult('x'))
+  const definition = createOrchestrateTool({
+    defineTool: (d) => d,
+    subagents,
+    config: { ...cfg(), enabled: { get: () => enabled } },
+    leases,
+  })
+
+  assert.equal(definition.description.includes('主代理规则同 delegate'), false)
+  assert.match(definition.description, /^按 item 派发子代理/)
+
+  await assert.rejects(
+    () =>
+      definition.execute(
+        { cwd: 'C:/repo', writeScope: ['src/a.js'], items: [1], stages: [{ name: 's', prompt: 'p' }] },
+        exec(),
+      ),
+    /"orchestrate" is disabled while dispatch mode is off/,
+  )
+  assert.equal(leases.size, 0)
+  assert.equal(calls.length, 0)
+
+  enabled = true
+  assert.match(definition.description, /^主代理规则同 delegate/)
+})

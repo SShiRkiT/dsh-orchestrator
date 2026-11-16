@@ -80,16 +80,33 @@ test('the whitelist is read per call, so a panel write lands on the next request
   assert.deepEqual(namesOf(service.definitions(mainAgent)), [])
 })
 
-test('the switch off hands the host surface back untouched, for a main agent and a child', () => {
+test('the switch off hides delegate/orchestrate and hands host tools back untouched', () => {
   const { service } = fakeTools()
   let on = false
   installToolSurface({ tools: service, allowed: ALLOWED, enabled: () => on })
-  assert.deepEqual(namesOf(service.definitions(mainAgent)), HOST_SURFACE)
-  assert.deepEqual(namesOf(service.definitions(childAgent)), HOST_SURFACE)
+  const expectedOff = HOST_SURFACE.filter((name) => name !== DELEGATE_TOOL && name !== ORCHESTRATE_TOOL)
+  assert.deepEqual(namesOf(service.definitions(mainAgent)), expectedOff)
+  assert.deepEqual(namesOf(service.definitions(childAgent)), expectedOff)
+  assert.deepEqual(namesOf(service.definitions()), HOST_SURFACE, 'global catalog still includes the pair')
 
   on = true
   assert.deepEqual(namesOf(service.definitions(mainAgent)), ALLOWED)
   assert.equal(namesOf(service.definitions(childAgent)).includes(DELEGATE_TOOL), false)
+  assert.equal(namesOf(service.definitions(childAgent)).includes(ORCHESTRATE_TOOL), false)
+})
+
+test('custom disabledDeny overrides which names are hidden when the switch is off', () => {
+  const { service } = fakeTools()
+  installToolSurface({
+    tools: service,
+    allowed: ALLOWED,
+    enabled: () => false,
+    disabledDeny: ['delegate'],
+  })
+  const names = namesOf(service.definitions(mainAgent))
+  assert.equal(names.includes('delegate'), false)
+  assert.equal(names.includes('orchestrate'), true)
+  assert.equal(names.includes('read'), true)
 })
 
 test('the context-global view is never filtered, so the panel keeps a complete catalog', () => {
