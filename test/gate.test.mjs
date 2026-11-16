@@ -264,9 +264,18 @@ test('the guard reads the whitelist and the switch per call, so nothing is reins
 
   // The switch is read on the same call, so flipping it needs no event either.
   on = false
-  assert.equal(guard({ name: 'edit' }), undefined, 'off lets every call through')
+  assert.equal(guard({ name: 'edit' }), undefined, 'off lets regular host tools through')
+  assert.equal(guard({ name: 'run_code', arguments: { code: 'await import("node:fs")' } }), undefined, 'off lifts run_code restrictions too')
+  assert.match(guard({ name: DELEGATE_TOOL }), /"delegate" is disabled while dispatch mode is off/)
+  assert.match(guard({ name: ORCHESTRATE_TOOL }), /"orchestrate" is disabled while dispatch mode is off/)
+  // Nested dispatch calls from inside run_code are also refused while off.
+  assert.match(
+    guard({ name: DELEGATE_TOOL, agent, parent: Symbol('parent-execution'), arguments: {} }),
+    /"delegate" is disabled while dispatch mode is off/,
+  )
   on = true
   assert.equal(guard({ name: 'edit' }), refusal('edit'))
+  assert.equal(guard({ name: DELEGATE_TOOL }), undefined)
 
   assert.deepEqual(restricted, [], 'no restriction was installed along the way')
   assert.deepEqual(gate.allowed, ALLOWED, 'allowed is the snapshot from install time')

@@ -421,21 +421,30 @@ test('the warning fires only for a resume that fell through the depth test', () 
   assert.equal(resumedChild.logs.warn.length, 0)
 })
 
-test('the switch being off still installs the guard and hands the host surface back intact', () => {
+test('the switch being off still installs the guard and restores host tools without delegate/orchestrate', () => {
   // The gate is installed even while dispatch mode is off, so flipping the switch on
   // in an open conversation takes effect without a restart; the info log follows the switch.
-  const { created, ctx, state, logs } = start({ enabled: false })
+  const { created, ctx, state, logs, tools } = start({ enabled: false })
   const { agent, restricted, guards } = fakeAgent()
+  const expectedOff = SURFACE_TOOLS.filter((name) => name !== 'delegate' && name !== 'orchestrate')
+  const delegate = tools.find((tool) => tool.name === 'delegate')
+  const orchestrate = tools.find((tool) => tool.name === 'orchestrate')
   created({ agent, source: 'create' })
   assert.deepEqual(restricted, [])
   assert.equal(guards.length, 1)
-  assert.deepEqual(namesOf(ctx.tools.definitions(agent)), SURFACE_TOOLS, 'off means host behaviour')
+  assert.deepEqual(namesOf(ctx.tools.definitions(agent)), expectedOff, 'off restores host tools and hides dispatch pair')
+  assert.equal(delegate.description.includes('主代理规则：主代理只负责规划'), false)
+  assert.equal(orchestrate.description.includes('主代理规则同 delegate'), false)
+  assert.equal(guards[0]({ name: 'edit' }), undefined)
+  assert.match(guards[0]({ name: 'delegate' }), /"delegate" is disabled while dispatch mode is off/)
   assert.equal(logs.info.length, 0)
   assert.equal(logs.warn.length, 0)
 
   // Turning it on filters the next request even though nothing was re-installed.
   state.enabled = true
   assert.deepEqual(namesOf(ctx.tools.definitions(agent)), mod.DEFAULT_ALLOWED_TOOLS)
+  assert.match(delegate.description, /^主代理规则：主代理只负责规划/)
+  assert.match(orchestrate.description, /^主代理规则同 delegate/)
   assert.deepEqual(restricted, [], 'still no restriction')
 })
 
@@ -831,25 +840,37 @@ test('a panel write reaches every live main agent on its next request, not by re
   assert.deepEqual(child.restricted, [])
 })
 
-test('the enable switch flips the surface in the open session through the same live read', () => {
+test('the enable switch flips the surface and rules in the open session through the same live read', () => {
   const main = fakeAgent()
-  const { created, ctx, handlers, state } = start({
+  const { created, ctx, handlers, state, tools } = start({
     agents: { get: () => undefined, roots: () => [main.agent] },
   })
+  const expectedOff = SURFACE_TOOLS.filter((name) => name !== 'delegate' && name !== 'orchestrate')
+  const delegate = tools.find((tool) => tool.name === 'delegate')
+  const orchestrate = tools.find((tool) => tool.name === 'orchestrate')
   created({ agent: main.agent, source: 'create' })
   const volatile = handlers.get('loader/volatile-update')
   assert.equal(typeof volatile, 'function', 'apply must subscribe to loader/volatile-update')
   assert.deepEqual(namesOf(ctx.tools.definitions(main.agent)), mod.DEFAULT_ALLOWED_TOOLS)
+  assert.match(delegate.description, /^主代理规则：主代理只负责规划/)
+  assert.match(orchestrate.description, /^主代理规则同 delegate/)
 
   state.enabled = false
   volatile()
-  assert.deepEqual(namesOf(ctx.tools.definitions(main.agent)), SURFACE_TOOLS, 'off hands the host table back')
-  assert.equal(main.guards[0]({ name: 'edit' }), undefined, 'and lets every call through')
+  assert.deepEqual(namesOf(ctx.tools.definitions(main.agent)), expectedOff, 'off restores host tools and hides dispatch pair')
+  assert.equal(delegate.description.includes('主代理规则：主代理只负责规划'), false)
+  assert.equal(orchestrate.description.includes('主代理规则同 delegate'), false)
+  assert.equal(main.guards[0]({ name: 'edit' }), undefined, 'and lets regular host calls through')
+  assert.match(main.guards[0]({ name: 'delegate' }), /"delegate" is disabled while dispatch mode is off/)
+  assert.match(main.guards[0]({ name: 'orchestrate' }), /"orchestrate" is disabled while dispatch mode is off/)
 
   state.enabled = true
   volatile()
   assert.deepEqual(namesOf(ctx.tools.definitions(main.agent)), mod.DEFAULT_ALLOWED_TOOLS)
+  assert.match(delegate.description, /^主代理规则：主代理只负责规划/)
+  assert.match(orchestrate.description, /^主代理规则同 delegate/)
   assert.match(main.guards[0]({ name: 'edit' }), /not available to the main agent/)
+  assert.equal(main.guards[0]({ name: 'delegate' }), undefined)
 })
 
 test('a disposed agent drops its guard, and a later write reinstalls nothing', () => {

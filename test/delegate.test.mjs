@@ -421,3 +421,37 @@ test('a delegated child no longer sees this tool, so there is no worker variant'
     assert.match(tool.parameters[key].description, /仅当用户显式点名/)
   }
 })
+
+test('when dispatch mode is off, delegate drops the main-agent rule and refuses execution', async () => {
+  let enabled = false
+  let started = false
+  const leaseTable = leases()
+  const subagents = {
+    resolveMaxDepth: () => 1,
+    startActivation: async () => {
+      started = true
+      return { childId: 'child-1' }
+    },
+  }
+  const tool = createDelegateTool({
+    defineTool: (d) => d,
+    subagents,
+    config: { ...cfg('p', 'm'), enabled: { get: () => enabled } },
+    leases: leaseTable,
+    allowedTools: ['delegate', 'orchestrate'],
+  })
+
+  assert.equal(tool.description.includes('主代理规则：主代理只负责规划'), false)
+  assert.equal(tool.description.includes('主代理可用工具'), false)
+  assert.match(tool.description, /^把一个自包含任务交给子代理执行/)
+
+  await assert.rejects(
+    () => tool.execute({ description: 'a', prompt: 'x', writeScope: SCOPE }, exec()),
+    /"delegate" is disabled while dispatch mode is off/,
+  )
+  assert.equal(started, false)
+  assert.equal(leaseTable.size, 0)
+
+  enabled = true
+  assert.match(tool.description, /^主代理规则：主代理只负责规划/)
+})
