@@ -11,7 +11,7 @@
 
 #### **A powerful model plans, low-cost models do the work — the dispatch mode plugin with hard tool isolation for DeepSeek Harness**
 
-[![version](https://img.shields.io/badge/version-0.8.3-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
+[![version](https://img.shields.io/badge/version-0.8.4-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
 [![dsh-plugin](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![platform](https://img.shields.io/badge/platform-Web%20GUI%20%7C%20Desktop-5c6bc0?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
 [![node](https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
@@ -112,7 +112,7 @@ The plugin depends on host subagent interfaces (the `startActivation` spec shape
 
 | Plugin version | Supported DSH host | Notes |
 | --- | --- | --- |
-| `dsh-orchestrator >= 0.8.3` (starting with this release) | **DSH `>= 0.2.2-rc.2`** | Verified against `0.2.2-rc.2` / `0.2.2-rc.3`. Since `0.2.2-rc.2`, the host has flattened the subagent spec, removed the `Symbol.for('dsh.subagent.deliverPrompt')` delivery entry point and `agents.roots()`, and added the `wait_agent` tool. It is therefore **incompatible with `0.2.2-rc.1` and earlier**. Note: although the host adds `wait_agent`, the plugin **intentionally keeps its default whitelist at 12 tools and excludes `wait_agent`**. Blocking polling can leave the main agent idling and misjudging timeouts; supervision already replaces polling with one summary plus one decision. If needed, manually check `wait_agent` in the panel's `allowedTools` list. |
+| `@sshirkit/dsh-orchestrator >= 0.8.3` (current version: `0.8.4`) | **DSH `>= 0.2.2-rc.2`** | Verified against `0.2.2-rc.2` / `0.2.2-rc.3`. Since `0.2.2-rc.2`, the host has flattened the subagent spec, removed the `Symbol.for('dsh.subagent.deliverPrompt')` delivery entry point and `agents.roots()`, and added the `wait_agent` tool. It is therefore **incompatible with `0.2.2-rc.1` and earlier**. Note: although the host adds `wait_agent`, the plugin **intentionally keeps its default whitelist at 12 tools and excludes `wait_agent`**. Blocking polling can leave the main agent idling and misjudging timeouts; supervision already replaces polling with one summary plus one decision. If needed, manually check `wait_agent` in the panel's `allowedTools` list. |
 | `dsh-orchestrator 0.8.0 – 0.8.2` | **DSH `<= 0.2.2-rc.1`** | Tested against `0.2.1-rc.3` and `0.2.2-rc.1`. The `@deepseek-ai/dsh-tools` dependency was introduced in `0.8.0`. |
 | `dsh-orchestrator <= 0.7.3` | DSH releases predating plugin `0.8.0` | Early standalone tool-registration architecture, without a dependency on `@deepseek-ai/dsh-tools`. |
 
@@ -133,9 +133,11 @@ SShiRkiT/dsh-orchestrator#main
 ```bash
 # Equivalent CLI installation
 dsh plugin --profile desktop add https://github.com/SShiRkiT/dsh-orchestrator
+# npm installation (available after publication to npm)
+dsh plugin --profile desktop add @sshirkit/dsh-orchestrator
 ```
 
-> After installation, **fully quit and reopen DSH** (client plugins are composed at startup and do not support hot updates). When upgrading, **uninstall the old version** from the plugin page before adding this repository again; two installed copies will compete over the same tool declarations.
+> After installation, **fully quit and reopen DSH** (client plugins are composed at startup and do not support hot updates). When upgrading, **uninstall the old version** from the plugin page before adding this repository again or `@sshirkit/dsh-orchestrator` (available after publication to npm); two installed copies will compete over the same tool declarations.
 
 ---
 

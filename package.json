@@ -1,7 +1,10 @@
 {
-  "name": "dsh-orchestrator",
-  "version": "0.8.3",
-  "private": true,
+  "name": "@sshirkit/dsh-orchestrator",
+  "version": "0.8.4",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "description": "Main agent that plans and delegates work; orchestrate fans out with pipelines and structured results; long-running workers are supervised by reading session logs",
   "type": "module",
   "exports": {
@@ -14,7 +17,8 @@
     "cordis.patch.yml",
     "README.md",
     "README.en.md",
-    "LICENSE"
+    "LICENSE",
+    "docs/images"
   ],
   "dsh": {
     "bundle": {
@@ -32,9 +36,19 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/schemastery": "*",
-    "@deepseek-ai/dsh-tools": "*",
-    "zod": "*"
+    "@deepseek-ai/schemastery": ">=3.18.5 <4.0.0",
+    "@deepseek-ai/dsh-tools": ">=0.2.2-rc.2 <0.2.3-0",
+    "@deepseek-ai/dsh-llm": ">=0.2.2-rc.2 <0.2.3-0",
+    "zod": "^4.6.6"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.2.2-rc.2 <0.2.3-0"
   },
   "main": "lib/index.js",
   "scripts": {

@@ -11,7 +11,7 @@
 
 #### **强模型主脑规划 + 便宜模型统一打工 —— DeepSeek Harness 的「硬隔离调度模式」插件**
 
-[![version](https://img.shields.io/badge/version-0.8.3-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
+[![version](https://img.shields.io/badge/version-0.8.4-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
 [![dsh-plugin](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![platform](https://img.shields.io/badge/platform-Web%20GUI%20%7C%20Desktop-5c6bc0?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
 [![node](https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
@@ -112,7 +112,7 @@ DSH 客户端自带了 `subagent` / `workflow`，官方也有 `@deepseek-ai/dsh-
 
 | 插件版本 | 适配的 DSH 宿主 | 说明 |
 | --- | --- | --- |
-| `dsh-orchestrator >= 0.8.3`（本版起） | **DSH `>= 0.2.2-rc.2`** | 已验证 `0.2.2-rc.2` / `0.2.2-rc.3`。宿主自 `0.2.2-rc.2` 起扁平化了 subagent spec、移除了 `Symbol.for('dsh.subagent.deliverPrompt')` 投递入口与 `agents.roots()`，并新增 `wait_agent` 工具；因此**不兼容 `0.2.2-rc.1` 及更早版本**。注意：宿主虽新增了 `wait_agent`，但本插件默认白名单**有意维持 12 项、不予放行 `wait_agent`**——阻塞式轮询等待会让主代理陷入空转与超时误判，巡检机制已用「一条摘要 + 一次决策」替代轮询；确有需要时可在面板 `allowedTools` 中手动勾选放行。 |
+| `@sshirkit/dsh-orchestrator >= 0.8.3`（当前版本 `0.8.4`） | **DSH `>= 0.2.2-rc.2`** | 已验证 `0.2.2-rc.2` / `0.2.2-rc.3`。宿主自 `0.2.2-rc.2` 起扁平化了 subagent spec、移除了 `Symbol.for('dsh.subagent.deliverPrompt')` 投递入口与 `agents.roots()`，并新增 `wait_agent` 工具；因此**不兼容 `0.2.2-rc.1` 及更早版本**。注意：宿主虽新增了 `wait_agent`，但本插件默认白名单**有意维持 12 项、不予放行 `wait_agent`**——阻塞式轮询等待会让主代理陷入空转与超时误判，巡检机制已用「一条摘要 + 一次决策」替代轮询；确有需要时可在面板 `allowedTools` 中手动勾选放行。 |
 | `dsh-orchestrator 0.8.0 – 0.8.2` | **DSH `<= 0.2.2-rc.1`** | 已实测支持 `0.2.1-rc.3`、`0.2.2-rc.1`。自 `0.8.0` 起引入 `@deepseek-ai/dsh-tools` 依赖。 |
 | `dsh-orchestrator <= 0.7.3` | `0.8.0` 之前的旧版 DSH | 早期独立工具注册架构，未依赖 `@deepseek-ai/dsh-tools`。 |
 
@@ -133,9 +133,11 @@ SShiRkiT/dsh-orchestrator#main
 ```bash
 # CLI 等价安装
 dsh plugin --profile desktop add https://github.com/SShiRkiT/dsh-orchestrator
+# npm 安装（npm 发布后可用）
+dsh plugin --profile desktop add @sshirkit/dsh-orchestrator
 ```
 
-> 装完后请**完全退出并重新打开 DSH**（客户端插件在启动时组合，不支持热更新）。升级时请先在插件页**卸载旧版**再重新添加本仓库，两份同时存在会争抢同一批工具声明。
+> 装完后请**完全退出并重新打开 DSH**（客户端插件在启动时组合，不支持热更新）。升级时请先在插件页**卸载旧版**再重新添加本仓库或 `@sshirkit/dsh-orchestrator`（npm 发布后可用），两份同时存在会争抢同一批工具声明。
 
 ---
 
