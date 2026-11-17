@@ -139,16 +139,19 @@ test('a duplicated settlement event is ignored', async () => {
 })
 
 test('a retry prompt that cannot be delivered wakes the parent with the reason', async () => {
+  // The message `deliverRetryPrompt` throws on a host without `subagents.prompt`
+  // (lib/index.js); the policy only has to carry it to the parent verbatim.
+  const reason = 'the host does not expose subagents.prompt'
   const { retry, notices, warnings } = harness({
     deliver: async () => {
-      throw new Error('the host does not expose dsh.subagent.deliverPrompt')
+      throw new Error(reason)
     },
   })
   retry.track('child-1', { parentId: 'parent-1' })
   assert.equal(await retry.settle('child-1', SILENT_FAILURE), 'retry-failed')
   assert.equal(retry.has('child-1'), false)
   assert.equal(notices.length, 1)
-  assert.match(notices[0].text, /无法把重试提示送到它：the host does not expose dsh.subagent.deliverPrompt/)
+  assert.match(notices[0].text, new RegExp(`无法把重试提示送到它：${reason}`))
   assert.equal(warnings.length, 1)
   assert.match(warnings[0], /^orchestrator: retry: cannot wake subagent child-1: /)
 })
