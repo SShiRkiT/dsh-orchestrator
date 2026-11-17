@@ -45,17 +45,22 @@ test('buildActivation shapes the spawn request with the route and parent deliver
   assert.equal(spec.label, 'fix parser')
   assert.equal(spec.delivery, 'parent')
   assert.equal(spec.signal, signal)
-  assert.deepEqual(spec.request.prompt, [{ type: 'text', text: languageNote('do it') + 'do it' }])
-  assert.equal(spec.request.parent, parent)
-  assert.deepEqual(spec.request.agentOptions, route)
-  assert.equal(spec.request.maxDepth, 2)
-  assert.equal('cwd' in spec.request, false)
+  // DSH >= 0.2.2-rc.2 reads every field from the top level of the spec: there is no
+  // `request` wrapper any more, and `name` is never set (the host assigns `agent-N`).
+  assert.deepEqual(spec.prompt, [{ type: 'text', text: languageNote('do it') + 'do it' }])
+  assert.equal(spec.parent, parent)
+  assert.deepEqual(spec.agentOptions, route)
+  assert.equal(spec.maxDepth, 2)
+  assert.equal('cwd' in spec, false)
+  assert.equal('request' in spec, false)
+  assert.equal('name' in spec, false)
 })
 
 test('buildActivation passes cwd through and leaves out an undefined depth', () => {
   const spec = buildActivation({ args: { description: 'd', prompt: 'p', cwd: 'sub' }, parent: {}, route: {}, maxDepth: undefined })
-  assert.equal(spec.request.cwd, 'sub')
-  assert.equal('maxDepth' in spec.request, false)
+  assert.equal(spec.cwd, 'sub')
+  assert.equal('maxDepth' in spec, false)
+  assert.equal('request' in spec, false)
 })
 
 test('the worker header asks for a final summary instead of a send_message report', () => {
@@ -167,7 +172,7 @@ test('execute reads the route per call, so a changed route applies to the next d
   const subagents = {
     resolveMaxDepth: () => 2,
     startActivation: async (spec) => {
-      seen.push(spec.request.agentOptions)
+      seen.push(spec.agentOptions)
       return { childId: 'child-' + seen.length }
     },
   }
@@ -275,7 +280,7 @@ function recordingTool(config) {
   const subagents = {
     resolveMaxDepth: () => 1,
     startActivation: async (spec) => {
-      seen.push(spec.request.agentOptions)
+      seen.push(spec.agentOptions)
       return { childId: 'child-' + seen.length }
     },
   }

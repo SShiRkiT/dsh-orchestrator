@@ -54,24 +54,58 @@ test('collectCatalog unions the global view with every live root agent scope', (
   const rootB = { id: 'b', ctx: { tools: { view: () => view(['ask_user_question'], ['ask_user_question']) } } }
   const ctx = {
     tools: { view: () => view(['read', 'edit'], ['read', 'edit']) },
-    agents: { roots: () => [rootA, rootB] },
+    agents: { list: () => [rootA, rootB] },
   }
   assert.deepEqual(collectCatalog(ctx), ['ask_user_question', 'edit', 'read', 'subagent'])
   // The scope is the agent itself, which is what the registry's per-scope view expects.
   assert.deepEqual(seen, [rootA])
 })
 
-test('collectCatalog survives a missing or throwing registry, scope or root list', () => {
+test('collectCatalog keeps only the roots when list() also returns delegated children', () => {
+  // DSH >= 0.2.2-rc.2 has no `agents.roots()`: `list()` returns every live agent, so the
+  // depth test is what separates a main agent's scope from a worker's.
+  const seen = []
+  const root = {
+    id: 'root',
+    options: { provider: 'p', model: 'm' },
+    session: { header: {} },
+    ctx: { tools: { view: (scope) => { seen.push(scope); return view(['subagent'], ['subagent']) } } },
+  }
+  const liveChild = {
+    id: 'child-live',
+    options: { provider: 'p', model: 'm', subagentDepth: 1 },
+    session: { header: {} },
+    ctx: { tools: { view: () => view(['ops_bash'], ['ops_bash']) } },
+  }
+  // A cold-resumed child is rebuilt from options holding only the route: the persisted
+  // header is the only depth left, which is why the filter reads both.
+  const resumedChild = {
+    id: 'child-resumed',
+    options: { provider: 'p', model: 'm' },
+    session: { header: { delegationDepth: 1 } },
+    ctx: { tools: { view: () => view(['ops_read_files'], ['ops_read_files']) } },
+  }
+  const ctx = {
+    tools: { view: () => view(['read'], ['read']) },
+    agents: { list: () => [root, liveChild, resumedChild] },
+  }
+  assert.deepEqual(collectCatalog(ctx), ['read', 'subagent'])
+  assert.deepEqual(seen, [root], 'only the root scope is read')
+})
+
+test('collectCatalog survives a missing or throwing registry, scope or agent list', () => {
   assert.deepEqual(collectCatalog(undefined), [])
   assert.deepEqual(collectCatalog({}), [])
   const throwing = {
     tools: { view: () => { throw new Error('no view') } },
-    agents: { roots: () => { throw new Error('no roots') } },
+    agents: { list: () => { throw new Error('no list') } },
   }
   assert.deepEqual(collectCatalog(throwing), [])
+  const notAnArray = { tools: { view: () => view(['read']) }, agents: { list: () => undefined } }
+  assert.deepEqual(collectCatalog(notAnArray), ['read'])
   const brokenRoot = {
     tools: { view: () => view(['read']) },
-    agents: { roots: () => [{ id: 'broken', ctx: { tools: { view: () => { throw new Error('gone') } } } }] },
+    agents: { list: () => [{ id: 'broken', ctx: { tools: { view: () => { throw new Error('gone') } } } }] },
   }
   assert.deepEqual(collectCatalog(brokenRoot), ['read'])
 })

@@ -386,10 +386,14 @@ test('the shipped whitelist is twelve planning tools, and every other name is re
     'search_context',
     'acp_status',
     'mcp_custom_tool',
+    // `wait_agent` is a host tool the default whitelist deliberately leaves out: a main
+    // agent must not block on a wait, it dispatches and is woken by the completion notice.
+    'wait_agent',
   ]) {
     assert.equal(shipped.includes(name), false, name)
     assert.match(allowGuard(shipped)({ name }), /is not available to the main agent/, name)
   }
+  assert.equal(shipped.includes('wait_agent'), false)
 
   const { created, ctx } = start()
   const { agent, guards } = fakeAgent()
@@ -815,8 +819,10 @@ test('liveConfig reads superviseUnlimited on every tick, so the panel switch app
 test('a panel write reaches every live main agent on its next request, not by re-masking', () => {
   const main = fakeAgent()
   const child = fakeAgent({ id: 'child-1', depth: 1 })
+  // `agents.list()` returns every live agent; the catalog keeps only the roots, so the
+  // delegated child (depth 1) must be filtered out by `isDelegatedChild`.
   const { created, ctx, state } = start({
-    agents: { get: () => undefined, roots: () => [main.agent, child.agent] },
+    agents: { get: () => undefined, list: () => [main.agent, child.agent] },
   })
   created({ agent: main.agent, source: 'create' })
   created({ agent: child.agent, source: 'create' })
@@ -850,7 +856,7 @@ test('a panel write reaches every live main agent on its next request, not by re
 test('the enable switch flips the surface and rules in the open session through the same live read', () => {
   const main = fakeAgent()
   const { created, ctx, handlers, state, tools } = start({
-    agents: { get: () => undefined, roots: () => [main.agent] },
+    agents: { get: () => undefined, list: () => [main.agent] },
   })
   const expectedOff = SURFACE_TOOLS.filter((name) => name !== 'delegate' && name !== 'orchestrate')
   const delegate = tools.find((tool) => tool.name === 'delegate')
@@ -882,8 +888,8 @@ test('the enable switch flips the surface and rules in the open session through 
 
 test('a disposed agent drops its guard, and a later write reinstalls nothing', () => {
   const main = fakeAgent()
-  const roots = [main.agent]
-  const { created, handlers, state } = start({ agents: { get: () => undefined, roots: () => roots } })
+  const live = [main.agent]
+  const { created, handlers, state } = start({ agents: { get: () => undefined, list: () => live } })
   created({ agent: main.agent, source: 'create' })
   const volatile = handlers.get('loader/volatile-update')
   const disposed = handlers.get('agent/disposed')
@@ -895,7 +901,7 @@ test('a disposed agent drops its guard, and a later write reinstalls nothing', (
   assert.equal(main.guards.length, 0, 'the guard is unregistered with the agent')
 
   // A later write with the agent gone has nothing to reinstall, and must not throw.
-  roots.length = 0
+  live.length = 0
   state.allowed = [...mod.DEFAULT_ALLOWED_TOOLS, 'read']
   assert.doesNotThrow(() => volatile())
   assert.deepEqual(main.restricted, [])
@@ -919,7 +925,7 @@ test('a volatile write is never fatal, with or without a usable registry', () =>
   const broken = start({
     agents: {
       get: () => undefined,
-      roots: () => {
+      list: () => {
         throw new Error('registry gone')
       },
     },
@@ -1138,41 +1144,39 @@ test('disposing the plugin clears the lease table', async () => {
   assert.equal(next.subagentId, 'child-2', 'a plugin reload drops the old table')
 })
 
-test('the retry prompt goes through the host protocol entry, as a queued turn of the child', async () => {
+test('the retry prompt goes through subagents.prompt, as a queued turn of the child', async () => {
   const calls = []
-  const parent = { id: 'parent-1' }
   const deliverPrompt = mod.deliverRetryPrompt
   const host = {
-    agents: { get: (id) => (id === 'parent-1' ? parent : undefined) },
     subagents: {
-      [Symbol.for('dsh.subagent.deliverPrompt')]: async (...args) => {
-        calls.push(args)
-        return true
+      prompt: async (request, signal) => {
+        calls.push({ request, signal })
+        return { messageId: 'msg-1' }
       },
     },
   }
-  assert.equal(await deliverPrompt(host, 'parent-1', 'child-1', '继续'), true)
+  assert.equal(await deliverPrompt(host, 'parent-1', 'child-1', '继续'), 'msg-1')
   assert.equal(calls.length, 1)
-  const [sender, childId, content, source, signal, delivery] = calls[0]
-  assert.equal(sender, parent, 'the live parent is the sender the host requires')
-  assert.equal(childId, 'child-1')
-  assert.deepEqual(content, [{ type: 'text', text: '继续' }])
-  assert.deepEqual(source, { kind: 'orchestrator-retry', form: 'notice' })
-  assert.equal(delivery, 'queue', 'a retry is a new turn, not a steer into a dead one')
+  const { request, signal } = calls[0]
+  // The host hard-codes `source.kind = 'user'` on this path, so the request carries no
+  // source at all; `requestId` is what ends up in `source.rpcId` for tracing.
+  assert.equal(typeof request.requestId, 'string')
+  assert.match(request.requestId, /^[0-9a-f-]{36}$/)
+  assert.equal(request.childSessionId, 'child-1')
+  assert.equal(request.delivery, 'queue', 'a retry is a new turn, not a steer into a dead one')
+  assert.deepEqual(request.content, [{ type: 'text', text: '继续' }])
   assert.equal(typeof signal?.aborted, 'boolean')
+  // The parent is no longer part of the request: `prompt()` takes the child session only.
+  assert.equal('parentSessionId' in request, false)
+  assert.equal('source' in request, false)
 })
 
-test('the retry prompt refuses a host without the entry, and a parent that is gone', async () => {
-  const parent = { id: 'parent-1' }
+test('the retry prompt refuses a host without subagents.prompt', async () => {
   await assert.rejects(
-    mod.deliverRetryPrompt({ agents: { get: () => parent }, subagents: {} }, 'parent-1', 'child-1', '继续'),
-    /does not expose dsh\.subagent\.deliverPrompt/,
+    mod.deliverRetryPrompt({ subagents: {} }, 'parent-1', 'child-1', '继续'),
+    /does not expose subagents\.prompt/,
   )
-  const withEntry = {
-    agents: { get: () => undefined },
-    subagents: { [Symbol.for('dsh.subagent.deliverPrompt')]: async () => true },
-  }
-  await assert.rejects(mod.deliverRetryPrompt(withEntry, 'parent-1', 'child-1', '继续'), /is not live/)
+  await assert.rejects(mod.deliverRetryPrompt({}, 'parent-1', 'child-1', '继续'), /does not expose subagents\.prompt/)
 })
 
 test('the retry notice has its own source kind, so it cannot mask a supervision notice', async () => {
@@ -1246,7 +1250,7 @@ test('the published catalog includes tools a scope registers for a root agent', 
   }
   const harness = start({
     catalogNames: ['read'],
-    agents: { get: () => undefined, roots: () => [scoped] },
+    agents: { get: () => undefined, list: () => [scoped] },
   })
   assert.deepEqual(harness.catalog(), ['read', 'subagent'])
 })

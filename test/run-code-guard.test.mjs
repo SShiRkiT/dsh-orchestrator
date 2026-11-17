@@ -119,7 +119,7 @@ test('an ordinary delegation program passes untouched', () => {
     '  tools.delegate({ description: "read a file", prompt: "read it" }),',
     '  tools.orchestrate({ items: [1, 2], stages: [{ name: "s", prompt: "do it" }] }),',
     '])',
-    'await tools.send_message({ agent_id: "child-1", message: "go on" })',
+    'await tools.send_message({ agent: "child-1", message: "go on" })',
     'const x: Record<string, unknown> = { a: JSON.stringify(results) }',
     'try { await tools.delegate({ description: "b", prompt: "c" }) } catch (error) { if (error instanceof ToolCallError) console.log(error.message) }',
     'return x',

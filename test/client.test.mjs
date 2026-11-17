@@ -765,10 +765,31 @@ test('the bundled copy of the shipped whitelist matches the host constant', () =
   assert.equal(HOST_DEFAULT_ALLOWED_TOOLS.length, 12)
   // The whitelist names the planning and delegation tools only: no file, search, shell or
   // web tool may appear here, or the main agent could work on the repo by itself.
-  for (const name of ['delegate', 'orchestrate', 'send_message', 'interrupt_agent', 'todo_write', 'ask_user_question', 'compress']) {
+  for (const name of [
+    'delegate',
+    'orchestrate',
+    'send_message',
+    'interrupt_agent',
+    'todo_write',
+    'ask_user_question',
+    'compress',
+  ]) {
     assert.equal(HOST_DEFAULT_ALLOWED_TOOLS.includes(name), true, name)
   }
-  for (const name of ['read', 'edit', 'write', 'bash', 'subagent', 'workflow', 'ralph', 'decompress', 'search_context']) {
+  for (const name of [
+    'read',
+    'edit',
+    'write',
+    'bash',
+    'subagent',
+    'workflow',
+    'ralph',
+    'decompress',
+    'search_context',
+    // `wait_agent` is deliberately not shipped: the main agent dispatches and is woken by
+    // the completion notice instead of blocking on a wait.
+    'wait_agent',
+  ]) {
     assert.equal(HOST_DEFAULT_ALLOWED_TOOLS.includes(name), false, name)
   }
 })

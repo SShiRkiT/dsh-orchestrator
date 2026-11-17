@@ -148,13 +148,16 @@ test('every worker uses the configured route, caller delivery and the stage outp
   for (const spec of calls) {
     assert.equal(spec.provider, 'spawn')
     assert.equal(spec.delivery, 'caller')
-    assert.deepEqual(spec.request.agentOptions, ROUTE)
-    assert.deepEqual(spec.request.parent, { id: 'main' })
-    assert.equal(spec.request.cwd, 'work')
-    assert.equal(spec.request.maxDepth, 3)
-    assert.equal(JSON.stringify(spec.request).includes('"provider":"nexus-deepseek"'), true)
-    if (stageOf(spec) === 1) assert.deepEqual(spec.request.outputSchema, schema)
-    else assert.equal('outputSchema' in spec.request, false)
+    // DSH >= 0.2.2-rc.2 reads the spec flat: no `request` wrapper, no `name`.
+    assert.deepEqual(spec.agentOptions, ROUTE)
+    assert.deepEqual(spec.parent, { id: 'main' })
+    assert.equal(spec.cwd, 'work')
+    assert.equal(spec.maxDepth, 3)
+    assert.equal(JSON.stringify(spec).includes('"provider":"nexus-deepseek"'), true)
+    assert.equal('request' in spec, false)
+    assert.equal('name' in spec, false)
+    if (stageOf(spec) === 1) assert.deepEqual(spec.outputSchema, schema)
+    else assert.equal('outputSchema' in spec, false)
   }
 })
 
@@ -273,10 +276,10 @@ test('a pipeline has no global barrier and feeds the previous stage output forwa
   assert.equal(events.indexOf('fast-stage2') < events.indexOf('slow-end'), true)
 
   const stage2 = calls.find((spec) => itemOf(spec) === 1 && stageOf(spec) === 1)
-  assert.match(stage2.request.prompt[0].text, /Verify\./)
-  assert.match(stage2.request.prompt[0].text, /"id":"b"/)
-  assert.match(stage2.request.prompt[0].text, /上一阶段 "extract" 输出 \(JSON\):/)
-  assert.match(stage2.request.prompt[0].text, /"i1s0"/)
+  assert.match(stage2.prompt[0].text, /Verify\./)
+  assert.match(stage2.prompt[0].text, /"id":"b"/)
+  assert.match(stage2.prompt[0].text, /上一阶段 "extract" 输出 \(JSON\):/)
+  assert.match(stage2.prompt[0].text, /"i1s0"/)
   assert.equal(result.results[1].output, 'fast')
 })
 
@@ -292,7 +295,7 @@ test('a structured result is used as-is and validated', async () => {
     exec(),
   )
   assert.deepEqual(result.results[0].output, { answer: 42 })
-  assert.equal(calls[0].request.outputSchema, schema)
+  assert.equal(calls[0].outputSchema, schema)
 })
 
 test('text that is strictly JSON falls back when there is no structured result', async () => {
@@ -691,7 +694,7 @@ test('an explicit provider and model apply to every worker of the call and skip 
   )
   assert.equal(calls.length, 2)
   for (const spec of calls) {
-    assert.deepEqual(spec.request.agentOptions, { provider: 'nexus-claude', model: 'claude-opus-5.5' })
+    assert.deepEqual(spec.agentOptions, { provider: 'nexus-claude', model: 'claude-opus-5.5' })
   }
   assert.equal(result.agentsStarted, 2)
   assert.equal(result.errors.length, 0)
@@ -742,7 +745,7 @@ test('reasoning_effort passes through with the override for every worker', async
     },
     exec(),
   )
-  assert.deepEqual(calls[0].request.agentOptions, {
+  assert.deepEqual(calls[0].agentOptions, {
     provider: 'nexus-claude',
     model: 'claude-opus-5.5',
     reasoningEffort: 'high',
@@ -956,7 +959,7 @@ test('the declared scope reaches the worker prompt but never the result payload'
     exec(),
   )
 
-  const prompt = calls[0].request.prompt[0].text
+  const prompt = calls[0].prompt[0].text
   assert.match(prompt, /本批次的写作用域/)
   assert.match(prompt, /C:\/repo\/src\/a\.js/)
   assert.match(prompt, /C:\/repo\/src\/b/, 'a directory claim is named as its normalized path')
