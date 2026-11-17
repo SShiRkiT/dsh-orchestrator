@@ -1,6 +1,6 @@
 # DSH Orchestrator
 
-[![version](https://img.shields.io/badge/version-0.8.2-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
+[![version](https://img.shields.io/badge/version-0.8.3-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
 
 The "dispatch mode" plugin for DeepSeek Harness.
   
@@ -27,7 +27,7 @@ The "dispatch mode" plugin for DeepSeek Harness.
 
 - **The main agent only plans, enforced by a gate**:
   
-     a whitelist of 12 built-in planning and delegation tools (`DEFAULT_ALLOWED_TOOLS` / `allowedTools`) is all the main agent may call; every read, write, shell, web, and other host tool — plus any MCP or third-party plugin tool registered later — is hidden and refused at execution time (even a nested call smuggled through `run_code`); the main agent keeps only `delegate`, `orchestrate`, `send_message`, `todo_write`, `ask_user_question`, `compress`, `interrupt_agent`, plus the read-only session log tools (`session_*`).
+     a whitelist of 12 built-in planning and delegation tools (`DEFAULT_ALLOWED_TOOLS` / `allowedTools`) is all the main agent may call; every read, write, shell, web, and other host tool — plus any MCP or third-party plugin tool registered later — is hidden and refused at execution time (even a nested call smuggled through `run_code`); the main agent keeps only `delegate`, `orchestrate`, `send_message`, `interrupt_agent`, `todo_write`, `ask_user_question`, `compress`, plus the read-only session log tools (`session_*`).
   
 - **Parallel dispatch of independent subtasks**:
 
@@ -35,7 +35,9 @@ The "dispatch mode" plugin for DeepSeek Harness.
   
 - **Supervision and correction**:
   
-    When a `delegate` worker runs long, the plugin merges its session log into one notice that wakes the main agent; the main agent corrects it with a concrete `send_message`, or decides no intervention is needed and ends the turn with a one-line note.
+    A background timer reads the session event log of each running worker directly and folds it into one notice — elapsed time, rounds, new tool calls since the last patrol, latest tool, and last output. Reading and folding the log makes no model call, but the notice itself wakes the main agent, so the decision that follows does cost main-agent tokens; the point is to turn continuous polling into one summary plus one decision, not to make supervision free.
+
+    When a worker runs long or looks stuck, that notice wakes the main agent; the main agent corrects it with a concrete `send_message`, or decides no intervention is needed and ends the turn with a one-line note.
 
     When a worker is interrupted with `interrupt_agent` and later woken again by `send_message`, supervision takes it back: the notice count restarts from the first notice, and the log from before the interruption does not count as new activity.
   
@@ -50,6 +52,27 @@ The "dispatch mode" plugin for DeepSeek Harness.
 - **Declarative orchestration**:
 
     `orchestrate` does single-stage fan-out and multi-stage per-item pipelines (no global barrier); results keep input order, one failed item does not sink the others, and a stage can declare an object schema for structured results.
+
+## Requirements
+
+| Item | Requirement |
+| --- | --- |
+| Host | DeepSeek Harness Desktop / Web GUI |
+| Node.js | `>= 22` (bundled with the DSH Desktop runtime) |
+| Plugin form | Cordis backend service patch (`cordis.patch.yml`) + Web GUI client extension (`lib/client.js`) |
+| UI language | Chinese / English, following `zh-CN` / `en-US` |
+
+### Host version compatibility
+
+The plugin depends on host subagent interfaces (the `startActivation` spec shape, the retry delivery entry point, root-agent enumeration, and the tool registry). DSH `0.2.2-rc.2` changed them incompatibly, so **plugin and host versions have to be chosen as a pair**:
+
+| Plugin version | Supported DSH host | Notes |
+| --- | --- | --- |
+| `dsh-orchestrator >= 0.8.3` (starting with this release) | **DSH `>= 0.2.2-rc.2`** | Verified against `0.2.2-rc.2` / `0.2.2-rc.3`. Since `0.2.2-rc.2` the host flattens the subagent spec, drops the `Symbol.for('dsh.subagent.deliverPrompt')` delivery entry point and `agents.roots()`, and adds the `wait_agent` tool — so it is **incompatible with `0.2.2-rc.1` and earlier**. Note: although the host adds `wait_agent`, the plugin intentionally excludes `wait_agent` from the 12-item default whitelist to avoid blocking waits and timeout misjudgments — supervision already replaces polling with one summary plus one decision; it can still be enabled manually in `allowedTools` if needed. |
+| `dsh-orchestrator 0.8.0 – 0.8.2` | **DSH `<= 0.2.2-rc.1`** | Tested against `0.2.1-rc.3` and `0.2.2-rc.1`. Since `0.8.0` the plugin depends on `@deepseek-ai/dsh-tools`. |
+| `dsh-orchestrator <= 0.7.3` | DSH releases before `0.8.0` | Early standalone tool-registration architecture; no `@deepseek-ai/dsh-tools` dependency. |
+
+> Check the host version before upgrading (the DSH "About" panel, or the `package.json` in the install directory). **Plugin `0.8.3+` on a `0.2.2-rc.1` or older host fails outright when dispatching**, and an older plugin on a `0.2.2-rc.2+` host is equally unusable. If the host cannot be upgraded yet, stay on plugin `v0.8.2`.
 
 ## Install
 
