@@ -1,10 +1,15 @@
-Start from 28th October :
-<div align="center">
-**DSH Orchestrator**
-</div>
 <div align="center">
 
-**A powerful model plans, low-cost models do the work — the dispatch mode plugin with hard tool isolation for DeepSeek Harness**
+##### Start from 28th October
+
+<div align="center">
+
+# DSH Orchestrator
+
+</div>
+
+
+#### **A powerful model plans, low-cost models do the work — the dispatch mode plugin with hard tool isolation for DeepSeek Harness**
 
 [![version](https://img.shields.io/badge/version-0.8.3-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
 [![dsh-plugin](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
@@ -14,49 +19,63 @@ Start from 28th October :
 [![license](https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/SShiRkiT/dsh-orchestrator?style=flat-square&logo=github)](https://github.com/SShiRkiT/dsh-orchestrator/stargazers)
 
-[简体中文](README.md) | **English** · [Key differences](#why-use-this-plugin-when-native-subagent-and-agent-team-already-exist) · [Key features](#key-features) · [Installation](#installation) · [Configuration](#configuration)
+[简体中文](README.md) | **English** · [Key differences](#why-do-you-need-this-plugin-alongside-native-subagent-and-agent-team) · [Core Features](#core-features) · [Installation](#installation) · [Configuration](#configuration)
 
 </div>
 
 ---
+<div align="center">
 
-## Why use this plugin when native `subagent` and `Agent Team` already exist?
-
-DSH includes native `subagent` / `workflow` tools, and the official `@deepseek-ai/dsh-experimental-agent-team-profile` (Agent Team) is also available. However, intensive development still exposes the following pain points — the problems at the heart of **DSH Orchestrator**'s distinctive design:
+### Why Do You Need This Plugin Alongside Native `subagent` and `Agent Team`?
+</div>
+DSH includes native `subagent` / `workflow` tools, and the official `@deepseek-ai/dsh-experimental-agent-team-profile` (Agent Team) is also available. However, intensive development still exposes three pain points — the problems at the heart of **DSH Orchestrator**'s distinctive design:
 
 | Pain point | Native `subagent` / official `Agent Team` | DSH Orchestrator (unique to this plugin) |
 | --- | --- | --- |
-| **How do you configure models to save money?**<br>*(The key difference)* | **No dedicated subagent panel**: subagents either inherit the expensive main model by default or rely on the main agent to pass a model choice on every call (easy to omit or get wrong, with default changes requiring static configuration edits). | **Two independent model routes in one panel, with a low-cost model enforced**: set the Main Agent to a powerful, expensive model (such as `gemini-4-argon-high`) and lock all Subagents to a fast, low-cost model (such as `gemini-3.8-flash`) directly in the UI. Changes apply to the next delegation. |
-| **Does the main agent keep doing the work itself?** | **Relies on compliance with soft prompts**: the main agent / Team Lead still has the full set of tools, including `read`, `edit`, and `bash`. After a few turns, it often starts reading files and running commands itself, quickly filling the main context. | **Whitelist-Driven Hard Gate**: the main agent receives only 12 core planning and delegation tools by default (`allowedTools`). All other host file and terminal tools, plus any future MCP or third-party plugin tools, are automatically hidden and blocked at execution time (including nested calls through `run_code`), **enforcing a Main Agent dedicated entirely to planning and acceptance, with Subagents doing all the execution**. |
-| **What if a low-cost model gets stuck or goes off track?** | **Runtime black box**: after dispatch, you can only wait for completion or timeout, or block and poll with `wait_agent`. | **Periodic background inspection of event logs + dynamic correction by the powerful model**: a background timer reads running Workers' session event logs directly (reading and summarizing make no model calls), summarizing elapsed time, rounds, new tool calls, and the latest output. A lightweight notice wakes the main agent when something looks abnormal or takes too long, so the powerful model can assess it and give targeted corrections. |
-| **How do you run large batches of similar tasks?** | Native `workflow` asks the model to write arbitrary JavaScript, which can get out of control and does not enforce consistent model routing. | **Declarative `orchestrate` pipelines**: structured `items × stages` fan-out and multistage pipelines, with per-item failure isolation and strict JSON Schema validation. Every Worker is forced onto the low-cost subagent route. |
+| **The main agent keeps doing the work itself** | **Relies on compliance with soft prompts**: the main agent / Team Lead still has the full set of tools, including `read`, `edit`, and `bash`. After a few turns, it often starts reading files and running commands itself, quickly filling the main context. | **Whitelist-Driven Hard Gate**: the main agent receives only 12 core planning and delegation tools by default (`allowedTools`). All other host file and terminal tools, plus any future MCP or third-party plugin tools, are automatically hidden and blocked at execution time (including nested calls through `run_code`), **enforcing a Main Agent dedicated entirely to planning and acceptance, with Subagents doing all the execution**. |
+| **Low-cost models get stuck or go off track** | **Runtime black box**: after dispatch, you can only wait for completion or timeout, or block and poll with `wait_agent`. | **Periodic background inspection of event logs + dynamic correction by the powerful model**: a background timer reads running Workers' session event logs directly (reading and summarizing make no model calls), summarizing elapsed time, rounds, new tool calls, and the latest output. A lightweight notice wakes the main agent when something looks abnormal or takes too long, so the powerful model can assess it and give targeted corrections. |
+| **Large batches of similar tasks** | Native `workflow` asks the model to write arbitrary JavaScript, which can get out of control and does not enforce consistent model routing. | **Declarative `orchestrate` pipelines**: structured `items × stages` fan-out and multistage pipelines, with per-item failure isolation and strict JSON Schema validation. Every Worker is forced onto the low-cost subagent route. |
 
 ---
+<div align="center">
 
-## Key features
+## Core Features
+</div>
 
 ### 1. A powerful Main Agent and low-cost Subagents (independent panel, immediate updates)
 
 In the dedicated **Dispatch mode panel** below the composer, the main-agent and subagent model routes are fully independent:
 - **Main Agent**: choose your strongest flagship model (such as `gpt-astra-6` or `claude-opus-5.5`) to focus on clarifying requirements, splitting tasks, correcting course, and accepting final results.
 - **Subagent**: choose a slightly less capable but very inexpensive model with high throughput (such as `deepseek-v4.1-flash` or `gpt-luna-6`). **Every Worker launched through `delegate` or `orchestrate` must share this low-cost route**, unless the user explicitly names a different model for temporary use in the current message.
-- **Cost protection**: dispatch fails with an error if no subagent model is configured; it **never silently falls back to the expensive main-agent model**.
+- **Anti-burn protection**: dispatch fails with an error if no subagent model is configured
 
-![Dispatch mode panel](docs/images/dispatch-panel.png)
-
-*Dispatch mode panel: on the left, configure the Main Agent (such as `gemini-4-argon-high`) and Subagent (such as `gemini-3.8-flash`) models and reasoning effort independently, along with the inspection interval. On the right, Allowed Tools (whitelist-driven) lists all host tools live, including MCP and other plugin tools. Checked tools are allowed for the main agent; unchecked tools, including tools from newly installed plugins, are disabled by default. No restart is needed; changes apply to the current session on its next message.*
+![Dispatch Mode Panel](docs/images/dispatch-panel.png)
 
 ### 2. A hard whitelist gate: the main agent plans and accepts results; subagents execute
 
 Instead of relying on prompts asking the main model to use subagents more often, the plugin installs two guards at DSH's tool-definition outlet (`tools.definitions`) and execution layer (`tools.guard`), using a **whitelist-driven** approach. The definition layer trims the tool table visible to the model in real time, treating global tools and tools in scopes such as `ops_*` equally; the execution layer rejects any calls that slip through. Both layers read the current configuration on every request or call, without creating `tools.restrict` event storms, avoiding tool-visibility churn and prompt-cache invalidation from the official tool-hiding mechanism.
-- **Execution tools are removed from the main agent entirely**: `DEFAULT_ALLOWED_TOOLS` permits only 12 planning, delegation, and read-only session tools by default — `delegate`, `orchestrate`, `send_message`, `interrupt_agent`, `todo_write`, `ask_user_question`, `compress`, and five read-only session log tools. All file tools (`read` / `edit` / `write` / `apply_patch`), search tools (`grep` / `glob`), terminals (`bash` / `pwsh`), web fetching, native `subagent` / `workflow`, and any future MCP or third-party plugin tools are automatically hidden and blocked at execution time, including nested calls through `run_code`. To allow additional tools, check them under Allowed Tools on the right of the panel.
+- **Main Agent stripped of all execution tools**:
+<div align="center">
+
+> ### DEFAULT_ALLOWED_TOOLS permits only 12 planning, delegation, and read-only session tools by default
+>
+> _`delegate`, `orchestrate`, `send_message`, `interrupt_agent`, `todo_write`, `ask_user_question`, `compress`, and five read-only session log tools._
+>
+> ### All file access, search, and terminal tools, plus any future MCP or third-party plugin tools, are automatically hidden and blocked at execution time
+>
+> _(`read` / `edit` / `write` / `apply_patch`), (`grep` / `glob`), (`bash` / `pwsh`), web fetching, and native `subagent` / `workflow`_
+>
+> ### Even nested calls through run_code are blocked. To allow additional tools, check them under Allowed Tools on the right of the panel.
+</div>
+
 - **Subagents retain the full toolchain**: dispatched Workers are exempt from the gate and read or write files, run tests, and inspect errors in their own contexts. When finished, they return only a concise conclusion for the main agent to review.
 - **Switch at any time**: when the main agent needs to act directly, turn off Enable dispatch mode in the panel to restore all its tools immediately, without reopening the session.
 
 ### 3. Periodic background inspection of event logs and correction by the powerful model
 
 Low-cost Subagents can occasionally get stuck on complex shell escaping or errors. The plugin includes a background inspector driven entirely by logs:
-- **Reading the logs makes no model calls**: a background timer directly reads running Workers' session event logs at the configured interval (600 seconds by default), summarizes elapsed time, rounds, new tool calls, and the latest output, then combines them into a notice that wakes the main agent. Reading and summarizing make no LLM requests, but **assessment and correction after the main agent wakes still consume main-agent tokens**. The value is to compress continuous polling into one summary plus one decision, rather than make the entire supervision feature free.
+- **Reading the logs makes no model calls**: a background timer directly reads running Workers' session event logs at the configured interval (600 seconds by default), summarizes elapsed time, rounds, new tool calls, and the latest output, then combines them into a notice that wakes the main agent. Reading and summarizing make no LLM requests
+- However, **waking the Main Agent for judgment and steering still consumes Main Agent tokens**: supervision compresses continuous polling into one summary plus one decision; it does not make the entire supervision feature free.
 - **The powerful model makes a quick assessment**: after receiving an inspection summary, the main agent needs only a small number of tokens to decide:
   - **A) Progress is normal**: reply with one line, `巡检：正常`, and end the turn while the subagent continues.
   - **B) Correct course**: call `send_message` to inject corrective instructions directly into the running subagent, specifying the right approach or telling it to skip a blocker.
