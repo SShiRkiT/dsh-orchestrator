@@ -340,24 +340,23 @@ test('saveRoute surfaces a rejected write and a write that did not land', async 
   assert.equal(await T.saveRoute(dropped, T.MAIN.fields, { provider: 'p', model: 'm', effort: '' }, t), 'route.saveFailed')
 })
 
-test('apply puts the toggle in the left slot and the picker in input.right', () => {
+test('apply registers only the picker in input.right and keeps model catalog access', async () => {
   const regs = []
   const ctx = {
     effect: (fn) => fn(),
     locale: { register: () => {} },
     configForms: { get: (ns) => ({ ns }) },
-    remote: { commands: { execute: async () => ({ ok: true, value: 'x' }) }, session: { modelCatalog: async () => ({ ok: true, value: { groups: [] } }) } },
+    remote: { session: { modelCatalog: async () => ({ ok: true, value: { groups: [] } }) } },
     slots: { inject: (_n, cb) => cb(), register: (opts, comp) => regs.push({ opts, comp }) },
   }
   mod.apply(ctx)
   assert.deepEqual(regs.map((r) => [r.opts.name, r.opts.id, r.opts.order]), [
-    ['conversation.input.left', 'orchestrator-plan-toggle', 20],
     ['conversation.input.right', 'orchestrator-route-picker', 11],
   ])
-  const props = regs[1].opts.inject('S1')
+  const props = regs[0].opts.inject('S1')
   assert.deepEqual([props.scopes.main.ns, props.scopes.worker.ns, props.scopes.orch.ns], ['agent-default-model', 'orchestrator', 'orchestrator'])
-  assert.equal(props.setPlan, undefined)
-  assert.deepEqual(plain(mod.inject), ['slots', 'locale', 'remote', 'remote.commands', 'remote.session', 'configForms'])
+  assert.deepEqual(await props.loadCatalog(), { ok: true, value: { groups: [] } })
+  assert.deepEqual(plain(mod.inject), ['slots', 'locale', 'remote', 'remote.session', 'configForms'])
 })
 
 test('filterGroups matches provider names wholesale and model ids or names otherwise', () => {
