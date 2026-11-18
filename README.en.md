@@ -1,9 +1,9 @@
-<div align="center">
-
+<div align="center">   
+  
 ##### Start from 28th October
 
-<div align="center">
-
+<div align="center">  
+  
 # DSH Orchestrator
 
 </div>
@@ -23,31 +23,23 @@
 
 </div>
 
----
+
 <div align="center">
-
-### Why Do You Need This Plugin Alongside Native `subagent` and `Agent Team`?
-</div>
-DSH includes native `subagent` / `workflow` tools, and the official `@deepseek-ai/dsh-experimental-agent-team-profile` (Agent Team) is also available. However, intensive development still exposes three pain points — the problems at the heart of **DSH Orchestrator**'s distinctive design:
-
-| Pain point | Native `subagent` / official `Agent Team` | DSH Orchestrator (unique to this plugin) |
-| --- | --- | --- |
-| **The main agent keeps doing the work itself** | **Relies on compliance with soft prompts**: the main agent / Team Lead still has the full set of tools, including `read`, `edit`, and `bash`. After a few turns, it often starts reading files and running commands itself, quickly filling the main context. | **Whitelist-Driven Hard Gate**: the main agent receives only 12 core planning and delegation tools by default (`allowedTools`). All other host file and terminal tools, plus any future MCP or third-party plugin tools, are automatically hidden and blocked at execution time (including nested calls through `run_code`), **enforcing a Main Agent dedicated entirely to planning and acceptance, with Subagents doing all the execution**. |
-| **Low-cost models get stuck or go off track** | **Runtime black box**: after dispatch, you can only wait for completion or timeout, or block and poll with `wait_agent`. | **Periodic background inspection of event logs + dynamic correction by the powerful model**: a background timer reads running Workers' session event logs directly (reading and summarizing make no model calls), summarizing elapsed time, rounds, new tool calls, and the latest output. A lightweight notice wakes the main agent when something looks abnormal or takes too long, so the powerful model can assess it and give targeted corrections. |
-| **Large batches of similar tasks** | Native `workflow` asks the model to write arbitrary JavaScript, which can get out of control and does not enforce consistent model routing. | **Declarative `orchestrate` pipelines**: structured `items × stages` fan-out and multistage pipelines, with per-item failure isolation and strict JSON Schema validation. Every Worker is forced onto the low-cost subagent route. |
-
----
-<div align="center">
-
+  
 ## Core Features
 </div>
 
 ### 1. A powerful Main Agent and low-cost Subagents (independent panel, immediate updates)
 
 In the dedicated **Dispatch mode panel** below the composer, the main-agent and subagent model routes are fully independent:
-- **Main Agent**: choose your strongest flagship model (such as `gpt-astra-6` or `claude-opus-5.5`) to focus on clarifying requirements, splitting tasks, correcting course, and accepting final results.
-- **Subagent**: choose a slightly less capable but very inexpensive model with high throughput (such as `deepseek-v4.1-flash` or `gpt-luna-6`). **Every Worker launched through `delegate` or `orchestrate` must share this low-cost route**, unless the user explicitly names a different model for temporary use in the current message.
+- **Main Agent**: choose your strongest flagship model to focus on clarifying requirements, splitting tasks, correcting course, and accepting final results.
+  - > For example, `gpt-astra-6` or `claude-opus-5.5`
+- **Subagent**: choose a slightly less capable but very inexpensive model with high throughput. **Every Worker launched through `delegate` or `orchestrate` must share this low-cost route**
+  - > For example, `deepseek-v4.1-flash` or `gpt-luna-6`
 - **Anti-burn protection**: dispatch fails with an error if no subagent model is configured
+
+## In your `prompt` or `AGENTS.md`, you can instruct the main agent in the current workspace to pass `provider` / `model` parameters when dispatching subagents, specifying which model to use for the current `session` \ `workspace`
+
 
 ![Dispatch Mode Panel](docs/images/dispatch-panel.png)
 
@@ -56,15 +48,15 @@ In the dedicated **Dispatch mode panel** below the composer, the main-agent and 
 Instead of relying on prompts asking the main model to use subagents more often, the plugin installs two guards at DSH's tool-definition outlet (`tools.definitions`) and execution layer (`tools.guard`), using a **whitelist-driven** approach. The definition layer trims the tool table visible to the model in real time, treating global tools and tools in scopes such as `ops_*` equally; the execution layer rejects any calls that slip through. Both layers read the current configuration on every request or call, without creating `tools.restrict` event storms, avoiding tool-visibility churn and prompt-cache invalidation from the official tool-hiding mechanism.
 - **Main Agent stripped of all execution tools**:
 <div align="center">
-
+  
 > ### DEFAULT_ALLOWED_TOOLS permits only 12 planning, delegation, and read-only session tools by default
->
+> 
 > _`delegate`, `orchestrate`, `send_message`, `interrupt_agent`, `todo_write`, `ask_user_question`, `compress`, and five read-only session log tools._
->
+> 
 > ### All file access, search, and terminal tools, plus any future MCP or third-party plugin tools, are automatically hidden and blocked at execution time
->
-> _(`read` / `edit` / `write` / `apply_patch`), (`grep` / `glob`), (`bash` / `pwsh`), web fetching, and native `subagent` / `workflow`_
->
+> 
+>_(`read` / `edit` / `write` / `apply_patch`), (`grep` / `glob`), (`bash` / `pwsh`), `subagent` / `workflow`_
+> 
 > ### Even nested calls through run_code are blocked. To allow additional tools, check them under Allowed Tools on the right of the panel.
 </div>
 
@@ -95,10 +87,28 @@ Low-cost Subagents can occasionally get stuck on complex shell escaping or error
   **`writeScope` (required, `string[]`)**: one top-level declaration applies to the entire batch, which **holds its write scope atomically**. The normalized scope is injected into each stage's prompt as a boundary reminder.
 - **Single-writer exclusion (enforced before dispatch)**: `delegate` holds a lease per subagent; `orchestrate` holds one for the entire batch. Both share a process-wide lease table and check for overlaps across tools. Any overlap raises `write-scope-conflict` **before any subagent starts**, including the conflicting path, lease holder, expiration time, and `agentsStarted: 0`, preventing Workers from overwriting the same file concurrently. Leases are released idempotently on `subagent/end`, `agent/disposed`, in `orchestrate`'s `finally` (including errors and aborts), and when the plugin is unloaded, with a 30-minute TTL as a backstop against leaks.
 
----
 
+---
+<div align="center">
+  
+### Why Do You Need This Plugin Alongside Native `subagent` and `Agent Team`?
+</div>
+DSH includes native `subagent` / `workflow` tools, and the official `@deepseek-ai/dsh-experimental-agent-team-profile` (Agent Team) is also available. However, intensive development still exposes three pain points — the problems at the heart of **DSH Orchestrator**'s distinctive design:
+
+| Pain point | Native `subagent` / official `Agent Team` | DSH Orchestrator (unique to this plugin) |
+| --- | --- | --- |
+| **The main agent keeps doing the work itself** | **Relies on compliance with soft prompts**: the main agent / Team Lead still has the full set of tools, including `read`, `edit`, and `bash`. After a few turns, it often starts reading files and running commands itself, quickly filling the main context. | **Whitelist-Driven Hard Gate**: the main agent receives only 12 core planning and delegation tools by default (`allowedTools`). All other host file and terminal tools, plus any future MCP or third-party plugin tools, are automatically hidden and blocked at execution time (including nested calls through `run_code`), **enforcing a Main Agent dedicated entirely to planning and acceptance, with Subagents doing all the execution**. |
+| **Low-cost models get stuck or go off track** | **Runtime black box**: after dispatch, you can only wait for completion or timeout, or block and poll with `wait_agent`. | **Periodic background inspection of event logs + dynamic correction by the powerful model**: a background timer reads running Workers' session event logs directly (reading and summarizing make no model calls), summarizing elapsed time, rounds, new tool calls, and the latest output. A lightweight notice wakes the main agent when something looks abnormal or takes too long, so the powerful model can assess it and give targeted corrections. |
+| **Large batches of similar tasks** | Native `workflow` asks the model to write arbitrary JavaScript, which can get out of control and does not enforce consistent model routing. | **Declarative `orchestrate` pipelines**: structured `items × stages` fan-out and multistage pipelines, with per-item failure isolation and strict JSON Schema validation. Every Worker is forced onto the low-cost subagent route. |
+
+
+<div align="center">
+  
 ## Requirements
 
+</div>
+
+  
 | Item | Requirement |
 | --- | --- |
 | **Host environment** | DeepSeek Harness Desktop / Web GUI |
@@ -106,21 +116,29 @@ Low-cost Subagents can occasionally get stuck on complex shell escaping or error
 | **Plugin form** | Cordis backend service patch (`cordis.patch.yml`) + Web GUI client extension (`lib/client.js`) |
 | **UI language** | Adapts to Chinese / English (`zh-CN` / `en-US`) |
 
+<div align="center">
+  
 ### DSH host version compatibility
+
+</div>
 
 The plugin depends on host subagent interfaces (the `startActivation` spec shape, the retry delivery entry point, root-agent enumeration, and the tool registry). DSH `0.2.2-rc.2` introduced a breaking change to these interfaces, so **plugin and host versions must be chosen as a pair**:
 
 | Plugin version | Supported DSH host | Notes |
 | --- | --- | --- |
-| `@sshirkit/dsh-orchestrator >= 0.8.3` (current version: `0.8.5`) | **DSH `>= 0.2.2-rc.2`** | Verified against `0.2.2-rc.2` / `0.2.2-rc.3`. Since `0.2.2-rc.2`, the host has flattened the subagent spec, removed the `Symbol.for('dsh.subagent.deliverPrompt')` delivery entry point and `agents.roots()`, and added the `wait_agent` tool. It is therefore **incompatible with `0.2.2-rc.1` and earlier**. Note: although the host adds `wait_agent`, the plugin **intentionally keeps its default whitelist at 12 tools and excludes `wait_agent`**. Blocking polling can leave the main agent idling and misjudging timeouts; supervision already replaces polling with one summary plus one decision. If needed, manually check `wait_agent` in the panel's `allowedTools` list. |
-| `dsh-orchestrator 0.8.0 – 0.8.2` | **DSH `<= 0.2.2-rc.1`** | Tested against `0.2.1-rc.3` and `0.2.2-rc.1`. The `@deepseek-ai/dsh-tools` dependency was introduced in `0.8.0`. |
+| `@sshirkit/dsh-orchestrator >= 0.8.3` (current version: `0.8.5`) | **DSH `>= 0.2.2-rc.2`** | Verified against `0.2.2-rc.2` / `0.2.2-rc.3`. Since `0.2.2-rc.2`, the host has flattened the subagent spec, removed the `Symbol.for('dsh.subagent.deliverPrompt')` delivery entry point and `agents.roots()`, and added the `wait_agent` tool. It is therefore **incompatible with `0.2.2-rc.1` and earlier**. Note: although the host adds `wait_agent`, the plugin **intentionally keeps its default whitelist at 12 tools and excludes `wait_agent`**. Blocking polling can leave the main agent idling and misjudging timeouts; supervision already replaces polling with one summary plus one decision. If needed, allow it manually in the panel's `allowedTools` list. |
+| `dsh-orchestrator 0.8.0 – 0.8.2` | **DSH `<= 0.2.2-rc.1`** | Tested against `0.2.1-rc.3` and `0.2.2-rc.1`. Since `0.8.0`, the plugin has depended on `@deepseek-ai/dsh-tools`. |
 | `dsh-orchestrator <= 0.7.3` | DSH releases predating plugin `0.8.0` | Early standalone tool-registration architecture, without a dependency on `@deepseek-ai/dsh-tools`. |
 
 > Check the host version before upgrading: see About in DSH or read `package.json` in the installation directory. **Plugin `0.8.3+` with a `0.2.2-rc.1` or older host fails outright when dispatching**; an older plugin with a `0.2.2-rc.2+` host is also unusable. If you cannot upgrade the host yet, stay on plugin `v0.8.2`.
 
 ---
 
+<div align="center">
+  
 ## Installation
+
+</div>
 
 Select Add from GitHub on the DSH plugin page. All three forms below are accepted; paste one into the input field. The first is recommended because it is the least likely to be misinterpreted by the client:
 
@@ -141,7 +159,11 @@ dsh plugin --profile desktop add @sshirkit/dsh-orchestrator
 
 ---
 
+<div align="center">
+  
 ## Configuration
+
+</div>
 
 All configuration fields are volatile (dynamic configuration): changes in the panel take effect immediately, without restarting DSH:
 
@@ -159,6 +181,10 @@ All configuration fields are volatile (dynamic configuration): changes in the pa
 
 > Note: the main agent's default model is stored in the host's `agent-default-model`, read and written directly by the same Dispatch mode panel, and applies to newly created sessions. Subagent model changes apply to the next delegation.
 
+<div align="center">
+  
 ## License
+
+</div>
 
 [MIT](LICENSE) © 2026 [SShiRkiT](https://github.com/SShiRkiT)
