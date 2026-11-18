@@ -11,7 +11,7 @@
 
 #### **强模型主脑规划 + 便宜模型统一打工 —— DeepSeek Harness 的「硬隔离调度模式」插件**
 
-[![version](https://img.shields.io/badge/version-0.8.5-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
+[![version](https://img.shields.io/badge/version-0.8.6-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
 [![dsh-plugin](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![platform](https://img.shields.io/badge/platform-Web%20GUI%20%7C%20Desktop-5c6bc0?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
 [![node](https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
@@ -61,7 +61,7 @@
 </div>
 
 - **子代理独享完整工具链**：被派出的 Worker 不受闸门限制，在各自独立的上下文中读写文件、跑测试、看报错，完工后只把干净的结论交回主代理验收。
-- **一键随时切换**：需要主代理临时亲自操作时，关掉面板上的「启用调度模式」开关即可立刻恢复主代理的全部工具，无需重开会话。
+- **一键随时切换**：关闭面板上的「启用调度模式」即可恢复宿主工具，无需重开会话；插件派发工具仍禁用，已绑定巡检回合的硬禁仍优先。
 
 ### 3. 后台事件日志定时巡检与强模型动态纠偏
 
@@ -72,6 +72,7 @@
   - **A) 进展正常**：回复一行 `巡检：正常` 结束回合，让子代理继续跑；
   - **B) 途中纠偏**：调用 `send_message` 直接向运行中的子代理注入修正指令（指明正确写法或跳过卡点）；
   - **C) 及时止损**：调用 `interrupt_agent` 中断失控的子代理（若后续再用 `send_message` 重新唤醒它，巡检会自动重新接管并重置通知计数）。
+
 
 ![巡检通知与纠偏示例](docs/images/patrol-notice.png)
 
@@ -122,11 +123,10 @@ DSH 客户端自带了 `subagent` / `workflow`，官方也有 `@deepseek-ai/dsh-
 
 </div>
 
-插件依赖宿主的子代理接口（`startActivation` 的 spec 形状、重试投递入口、根代理枚举、工具注册表），这些接口在 DSH `0.2.2-rc.2` 发生过一次不兼容变更，因此**插件版本与宿主版本必须成对选择**：
 
 | 插件版本 | 适配的 DSH 宿主 | 说明 |
 | --- | --- | --- |
-| `@sshirkit/dsh-orchestrator >= 0.8.3`（当前版本 `0.8.5`） | **DSH `>= 0.2.2-rc.2`** | 已验证 `0.2.2-rc.2` / `0.2.2-rc.3`。宿主自 `0.2.2-rc.2` 起扁平化了 subagent spec、移除了 `Symbol.for('dsh.subagent.deliverPrompt')` 投递入口与 `agents.roots()`，并新增 `wait_agent` 工具；因此**不兼容 `0.2.2-rc.1` 及更早版本**。注意：宿主虽新增了 `wait_agent`，但本插件默认白名单**有意维持 12 项、不予放行 `wait_agent`**——阻塞式轮询等待会让主代理陷入空转与超时误判，巡检机制已用「一条摘要 + 一次决策」替代轮询；确有需要时可在面板 `allowedTools` 中手动勾选放行。 |
+| `@sshirkit/dsh-orchestrator >= 0.8.3`（当前版本 `0.8.6`） | **DSH `>= 0.2.2-rc.2 < 0.2.3-0`** | 已验证 `0.2.2-rc.2` / `0.2.2-rc.3`。宿主自 `0.2.2-rc.2` 起扁平化了 subagent spec、移除了 `Symbol.for('dsh.subagent.deliverPrompt')` 投递入口与 `agents.roots()`，并新增 `wait_agent` 工具；因此**不兼容 `0.2.2-rc.1` 及更早版本**。注意：宿主虽新增了 `wait_agent`，但本插件默认白名单**有意维持 12 项、不予放行 `wait_agent`**——阻塞式轮询等待会让主代理陷入空转与超时误判，巡检机制已用「一条摘要 + 一次决策」替代轮询；确有需要时可在面板 `allowedTools` 中手动勾选放行。 |
 | `dsh-orchestrator 0.8.0 – 0.8.2` | **DSH `<= 0.2.2-rc.1`** | 已实测支持 `0.2.1-rc.3`、`0.2.2-rc.1`。自 `0.8.0` 起引入 `@deepseek-ai/dsh-tools` 依赖。 |
 | `dsh-orchestrator <= 0.7.3` | `0.8.0` 之前的旧版 DSH | 早期独立工具注册架构，未依赖 `@deepseek-ai/dsh-tools`。 |
 
@@ -165,21 +165,23 @@ dsh plugin --profile desktop add @sshirkit/dsh-orchestrator
 
 </div>
 
-所有配置项均为 volatile（动态热配置），在面板中修改后立即生效，无需重启 DSH：
+所有配置项均为 volatile（动态热配置），无需重启 DSH：执行门禁每次调用重读，工具面从下一次请求生效，子代理路由从下一次派发生效。
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
-| `enabled` | `true` | 调度模式总开关。关闭时立即对当前会话恢复主代理全部工具。 |
+| `enabled` | `true` | 调度模式总开关。关闭时恢复宿主工具，但 `delegate` / `orchestrate` 仍禁用，已绑定巡检回合的 Todo 禁令与正常声明锁仍优先。 |
 | `workerProvider` / `workerModel` | `""` | 子代理默认模型路由（必填，未配置时派发直接报错，绝不静默继承主代理模型）。 |
 | `workerReasoningEffort` | `""` | 子代理思考强度，留空则由所选模型自行决定默认值。 |
 | `allowedTools` | 12 项内置白名单 | 白名单式驱动：主代理仅可使用列表内的工具，其余宿主/MCP/插件工具自动隐藏并禁用；面板右侧 Allowed Tools 可直接勾选放行或取消勾选禁用，下一条消息即刻生效。 |
-| `superviseEnabled` | `true` | 子代理后台巡检总开关。 |
+| `superviseEnabled` | `true` | 子代理后台巡检总开关；位于宿主插件设置卡片。 |
 | `superviseIntervalSeconds` | `600` | 巡检间隔（秒），范围 10–86400，运行中修改立即生效。 |
-| `superviseMaxNoticesPerChild` | `3` | 每个子代理最多发送几次巡检通知（0–20）。`0` 表示关闭巡检（运行中的子代理仍保留在注册表中，改回 >0 或打开无限巡检后立即恢复）。 |
+| `superviseMaxNoticesPerChild` | `3` | 每个子代理最多发送几次巡检通知（0–20）。未开无限巡检时，`0` 表示关闭（运行中的子代理仍保留在注册表中，改回 >0 或打开无限巡检后恢复到期判定）。 |
 | `superviseUnlimited` | `false` | 无限次数巡检开关。开启后忽略 `superviseMaxNoticesPerChild` 上限（含 `0`），只要子代理没有停止 / 交付 / 结束，就按间隔持续巡检，通知标题不带分母（`第 N 次`）。 |
-| `superviseNotifyOnNoProgress` | `false` | 子代理日志无新活动时是否仍然发送通知（开启 `superviseUnlimited` 时等效于始终发送）。 |
+| `superviseNotifyOnNoProgress` | `false` | 子代理日志无新活动时是否仍然发送通知（开启 `superviseUnlimited` 时等效于始终发送）；位于宿主插件设置卡片。 |
+| `restoreTodoOnSupervision` | `true` | 巡检时按有效快照静默补写 `todo/write`，仅恢复 UI 状态，不增加模型历史或消耗模型 Token。与 `superviseEnabled` / `superviseNotifyOnNoProgress` 一致位于宿主插件设置卡片，不在输入栏快捷弹层。 |
 
 > 注：主代理的默认模型保存在宿主的 `agent-default-model` 中，由同一个「调度模式」面板直接读写，对新创建的会话生效；子代理模型改动从下一次委派起立即生效。
+
 
 <div align="center">
   

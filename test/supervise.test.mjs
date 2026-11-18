@@ -2,10 +2,62 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   SUPERVISE_SOURCE_KIND,
+  SUPERVISION_NORMAL_TEXT,
+  getSupervisionChildIds,
+  hasNormalDeclarationText,
+  isPureSupervisionBatch,
+  isSupervisionMessage,
   composeNotice,
   createSupervisor,
   summarize,
 } from '../lib/supervise.js'
+
+test('supervision helpers recognise only pure batches and normalise child ids', () => {
+  const message = { source: { kind: SUPERVISE_SOURCE_KIND, childIds: ['c', '', 'c', null, 'd'], senderSessionId: 'old' } }
+  assert.equal(isSupervisionMessage(message), true)
+  assert.equal(isSupervisionMessage(undefined), false)
+  assert.deepEqual(getSupervisionChildIds(message), ['c', 'd'])
+  assert.deepEqual(getSupervisionChildIds({ source: { senderSessionId: 'legacy' } }), ['legacy'])
+  assert.deepEqual(getSupervisionChildIds({ source: { childIds: [], senderSessionId: 'legacy' } }), [])
+  assert.deepEqual(getSupervisionChildIds(undefined), [])
+  assert.equal(isPureSupervisionBatch([message, message]), true)
+  for (const kind of ['user', 'subagent-settled', 'orchestrator-retry']) {
+    assert.equal(isPureSupervisionBatch([message, { source: { kind } }]), false)
+  }
+  for (const messages of [[], undefined, null, {}]) assert.equal(isPureSupervisionBatch(messages), false)
+})
+
+test('normal declaration accepts standalone Markdown lines but never discussion or non-text blocks', () => {
+  assert.equal(SUPERVISION_NORMAL_TEXT, '巡检：正常')
+  for (const text of ['巡检：正常', ' **巡检：正常**。 ', '_巡检：正常！_', '`巡检：正常`!', '说明\n巡检：正常\n结束']) {
+    assert.equal(hasNormalDeclarationText({ content: [{ type: 'text', text }] }), true, text)
+  }
+  for (const text of ['当前巡检：正常，但需要继续检查', '报告中讨论巡检正常', '请回复「巡检：正常」', '巡检：正常？']) {
+    assert.equal(hasNormalDeclarationText({ content: [{ type: 'text', text }] }), false, text)
+  }
+  assert.equal(hasNormalDeclarationText({ content: [{ type: 'tool_use', text: '巡检：正常' }] }), false)
+  assert.equal(hasNormalDeclarationText({}), false)
+})
+
+test('supervisor forwards immutable rendering metadata and stale delivery spends no state', async () => {
+  const h = harness()
+  h.add('c1')
+  h.events.set('c1', [call(1, 'read', { path: 'a' })])
+  const seen = []
+  h.opts.deliver = async (parentId, text, childIds, meta) => {
+    seen.push({ text, childIds, meta })
+    return seen.length === 1 ? 'stale' : 'queued'
+  }
+  h.advance(600_000)
+  await h.sup.tick()
+  await h.sup.tick()
+  assert.equal(seen.length, 2, 'stale does not advance the deadline')
+  assert.deepEqual(seen[0].meta.rows.map(({ childId }) => childId), ['c1'])
+  assert.equal(seen[0].meta.composeMeta.index, 1)
+  assert.equal(seen[1].meta.rows[0].toolCalls, 1, 'stale does not advance lastSeq')
+  assert.match(seen[1].text, /第 1\/3 次/)
+  assert.deepEqual(h.warnings, [])
+})
 
 const E = (seq, type, data = {}, time = seq) => ({ seq, type, data, time })
 const call = (seq, name, args, time = seq) =>
@@ -155,7 +207,12 @@ test('composeNotice lists id, label, duration, turns, steps, new tools and text'
   assert.equal(text.includes('轮次 2 ｜ 步骤 5'), true)
   assert.equal(text.includes('自上次巡检新增工具调用 3 次'), true)
   assert.equal(text.includes('最近工具：read'), true)
-  assert.equal(text.includes('最后输出：正在检查'), true)
+  assert.match(text, /仍在运行.*尚未交付/)
+  assert.match(text, /最后输出：正在检查/)
+  assert.match(text, /仅最新文本前300字摘录，不代表最终成败/)
+  assert.equal(text.includes('delegate'), false)
+  assert.match(text, /硬禁止调用 todo_write/)
+  assert.match(text, /禁止回复「巡检：正常」/)
   assert.equal(text.includes('请对每个子代理作出决定'), true)
   assert.equal(text.includes('巡检：正常'), true)
 })
@@ -183,8 +240,8 @@ test('composeNotice keeps every child when only the summaries need shortening', 
   const rows = [row({ childId: 'c1' }), row({ childId: 'c2' })]
   for (const item of rows) item.lastText = 'z'.repeat(300)
 
-  const text = composeNotice(rows, { now: NOW, index: 1, max: 3, maxChars: 450 })
-  assert.equal(text.length <= 450, true)
+  const text = composeNotice(rows, { now: NOW, index: 1, max: 3, maxChars: 850 })
+  assert.equal(text.length <= 850, true)
   assert.equal(text.includes('c1'), true)
   assert.equal(text.includes('c2'), true)
   assert.equal(text.includes('另有 1 个子代理未列出'), false)

@@ -11,7 +11,7 @@
 
 #### **A powerful model plans, low-cost models do the work — the dispatch mode plugin with hard tool isolation for DeepSeek Harness**
 
-[![version](https://img.shields.io/badge/version-0.8.5-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
+[![version](https://img.shields.io/badge/version-0.8.6-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
 [![dsh-plugin](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![platform](https://img.shields.io/badge/platform-Web%20GUI%20%7C%20Desktop-5c6bc0?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
 [![node](https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
@@ -61,7 +61,7 @@ Instead of relying on prompts asking the main model to use subagents more often,
 </div>
 
 - **Subagents retain the full toolchain**: dispatched Workers are exempt from the gate and read or write files, run tests, and inspect errors in their own contexts. When finished, they return only a concise conclusion for the main agent to review.
-- **Switch at any time**: when the main agent needs to act directly, turn off Enable dispatch mode in the panel to restore all its tools immediately, without reopening the session.
+- **Switch at any time**: turn off Enable dispatch mode to restore host tools without reopening the session. Plugin dispatch tools remain disabled, and gates for a bound inspection turn still take priority.
 
 ### 3. Periodic background inspection of event logs and correction by the powerful model
 
@@ -72,6 +72,7 @@ Low-cost Subagents can occasionally get stuck on complex shell escaping or error
   - **A) Progress is normal**: reply with one line, `巡检：正常`, and end the turn while the subagent continues.
   - **B) Correct course**: call `send_message` to inject corrective instructions directly into the running subagent, specifying the right approach or telling it to skip a blocker.
   - **C) Stop wasted work promptly**: call `interrupt_agent` to interrupt a subagent that has gone off track. If it is later reactivated with `send_message`, supervision automatically resumes and resets its notice count.
+
 
 ![Example inspection notice and correction](docs/images/patrol-notice.png)
 
@@ -122,11 +123,10 @@ DSH includes native `subagent` / `workflow` tools, and the official `@deepseek-a
 
 </div>
 
-The plugin depends on host subagent interfaces (the `startActivation` spec shape, the retry delivery entry point, root-agent enumeration, and the tool registry). DSH `0.2.2-rc.2` introduced a breaking change to these interfaces, so **plugin and host versions must be chosen as a pair**:
 
 | Plugin version | Supported DSH host | Notes |
 | --- | --- | --- |
-| `@sshirkit/dsh-orchestrator >= 0.8.3` (current version: `0.8.5`) | **DSH `>= 0.2.2-rc.2`** | Verified against `0.2.2-rc.2` / `0.2.2-rc.3`. Since `0.2.2-rc.2`, the host has flattened the subagent spec, removed the `Symbol.for('dsh.subagent.deliverPrompt')` delivery entry point and `agents.roots()`, and added the `wait_agent` tool. It is therefore **incompatible with `0.2.2-rc.1` and earlier**. Note: although the host adds `wait_agent`, the plugin **intentionally keeps its default whitelist at 12 tools and excludes `wait_agent`**. Blocking polling can leave the main agent idling and misjudging timeouts; supervision already replaces polling with one summary plus one decision. If needed, allow it manually in the panel's `allowedTools` list. |
+| `@sshirkit/dsh-orchestrator >= 0.8.3` (current version: `0.8.6`) | **DSH `>= 0.2.2-rc.2 < 0.2.3-0`** | Verified against `0.2.2-rc.2` / `0.2.2-rc.3`. Since `0.2.2-rc.2`, the host has flattened the subagent spec, removed the `Symbol.for('dsh.subagent.deliverPrompt')` delivery entry point and `agents.roots()`, and added the `wait_agent` tool. It is therefore **incompatible with `0.2.2-rc.1` and earlier**. Note: although the host adds `wait_agent`, the plugin **intentionally keeps its default whitelist at 12 tools and excludes `wait_agent`**. Blocking polling can leave the main agent idling and misjudging timeouts; supervision already replaces polling with one summary plus one decision. If needed, allow it manually in the panel's `allowedTools` list. |
 | `dsh-orchestrator 0.8.0 – 0.8.2` | **DSH `<= 0.2.2-rc.1`** | Tested against `0.2.1-rc.3` and `0.2.2-rc.1`. Since `0.8.0`, the plugin has depended on `@deepseek-ai/dsh-tools`. |
 | `dsh-orchestrator <= 0.7.3` | DSH releases predating plugin `0.8.0` | Early standalone tool-registration architecture, without a dependency on `@deepseek-ai/dsh-tools`. |
 
@@ -165,21 +165,23 @@ dsh plugin --profile desktop add @sshirkit/dsh-orchestrator
 
 </div>
 
-All configuration fields are volatile (dynamic configuration): changes in the panel take effect immediately, without restarting DSH:
+All configuration fields are volatile (dynamic configuration), with no DSH restart required. Execution gates reread them on each call, tool surfaces on the next request, and subagent routes on the next dispatch.
 
 | Field | Default | Description |
 | --- | --- | --- |
-| `enabled` | `true` | Master switch for dispatch mode. Turning it off immediately restores all main-agent tools in the current session. |
+| `enabled` | `true` | Master switch for dispatch mode. Turning it off restores host tools, while `delegate` / `orchestrate` remain disabled and bound inspection Todo/normal-declaration gates still take priority. |
 | `workerProvider` / `workerModel` | `""` | Default subagent model route (required; dispatch fails if unconfigured and never silently inherits the main-agent model). |
 | `workerReasoningEffort` | `""` | Subagent reasoning effort. Leave empty to let the selected model use its own default. |
 | `allowedTools` | 12 built-in tools | Whitelist-driven: the main agent may use only the listed tools; other host, MCP, and plugin tools are automatically hidden and disabled. Check or uncheck tools under Allowed Tools on the right of the panel to allow or disable them; changes apply on the next message. |
-| `superviseEnabled` | `true` | Master switch for background subagent inspection. |
+| `superviseEnabled` | `true` | Master switch for background subagent inspection, in the host plugin settings card. |
 | `superviseIntervalSeconds` | `600` | Inspection interval in seconds, from 10 to 86400. Changes take effect immediately while workers are running. |
-| `superviseMaxNoticesPerChild` | `3` | Maximum inspection notices per subagent (0–20). `0` disables inspection; running subagents remain registered, and inspection resumes immediately when the value is raised above 0 or unlimited inspection is enabled. |
+| `superviseMaxNoticesPerChild` | `3` | Maximum inspection notices per subagent (0–20). Unless unlimited inspection is enabled, `0` disables inspection. Running subagents remain registered; raising the value above 0 or enabling unlimited inspection restores due-time checks. |
 | `superviseUnlimited` | `false` | Enables unlimited inspections. Ignores the `superviseMaxNoticesPerChild` limit (including `0`) and continues inspecting at each interval until the subagent stops, delivers, or ends. Notice titles omit the denominator (`第 N 次`). |
-| `superviseNotifyOnNoProgress` | `false` | Whether to notify even when the subagent log has no new activity (effectively always enabled when `superviseUnlimited` is on). |
+| `superviseNotifyOnNoProgress` | `false` | Whether to notify even when the subagent log has no new activity (effectively always enabled when `superviseUnlimited` is on), in the host plugin settings card. |
+| `restoreTodoOnSupervision` | `true` | Silently restores Todo UI state via `todo/write` from an eligible snapshot during supervision, with no model history entry or model token cost. Like `superviseEnabled` / `superviseNotifyOnNoProgress`, this appears in the host plugin settings card, outside the input-bar shortcut popup. |
 
 > Note: the main agent's default model is stored in the host's `agent-default-model`, read and written directly by the same Dispatch mode panel, and applies to newly created sessions. Subagent model changes apply to the next delegation.
+
 
 <div align="center">
   

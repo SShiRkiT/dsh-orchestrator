@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { ORCHESTRATE_TOOL } from '../lib/api.js'
+import { runCodeRefusal } from '../lib/run-code-guard.js'
 import {
   DELEGATE_TOOL,
+  SUPERVISION_NORMAL_DENIAL,
+  SUPERVISION_TODO_DENIAL,
+  createSupervisionTurnState,
   allowGuard,
   effectiveAllowed,
   hiddenTools,
@@ -10,6 +14,212 @@ import {
   isDelegatedChild,
   restrictEach,
 } from '../lib/gate.js'
+
+test('supervision state binds exact turns and reserves only todo before normal declaration', () => {
+  const state = createSupervisionTurnState()
+  assert.equal(state.checkTool('main', 1, 'todo_write'), undefined)
+  state.bindTurn('main', 1)
+  assert.equal(state.isTurnActive('main', 1), true)
+  assert.equal(state.isTurnActive('main', 2), false)
+  assert.equal(state.checkTool('main', 1, 'todo_write'), SUPERVISION_TODO_DENIAL)
+  assert.equal(SUPERVISION_TODO_DENIAL.includes('delegate'), false)
+  for (const name of ['delegate', 'orchestrate', 'read', 'glob', 'grep', 'send_message', 'interrupt_agent']) {
+    assert.equal(state.checkTool('main', 1, name), undefined, name)
+  }
+  state.markNormalDeclared('main', 2)
+  assert.equal(state.checkTool('main', undefined, 'read'), undefined)
+  state.markNormalDeclared('main', 1)
+  assert.equal(state.checkTool('main', 1, 'read'), SUPERVISION_NORMAL_DENIAL)
+  assert.equal(state.checkTool('main', 1, 'todo_write'), SUPERVISION_TODO_DENIAL)
+  state.clearTurn('main', 2)
+  assert.equal(state.isTurnActive('main', 1), true)
+  state.clearTurn('main', 1)
+  assert.equal(state.checkTool('main', 1, 'read'), undefined)
+})
+
+test('supervision state clears expired turns defensively and isolates agents', () => {
+  const state = createSupervisionTurnState()
+  state.bindTurn('a', 1)
+  state.bindTurn('b', 1)
+  state.markNormalDeclared('a', 1)
+  assert.equal(state.checkTool('a', 2, 'todo_write'), undefined)
+  assert.equal(state.isTurnActive('a', 1), false)
+  assert.equal(state.isTurnActive('b', 1), true)
+  state.clearAgent('b')
+  assert.equal(state.isTurnActive('b', 1), false)
+  state.bindTurn('a', 3)
+  assert.equal(state.checkTool('a', 3, 'read'), undefined)
+})
+
+test('supervision denials precede both switch and whitelist including PTC sub-dispatch', () => {
+  const { agent, getGuard } = fakeAgent()
+  const state = createSupervisionTurnState()
+  let enabled = false
+  installGate({
+    agent,
+    allowed: [...ALLOWED, 'read', 'run_code'],
+    enabled: () => enabled,
+    checkSupervision: (current, name) => state.checkTool(current.id, 1, name),
+  })
+  state.bindTurn(agent.id, 1)
+  const guard = getGuard()
+  assert.equal(guard({ name: 'todo_write' }), SUPERVISION_TODO_DENIAL)
+  enabled = true
+  assert.equal(guard({ name: 'todo_write', agent, parent: Symbol('ptc') }), SUPERVISION_TODO_DENIAL)
+  assert.equal(guard({ name: 'read' }), undefined)
+  state.markNormalDeclared(agent.id, 1)
+  for (const name of ['read', 'delegate', 'orchestrate', 'run_code', 'send_message', 'interrupt_agent']) {
+    assert.equal(guard({ name, agent, parent: Symbol('ptc') }), SUPERVISION_NORMAL_DENIAL, name)
+  }
+})
+
+test('supervision whitelist misses use a dedicated refusal without dispatch suggestions', () => {
+  const { agent, getGuard } = fakeAgent()
+  const state = createSupervisionTurnState()
+  let enabled = true
+  installGate({
+    agent,
+    allowed: ['send_message'],
+    enabled: () => enabled,
+    checkSupervision: (current, name, options) => state.checkTool(current.id, 1, name, options),
+  })
+  state.bindTurn(agent.id, 1)
+  const guard = getGuard()
+  const denial = guard({ name: 'read' })
+  assert.match(denial, /current supervision turn/)
+  assert.match(denial, /not in allowedTools/)
+  assert.match(denial, /currently allowed tools.*existing workers/)
+  assert.match(denial, /巡检：正常/)
+  assert.doesNotMatch(denial, /delegate|orchestrate/)
+  for (const name of ['delegate', 'orchestrate']) assert.equal(guard({ name }), denial, name)
+  assert.equal(guard({ name: 'read', agent, parent: Symbol('ptc') }), denial)
+  assert.equal(guard({ name: 'send_message' }), undefined)
+  assert.equal(guard({ name: 'run_code', arguments: { code: 'return 1' } }), undefined)
+  enabled = false
+  assert.equal(guard({ name: 'read' }), undefined, 'the disabled switch still lifts whitelist checks')
+  assert.equal(guard({ name: 'todo_write' }), SUPERVISION_TODO_DENIAL)
+  enabled = true
+  state.markNormalDeclared(agent.id, 1)
+  assert.equal(guard({ name: 'read' }), SUPERVISION_NORMAL_DENIAL)
+})
+
+test('ordinary-turn whitelist misses retain the original refusal', () => {
+  const { agent, getGuard } = fakeAgent()
+  const state = createSupervisionTurnState()
+  installGate({
+    agent,
+    allowed: ALLOWED,
+    checkSupervision: (current, name, options) => state.checkTool(current.id, 1, name, options),
+  })
+  assert.equal(getGuard()({ name: 'read' }), refusal('read'))
+  state.bindTurn(agent.id, 1)
+  state.clearTurn(agent.id, 1)
+  assert.equal(getGuard()({ name: 'read' }), refusal('read'))
+})
+
+test('supervision run_code argument refusals omit dispatch suggestions while legal PTC passes', () => {
+  const { agent, getGuard } = fakeAgent()
+  const state = createSupervisionTurnState()
+  let allowed = ['send_message']
+  let enabled = true
+  installGate({
+    agent,
+    allowed: () => allowed,
+    enabled: () => enabled,
+    checkSupervision: (current, name, options) => state.checkTool(current.id, 1, name, options),
+  })
+  state.bindTurn(agent.id, 1)
+  const guard = getGuard()
+  const denial = guard({ name: 'read', agent, parent: Symbol('ptc') })
+  const forbiddenArgs = [
+    { code: 'return 1', sandbox_permissions: 'danger-full-access' },
+    { code: 'return 1', justification: 'needs access' },
+    ...['await import("node:fs")', 'require("node:fs")', 'process.pid', 'fetch("x")', 'eval("1")']
+      .map((code) => ({ code })),
+  ]
+  assert.match(denial, /current supervision turn/)
+  for (const args of forbiddenArgs) {
+    const result = guard({ name: 'run_code', arguments: args })
+    assert.equal(result, denial, JSON.stringify(args))
+    assert.doesNotMatch(result, /delegate|orchestrate/)
+  }
+  for (const code of ['return 1', 'await tools.send_message({ agent: "worker", message: "continue" })']) {
+    assert.equal(guard({ name: 'run_code', arguments: { code } }), undefined, code)
+  }
+  assert.equal(guard({ name: 'send_message', agent, parent: Symbol('ptc') }), undefined)
+  assert.equal(guard({ name: 'todo_write', agent, parent: Symbol('ptc') }), SUPERVISION_TODO_DENIAL)
+  allowed = [...allowed, 'run_code']
+  for (const args of forbiddenArgs) assert.equal(guard({ name: 'run_code', arguments: args }), undefined)
+  allowed = ['send_message']
+  enabled = false
+  for (const args of forbiddenArgs) assert.equal(guard({ name: 'run_code', arguments: args }), undefined)
+})
+
+test('a supervision normal declaration locks legal and forbidden run_code arguments and ordinary tools', () => {
+  const { agent, getGuard } = fakeAgent()
+  const state = createSupervisionTurnState()
+  let allowed = ['send_message']
+  let enabled = true
+  installGate({
+    agent,
+    allowed: () => allowed,
+    enabled: () => enabled,
+    checkSupervision: (current, name, options) => state.checkTool(current.id, 1, name, options),
+  })
+  state.bindTurn(agent.id, 1)
+  state.markNormalDeclared(agent.id, 1)
+  const guard = getGuard()
+  for (const on of [true, false]) {
+    enabled = on
+    for (const names of [['send_message'], ['send_message', 'run_code']]) {
+      allowed = names
+      for (const args of [
+        { code: 'return 1' },
+        { code: 'return 1', sandbox_permissions: 'danger-full-access' },
+        { code: 'await import("node:fs")' },
+      ]) {
+        assert.equal(guard({ name: 'run_code', arguments: args }), SUPERVISION_NORMAL_DENIAL)
+      }
+      for (const name of ['read', 'send_message']) {
+        assert.equal(guard({ name, agent, parent: Symbol('ptc') }), SUPERVISION_NORMAL_DENIAL, name)
+      }
+    }
+  }
+})
+
+test('ordinary-turn run_code argument refusals retain the original guard wording', () => {
+  const { agent, getGuard } = fakeAgent()
+  const state = createSupervisionTurnState()
+  installGate({
+    agent,
+    allowed: ['send_message'],
+    checkSupervision: (current, name, options) => state.checkTool(current.id, 1, name, options),
+  })
+  const guard = getGuard()
+  const checkRefusals = () => {
+    for (const args of [
+      { code: 'return 1', sandbox_permissions: 'danger-full-access' },
+      { code: 'await import("node:fs")' },
+    ]) {
+      const result = guard({ name: 'run_code', arguments: args })
+      assert.equal(result, runCodeRefusal(args, true))
+      assert.match(result, /with the delegate or orchestrate tools/)
+    }
+  }
+  checkRefusals()
+  state.bindTurn(agent.id, 1)
+  state.clearTurn(agent.id, 1)
+  checkRefusals()
+})
+
+test('a child sharing a root tool guard remains outside supervision and whitelist gates', () => {
+  const { agent, getGuard } = fakeAgent()
+  let checked = 0
+  installGate({ agent, allowed: [], checkSupervision: () => { checked += 1; return 'denied' } })
+  const child = { options: { subagentDepth: 1 } }
+  assert.equal(getGuard()({ name: 'read', agent: child }), undefined)
+  assert.equal(checked, 0)
+})
 
 /** The whitelist a test installs; short on purpose, since the real one is a dozen names. */
 const ALLOWED = [DELEGATE_TOOL, ORCHESTRATE_TOOL, 'todo_write', 'compress']

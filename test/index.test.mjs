@@ -111,6 +111,7 @@ function fakeCtx({
   sessions,
   subagents,
   stateOf,
+  snapshot,
   catalogNames = HOST_TOOLS,
   surface = SURFACE_TOOLS,
 } = {}) {
@@ -132,7 +133,7 @@ function fakeCtx({
     },
   }
   const ctx = {
-    sessionProjections: { stateOf },
+    sessionProjections: { stateOf, snapshot },
     tools: {
       register(tool) {
         tools.push(tool)
@@ -736,11 +737,14 @@ test('deliver queues exactly one notice with followup, never steer', async () =>
       return true
     },
   })
-  const { deliver } = mod.createSupervision({
+  host.parents.set('child-1', {})
+  host.parents.set('child-2', {})
+  const { deliver, supervisor } = mod.createSupervision({
     ctx: host.ctx,
     config: {},
     loadLlm: async () => ({ createUserMessage: (input) => input }),
   })
+  for (const childId of ['child-1', 'child-2']) supervisor.track({ childId, parentId: 'p' })
   assert.equal(await deliver('p', '巡检正文', ['child-1', 'child-2']), 'queued')
   assert.equal(calls.followup.length, 1)
   assert.equal(calls.steer, 0)
@@ -749,6 +753,7 @@ test('deliver queues exactly one notice with followup, never steer', async () =>
     kind: mod.SUPERVISE_SOURCE_KIND,
     form: 'notice',
     senderSessionId: 'child-1',
+    childIds: ['child-1', 'child-2'],
   })
   assert.equal(calls.flush.length, 1)
 })
@@ -1183,8 +1188,12 @@ test('the retry notice has its own source kind, so it cannot mask a supervision 
   assert.equal(queued[0].content[0].text, '重试正文')
   assert.deepEqual(queued[0].source, { kind: 'orchestrator-retry', form: 'notice', senderSessionId: 'child-1' })
   // The supervision notice keeps the kind `hasPendingNotice` looks for.
+  host.parents.set('child-1', {})
+  supervision.supervisor.track({ childId: 'child-1', parentId: 'p' })
   assert.equal(await supervision.deliver('p', '巡检正文', ['child-1']), 'queued')
-  assert.deepEqual(queued[1].source, { kind: mod.SUPERVISE_SOURCE_KIND, form: 'notice', senderSessionId: 'child-1' })
+  assert.deepEqual(queued[1].source, {
+    kind: mod.SUPERVISE_SOURCE_KIND, form: 'notice', senderSessionId: 'child-1', childIds: ['child-1'],
+  })
 })
 
 // ---- Live tool catalog -----------------------------------------------------------------
@@ -1402,4 +1411,1256 @@ test('createSwitchPreStep degrades gracefully without dropping the notice when d
   assert.equal(warnings.length, 1)
   assert.match(warnings[0], /cannot load @deepseek-ai\/dsh-llm/)
   assert.equal(notices.hasPending('main-x'), true)
+})
+
+/** A real inbox facade: mutations throw if called on the synchronous publish stack. */
+function recordingInbox() {
+  const removed = []
+  const replaced = []
+  const inbox = {
+    nextTurn: [],
+    nextStep: [],
+    publishing: false,
+    remove(id) {
+      assert.equal(inbox.publishing, false)
+      removed.push(id)
+      for (const key of ['nextTurn', 'nextStep']) inbox[key] = inbox[key].filter((message) => message.id !== id)
+    },
+    replace(id, message) {
+      assert.equal(inbox.publishing, false)
+      replaced.push({ id, message })
+      for (const key of ['nextTurn', 'nextStep']) {
+        inbox[key] = inbox[key].map((current) => current.id === id ? message : current)
+      }
+    },
+  }
+  return { inbox, removed, replaced }
+}
+
+const supervisionMessage = (id, childIds) => ({
+  id,
+  role: 'user',
+  content: [{ type: 'text', text: '巡检' }],
+  source: { kind: mod.SUPERVISE_SOURCE_KIND, senderSessionId: childIds[0], childIds },
+})
+
+async function supervisionTurnHarness({ todos = [{ content: '任务', status: 'in_progress' }], enabled = true, copyEvents = false } = {}) {
+  const main = fakeAgent({ id: 'main-supervision' })
+  const live = new Map([[main.agent.id, main.agent]])
+  const projection = { todos }
+  const writes = []
+  const boundary = { lastTurn: 1 }
+  main.agent.session.id = main.agent.id
+  main.agent.session.append = async (type, data) => {
+    const event = { type, data: copyEvents ? structuredClone(data) : data }
+    writes.push(event)
+    projection.todos = event.data.todos
+    harness.handlers.get('session/event')(main.agent.session, event)
+    return event
+  }
+  const harness = start({
+    enabled,
+    allowed: [...mod.DEFAULT_ALLOWED_TOOLS, 'read', 'run_code'],
+    agents: { get: (id) => live.get(id), turnBoundaryOf: () => boundary },
+    snapshot: () => ({ values: { todos: projection.todos } }),
+    subagents: {
+      resolveMaxDepth: () => 1,
+      startActivation: async () => {
+        const childId = `worker-${live.size}`
+        live.set(childId, fakeAgent({ id: childId, depth: 1 }).agent)
+        return { childId }
+      },
+    },
+  })
+  harness.created({ agent: main.agent, source: 'create' })
+  const delegate = harness.tools.find(({ name }) => name === 'delegate')
+  const started = await delegate.execute({
+    description: '任务', prompt: '执行', writeScope: ['C:/repo/task.js'], provider: 'p', model: 'm',
+  }, { agent: main.agent, signal: new AbortController().signal })
+  const message = supervisionMessage('notice-1', [started.subagentId])
+  const preStep = (messages = [message], extra = {}, next) => harness.handlers.get('agent/pre-step')({
+    agent: main.agent, turn: boundary.lastTurn, step: 1, messages,
+    signal: new AbortController().signal, ...extra,
+  }, next ?? (async () => ({ kind: 'enter', messages })))
+  const event = (type, data) => harness.handlers.get('session/event')(main.agent.session, { type, data })
+  return { ...harness, main, live, projection, writes, boundary, message, preStep, event, childId: started.subagentId }
+}
+
+test('public inbox buckets take precedence over deprecated projection access', () => {
+  const parent = { id: 'p', session: {}, inbox: { nextTurn: [], nextStep: [supervisionMessage('n', ['c'])] } }
+  const host = fakeSupervisionHost({
+    parents: new Map([['p', parent]]),
+    stateOf: () => { throw new Error('deprecated accessor must not run') },
+  })
+  const supervision = mod.createSupervision({ ctx: host.ctx, config: {} })
+  assert.equal(supervision.hasPendingNotice('p'), true)
+  parent.inbox.nextStep = []
+  assert.equal(supervision.hasPendingNotice('p'), false)
+  assert.deepEqual(host.logs, [])
+})
+
+test('delivery atomically drops a notice whose workers settle during the lazy import', async () => {
+  const queued = []
+  const parent = { id: 'p', session: {}, followup: (message) => queued.push(message) }
+  const host = fakeSupervisionHost({ parents: new Map([['p', parent], ['c', {}]]) })
+  let release
+  const loaded = new Promise((resolve) => { release = resolve })
+  const supervision = mod.createSupervision({ ctx: host.ctx, config: {}, loadLlm: () => loaded })
+  supervision.supervisor.track({ childId: 'c', parentId: 'p' })
+  const delivery = supervision.deliver('p', '旧正文', ['c'])
+  supervision.supervisor.forget('c')
+  release({ createUserMessage: (input) => ({ id: 'notice', ...input }) })
+  assert.equal(await delivery, 'stale')
+  assert.deepEqual(queued, [])
+})
+
+test('delivery recompiles a partial batch from saved rows and retains complete live ids', async () => {
+  const queued = []
+  const parent = { id: 'p', session: {}, followup: (message) => queued.push(message) }
+  const host = fakeSupervisionHost({ parents: new Map([['p', parent], ['c1', {}], ['c2', {}]]) })
+  const supervision = mod.createSupervision({
+    ctx: host.ctx, config: {}, loadLlm: async () => ({ createUserMessage: (input) => ({ id: 'n', ...input }) }),
+  })
+  supervision.supervisor.track({ childId: 'c2', parentId: 'p' })
+  const rows = [{ childId: 'c1', label: '已结算任务' }, { childId: 'c2', label: '剩余任务', lastText: '执行中' }]
+  assert.equal(await supervision.deliver('p', '旧正文含c1', ['c1', 'c2'], { rows, composeMeta: { index: 2, max: 3 } }), 'queued')
+  assert.deepEqual(queued[0].source.childIds, ['c2'])
+  assert.match(queued[0].content[0].text, /剩余任务/)
+  assert.equal(queued[0].content[0].text.includes('已结算任务'), false)
+  assert.equal(supervision.pendingNoticeMeta.size, 1)
+})
+
+test('reconciliation is microtask deduplicated and replaces then removes notices across both inbox buckets', async () => {
+  const { inbox, removed, replaced } = recordingInbox()
+  const parent = { id: 'p', session: {}, inbox, followup: (message) => inbox.nextTurn.push(message) }
+  const host = fakeSupervisionHost({ parents: new Map([['p', parent], ['c1', {}], ['c2', {}]]) })
+  let seq = 0
+  const supervision = mod.createSupervision({ ctx: host.ctx, config: {}, loadLlm: async () => ({
+    createUserMessage: (input) => ({ id: `reconcile-${++seq}`, ...input }),
+  }) })
+  const hooks = mod.createSupervisionHooks(supervision.supervisor, { scheduleReconcileInbox: supervision.scheduleReconcileInbox })
+  for (const childId of ['c1', 'c2']) hooks.onStarted(parent, { childId }, { description: `任务${childId}` })
+  await supervision.deliver('p', '旧正文', ['c1', 'c2'], {
+    rows: [{ childId: 'c1', label: '任务c1' }, { childId: 'c2', label: '任务c2' }], composeMeta: { index: 1, max: 3 },
+  })
+  inbox.nextStep.push(supervisionMessage('legacy', ['c1']))
+  inbox.publishing = true
+  hooks.forget('c1')
+  hooks.forget('c1')
+  assert.equal(replaced.length, 0)
+  inbox.publishing = false
+  await Promise.resolve()
+  assert.equal(replaced.length, 1)
+  assert.deepEqual(inbox.nextTurn[0].source.childIds, ['c2'])
+  assert.match(inbox.nextTurn[0].content[0].text, /任务c2/)
+  assert.equal(inbox.nextTurn[0].content[0].text.includes('任务c1'), false)
+  assert.deepEqual(removed, ['legacy'])
+  hooks.forget('c2')
+  await Promise.resolve()
+  assert.equal(inbox.nextTurn.length, 0)
+  assert.equal(supervision.pendingNoticeMeta.size, 0)
+})
+
+test('reconciliation tolerates missing replace and purges metadata after inbox consumption', async () => {
+  const { inbox } = recordingInbox()
+  delete inbox.replace
+  const parent = { id: 'p', session: {}, inbox, followup: (message) => inbox.nextTurn.push(message) }
+  const host = fakeSupervisionHost({ parents: new Map([['p', parent], ['c1', {}], ['c2', {}]]) })
+  const supervision = mod.createSupervision({ ctx: host.ctx, config: {} })
+  for (const childId of ['c1', 'c2']) supervision.supervisor.track({ childId, parentId: 'p' })
+  await supervision.deliver('p', '正文', ['c1', 'c2'])
+  supervision.supervisor.forget('c1')
+  supervision.scheduleReconcileInbox('p')
+  await Promise.resolve()
+  assert.equal(inbox.nextTurn.length, 1)
+  inbox.nextTurn.length = 0
+  supervision.scheduleReconcileInbox('p')
+  await Promise.resolve()
+  assert.equal(supervision.pendingNoticeMeta.size, 0)
+})
+
+test('a pure supervision turn blocks todo and locks every subsequent tool on the same assistant response', async () => {
+  const h = await supervisionTurnHarness()
+  await h.preStep()
+  assert.match(h.main.guards[0]({ name: 'todo_write' }), /定时巡检回合/)
+  for (const name of ['delegate', 'orchestrate', 'read', 'send_message', 'interrupt_agent']) {
+    assert.equal(h.main.guards[0]({ name }), undefined, name)
+  }
+  h.event('assistant/message', { turn: 1, message: { content: [{ type: 'text', text: '**巡检：正常**。' }, { type: 'tool_use' }] } })
+  for (const name of ['read', 'run_code', 'send_message']) assert.match(h.main.guards[0]({ name }), /锁定后续工具调用/)
+  h.event('turn/end', { turn: 1 })
+  assert.equal(h.main.guards[0]({ name: 'todo_write' }), undefined)
+})
+
+test('installed supervision gates forward whitelist misses and restore ordinary refusal after turn end', async () => {
+  const h = await supervisionTurnHarness()
+  h.state.allowed = mod.DEFAULT_ALLOWED_TOOLS
+  await h.preStep()
+  const guard = h.main.guards[0]
+  assert.match(guard({ name: 'read' }), /current supervision turn/)
+  assert.doesNotMatch(guard({ name: 'read' }), /delegate|orchestrate/)
+  h.event('turn/end', { turn: 1 })
+  assert.equal(guard({ name: 'read' }), allowGuard(mod.DEFAULT_ALLOWED_TOOLS)({ name: 'read' }))
+})
+
+test('long normal-report discussion and unrelated turn events never lock tools', async () => {
+  const h = await supervisionTurnHarness()
+  await h.preStep()
+  h.event('assistant/message', { turn: 1, message: { content: [{ type: 'text', text: '本次巡检：正常，但还需调查' }] } })
+  h.event('assistant/message', { turn: 0, message: { content: [{ type: 'text', text: '巡检：正常' }] } })
+  h.event('turn/end', { turn: 0 })
+  assert.equal(h.main.guards[0]({ name: 'read' }), undefined)
+  assert.match(h.main.guards[0]({ name: 'todo_write' }), /定时巡检回合/)
+  h.boundary.lastTurn = 2
+  assert.equal(h.main.guards[0]({ name: 'todo_write' }), undefined)
+})
+
+test('mixed user, settlement and retry turns clear prior supervision bindings', async () => {
+  for (const kind of ['user', 'subagent-settled', 'orchestrator-retry']) {
+    const h = await supervisionTurnHarness()
+    await h.preStep()
+    h.boundary.lastTurn = 2
+    const other = { id: kind, source: { kind } }
+    await h.preStep([h.message, other])
+    assert.equal(h.main.guards[0]({ name: 'todo_write' }), undefined, kind)
+    h.event('assistant/message', { turn: 2, message: { content: [{ type: 'text', text: '巡检：正常' }] } })
+    assert.equal(h.main.guards[0]({ name: 'read' }), undefined, kind)
+  }
+})
+
+test('an entirely stale supervision batch restores UI todos and rejects before next or model entry', async () => {
+  const h = await supervisionTurnHarness()
+  h.handlers.get('subagent/end')({ id: h.childId, stopReason: 'completed' })
+  h.projection.todos = null
+  let entered = false
+  const decision = await h.preStep(undefined, {}, async () => { entered = true; return { kind: 'enter', messages: [] } })
+  assert.deepEqual(decision, { kind: 'reject' })
+  assert.equal(entered, false)
+  assert.equal(h.writes.length, 1)
+  assert.equal(h.main.guards[0]({ name: 'todo_write' }), undefined)
+})
+
+test('stale notices are removed after downstream entry while effective pure notices still bind', async () => {
+  const h = await supervisionTurnHarness()
+  const stale = supervisionMessage('stale', ['gone'])
+  const decision = await h.preStep([stale, h.message])
+  assert.deepEqual(decision.messages, [h.message])
+  assert.match(h.main.guards[0]({ name: 'todo_write' }), /定时巡检回合/)
+  h.boundary.lastTurn = 2
+  const settled = { id: 'settled', source: { kind: 'subagent-settled' } }
+  const mixed = await h.preStep([stale, settled])
+  assert.deepEqual(mixed.messages, [settled])
+  assert.equal(h.main.guards[0]({ name: 'todo_write' }), undefined)
+})
+
+test('rejected or aborted supervision does not leave a gate binding or restore todos', async () => {
+  const h = await supervisionTurnHarness()
+  h.projection.todos = null
+  const rejected = await h.preStep(undefined, {}, async () => ({ kind: 'reject', reason: 'outer hook' }))
+  assert.deepEqual(rejected, { kind: 'reject', reason: 'outer hook' })
+  assert.equal(h.main.guards[0]({ name: 'todo_write' }), undefined)
+  const controller = new AbortController()
+  controller.abort()
+  await h.preStep(undefined, { signal: controller.signal })
+  assert.deepEqual(h.writes, [])
+  assert.equal(h.main.guards[0]({ name: 'todo_write' }), undefined)
+})
+
+test('pending switch notices survive supervision and appear on the next normal turn', async () => {
+  const h = await supervisionTurnHarness()
+  h.state.enabled = false
+  h.handlers.get('loader/volatile-update')()
+  const decision = await h.preStep()
+  assert.deepEqual(decision.messages, [h.message])
+  assert.match(h.main.guards[0]({ name: 'todo_write' }), /定时巡检回合/)
+  h.boundary.lastTurn = 2
+  const normal = { id: 'user', source: { kind: 'user' } }
+  const next = await h.preStep([normal])
+  assert.equal(next.messages.length, 2)
+  assert.equal(next.messages[1].source.kind, mod.SWITCH_SOURCE_KIND)
+})
+
+test('todo snapshots are deeply cloned and restored once only as UI state events', async () => {
+  const todos = [{ content: '任务', status: 'in_progress', metadata: { value: 1 } }]
+  const h = await supervisionTurnHarness({ todos })
+  todos[0].metadata.value = 9
+  h.projection.todos = null
+  await h.preStep()
+  assert.equal(h.writes.length, 1)
+  assert.equal(h.writes[0].type, 'todo/write')
+  assert.deepEqual(h.writes[0].data.todos, [{ content: '任务', status: 'in_progress', metadata: { value: 1 } }])
+  assert.equal(h.writes[0].data.source.kind, 'orchestrator-todo-restoration')
+  assert.equal(typeof h.writes[0].data.source.token, 'string')
+  await h.preStep(undefined, { step: 2 })
+  assert.equal(h.writes.length, 1)
+})
+
+test('empty todo writes and real new user input invalidate restoration eligibility', async () => {
+  for (const mode of ['empty', 'user', 'initial-empty']) {
+    const h = await supervisionTurnHarness(mode === 'initial-empty' ? { todos: [] } : {})
+    if (mode === 'empty') h.event('todo/write', { todos: [] })
+    if (mode === 'user') await h.preStep([{ id: 'user', source: { kind: 'user' } }, h.message])
+    h.projection.todos = null
+    h.boundary.lastTurn = 2
+    await h.preStep()
+    assert.deepEqual(h.writes, [], mode)
+  }
+})
+
+test('todo writes refresh snapshots, while disabled restoration, newer boundaries and append errors remain safe', async () => {
+  for (const mode of ['disabled', 'newer-turn', 'throw', 'already-present', 'missing-append']) {
+    const h = await supervisionTurnHarness()
+    h.event('todo/write', { todos: [{ content: '新任务', status: 'pending' }] })
+    h.projection.todos = mode === 'already-present' ? [] : null
+    if (mode === 'disabled') h.config.restoreTodoOnSupervision = false
+    if (mode === 'missing-append') delete h.main.agent.session.append
+    if (mode === 'throw') h.main.agent.session.append = async () => { throw new Error('append failed') }
+    await assert.doesNotReject(h.preStep(undefined, mode === 'newer-turn' ? { turn: 0 } : {}))
+    assert.deepEqual(h.writes, [], mode)
+  }
+  const h = await supervisionTurnHarness({ todos: [] })
+  h.event('todo/write', { todos: [{ content: '新任务', status: 'pending' }] })
+  h.projection.todos = null
+  await h.preStep()
+  assert.equal(h.writes[0].data.todos[0].content, '新任务')
+})
+
+test('disposal clears supervision binding and todo snapshots before recreating an agent', async () => {
+  const h = await supervisionTurnHarness()
+  await h.preStep()
+  h.event('assistant/message', { turn: 1, message: { content: [{ type: 'text', text: '巡检：正常' }] } })
+  h.handlers.get('agent/disposed')({ agent: h.main.agent })
+  h.projection.todos = null
+  h.created({ agent: h.main.agent, source: 'create' })
+  assert.equal(h.main.guards[0]({ name: 'todo_write' }), undefined)
+  await h.preStep()
+  assert.deepEqual(h.writes, [])
+})
+
+test('a disposed worker makes consumed notices stale even if its agent is still in the registry', async () => {
+  const h = await supervisionTurnHarness()
+  h.handlers.get('agent/disposed')({ agent: h.live.get(h.childId) })
+  assert.deepEqual(await h.preStep(), { kind: 'reject' })
+})
+
+test('a user turn invalidates an uninitialised tracker before a later supervision bind', () => {
+  const session = {}
+  const tracker = mod.createTodoSnapshotTracker({ sessionProjections: { snapshot: () => ({ values: { todos: [{ content: '旧任务' }] } }) } })
+  tracker.invalidate(session)
+  tracker.bind({ session })
+  assert.equal(tracker.canRestore(session), false)
+})
+
+test('downstream failure releases the supervision binding and keeps todo UI untouched', async () => {
+  const h = await supervisionTurnHarness()
+  h.projection.todos = null
+  await assert.rejects(h.preStep(undefined, {}, async () => { throw new Error('downstream failed') }), /downstream failed/)
+  assert.equal(h.main.guards[0]({ name: 'todo_write' }), undefined)
+  assert.deepEqual(h.writes, [])
+})
+
+test('partial notices are recreated with the host message factory and retain the original render timestamp', async () => {
+  const { inbox } = recordingInbox()
+  const parent = { id: 'p', session: {}, inbox, followup: (message) => inbox.nextTurn.push(message) }
+  const host = fakeSupervisionHost({ parents: new Map([['p', parent], ['c1', {}], ['c2', {}]]) })
+  let created = 0
+  const supervision = mod.createSupervision({ ctx: host.ctx, config: {}, loadLlm: async () => ({
+    createUserMessage: (input) => ({ id: `factory-${++created}`, role: 'user', hostField: true, ...input }),
+  }) })
+  for (const childId of ['c1', 'c2']) supervision.supervisor.track({ childId, parentId: 'p' })
+  await supervision.deliver('p', '正文', ['c1', 'c2'], {
+    rows: [{ childId: 'c1' }, { childId: 'c2', startedAt: 1_000, label: '保留' }],
+    composeMeta: { now: 61_000, index: 2, max: 3 },
+  })
+  supervision.supervisor.forget('c1')
+  supervision.scheduleReconcileInbox('p')
+  await Promise.resolve()
+  assert.equal(created, 2)
+  assert.equal(inbox.nextTurn[0].hostField, true)
+  assert.match(inbox.nextTurn[0].content[0].text, /第 2\/3 次/)
+  assert.match(inbox.nextTurn[0].content[0].text, /已运行 1m00s/)
+})
+
+test('settling an old active worker still reconciles its parent after dispatch history eviction', () => {
+  const parents = []
+  const hooks = mod.createSupervisionHooks(recordingSupervisor(), {
+    scheduleReconcileInbox: (parentId) => parents.push(parentId),
+  })
+  for (let i = 0; i < 129; i += 1) hooks.onStarted({ id: 'parent' }, { childId: `worker-${i}` }, {})
+  hooks.forget('worker-0')
+  assert.deepEqual(parents, ['parent'])
+})
+
+test('failed inbox replacement retains the original metadata and retries on the next reconciliation', async () => {
+  const { inbox } = recordingInbox()
+  const replace = inbox.replace
+  inbox.replace = () => false
+  const parent = { id: 'p', session: {}, inbox, followup: (message) => inbox.nextTurn.push(message) }
+  const host = fakeSupervisionHost({ parents: new Map([['p', parent], ['c1', {}], ['c2', {}]]) })
+  const supervision = mod.createSupervision({ ctx: host.ctx, config: {} })
+  for (const childId of ['c1', 'c2']) supervision.supervisor.track({ childId, parentId: 'p' })
+  await supervision.deliver('p', '正文', ['c1', 'c2'], {
+    rows: [{ childId: 'c1' }, { childId: 'c2', label: '必须保留的任务名' }],
+  })
+  const originalId = inbox.nextTurn[0].id
+  supervision.supervisor.forget('c1')
+  supervision.scheduleReconcileInbox('p')
+  await Promise.resolve()
+  assert.equal(supervision.pendingNoticeMeta.has(originalId), true)
+  inbox.replace = replace
+  supervision.scheduleReconcileInbox('p')
+  await Promise.resolve()
+  assert.match(inbox.nextTurn[0].content[0].text, /必须保留的任务名/)
+})
+
+test('later supervision steps with no new inbox input continue and retain the same-turn gate', async () => {
+  const h = await supervisionTurnHarness()
+  await h.preStep()
+  assert.deepEqual(await h.preStep([], { step: 2 }), { kind: 'enter', messages: [] })
+  assert.match(h.main.guards[0]({ name: 'todo_write' }), /定时巡检回合/)
+})
+
+test('a surviving ordinary message keeps model entry when supervision settles downstream', async () => {
+  const h = await supervisionTurnHarness()
+  h.projection.todos = null
+  const user = { id: 'real-user', source: { kind: 'user' } }
+  const decision = await h.preStep(undefined, {}, async () => {
+    h.handlers.get('subagent/end')({ id: h.childId, stopReason: 'completed' })
+    return { kind: 'enter', messages: [h.message, user] }
+  })
+  assert.deepEqual(decision.messages, [user])
+  assert.equal(h.main.guards[0]({ name: 'todo_write' }), undefined)
+  assert.deepEqual(h.writes, [])
+})
+
+test('step-two user steering immediately releases supervision locks and invalidates old todo restoration', async () => {
+  const h = await supervisionTurnHarness()
+  await h.preStep()
+  h.event('assistant/message', { turn: 1, message: { content: [{ type: 'text', text: '巡检：正常' }] } })
+  const user = { id: 'steer', source: { kind: 'user' } }
+  await h.preStep([user], { step: 2 })
+  assert.equal(h.main.guards[0]({ name: 'todo_write' }), undefined)
+  assert.equal(h.main.guards[0]({ name: 'read' }), undefined)
+  h.projection.todos = null
+  h.boundary.lastTurn = 2
+  await h.preStep()
+  assert.deepEqual(h.writes, [])
+})
+
+test('later-step settlement input releases a supervision binding without pretending to be user input', async () => {
+  const h = await supervisionTurnHarness()
+  await h.preStep()
+  await h.preStep([{ id: 'settled', source: { kind: 'subagent-settled' } }], { step: 3 })
+  assert.equal(h.main.guards[0]({ name: 'todo_write' }), undefined)
+})
+
+test('workers settling while downstream awaits reject the empty step and clear its binding', async () => {
+  const h = await supervisionTurnHarness()
+  h.projection.todos = null
+  let release
+  const downstream = new Promise((resolve) => { release = resolve })
+  const pending = h.preStep(undefined, {}, () => downstream)
+  await Promise.resolve()
+  h.handlers.get('subagent/end')({ id: h.childId, stopReason: 'completed' })
+  release({ kind: 'enter', messages: [h.message] })
+  assert.deepEqual(await pending, { kind: 'reject' })
+  assert.equal(h.main.guards[0]({ name: 'todo_write' }), undefined)
+  assert.equal(h.writes.length, 1)
+})
+
+test('downstream retaining only runtime context after stale notice removal rejects without a model request', async () => {
+  const h = await supervisionTurnHarness()
+  const stale = supervisionMessage('stale', ['gone'])
+  const user = { id: 'user', source: { kind: 'user' } }
+  const time = { id: 'clock', source: { kind: 'runtime-context', form: 'time-context' } }
+  h.projection.todos = null
+  const decision = await h.preStep([stale, user], {}, async () => ({ kind: 'enter', messages: [stale, time] }))
+  assert.deepEqual(decision, { kind: 'reject' })
+  assert.equal(h.main.guards[0]({ name: 'todo_write' }), undefined)
+  assert.deepEqual(h.writes, [], 'real input already invalidated the old snapshot')
+})
+
+test('runtime context alone after downstream settlement restores eligible todos then rejects', async () => {
+  const h = await supervisionTurnHarness()
+  h.projection.todos = null
+  const time = { id: 'clock', source: { kind: 'time-context' } }
+  const decision = await h.preStep(undefined, {}, async () => {
+    h.handlers.get('subagent/end')({ id: h.childId, stopReason: 'completed' })
+    return { kind: 'enter', messages: [h.message, time] }
+  })
+  assert.deepEqual(decision, { kind: 'reject' })
+  assert.equal(h.main.guards[0]({ name: 'todo_write' }), undefined)
+  assert.equal(h.writes.length, 1)
+})
+
+test('pre-existing roots receive one guard, initial todo snapshot and exact session event tracking', async () => {
+  const main = fakeAgent({ id: 'existing-root' })
+  const child = fakeAgent({ id: 'existing-child', depth: 1 })
+  const live = new Map([[main.agent.id, main.agent], [child.agent.id, child.agent]])
+  let todos = [{ content: '挂载前任务' }]
+  let reads = 0
+  const writes = []
+  main.agent.session.append = async (type, data) => { writes.push({ type, data }); todos = data.todos }
+  const h = start({
+    agents: { get: (id) => live.get(id), list: () => [...live.values()], turnBoundaryOf: () => ({ lastTurn: 1 }) },
+    snapshot: () => { reads += 1; return { values: { todos } } },
+    subagents: { resolveMaxDepth: () => 1, startActivation: async () => ({ childId: child.agent.id }) },
+  })
+  assert.equal(main.guards.length, 1)
+  assert.equal(child.guards.length, 0)
+  assert.equal(reads, 1)
+  h.created({ agent: main.agent })
+  assert.equal(main.guards.length, 1, 'repeated registration is idempotent')
+  assert.equal(reads, 1)
+  const event = h.handlers.get('session/event')
+  event(main.agent.session, { type: 'todo/write', data: { todos: [{ content: '根代理更新' }] } })
+  event(child.agent.session, { type: 'todo/write', data: { todos: [{ content: '子代理清单' }] } })
+  todos = null
+  const message = supervisionMessage('stale-existing', ['gone'])
+  assert.deepEqual(await h.handlers.get('agent/pre-step')({ agent: main.agent, turn: 1, step: 1, messages: [message] }, async () => ({ kind: 'enter', messages: [message] })), { kind: 'reject' })
+  assert.equal(writes[0].data.todos[0].content, '根代理更新')
+  const delegate = h.tools.find(({ name }) => name === 'delegate')
+  await delegate.execute({
+    description: '已有代理任务', prompt: '执行', writeScope: ['C:/repo/existing.js'], provider: 'p', model: 'm',
+  }, { agent: main.agent, signal: new AbortController().signal })
+  const liveMessage = supervisionMessage('live-existing', [child.agent.id])
+  await h.handlers.get('agent/pre-step')({ agent: main.agent, turn: 1, step: 1, messages: [liveMessage] }, async () => ({ kind: 'enter', messages: [liveMessage] }))
+  assert.match(main.guards[0]({ name: 'todo_write' }), /定时巡检回合/)
+  event(main.agent.session, { type: 'assistant/message', data: { turn: 1, message: { content: [{ type: 'text', text: '巡检：正常' }] } } })
+  assert.match(main.guards[0]({ name: 'send_message' }), /锁定后续工具调用/)
+})
+
+test('failed inbox mutations automatically retry and stop after two rechecks', async () => {
+  for (const operation of ['replace', 'remove']) {
+    for (const permanent of [false, true]) {
+      const { inbox } = recordingInbox()
+      const original = inbox[operation]
+      let attempts = 0
+      inbox[operation] = (...args) => {
+        attempts += 1
+        if (permanent || attempts === 1) return false
+        return original(...args)
+      }
+      const parent = { id: 'p', session: {}, inbox, followup: (message) => inbox.nextTurn.push(message) }
+      const host = fakeSupervisionHost({ parents: new Map([['p', parent], ['c1', {}], ['c2', {}]]) })
+      const s = mod.createSupervision({ ctx: host.ctx, config: {} })
+      for (const childId of ['c1', 'c2']) s.supervisor.track({ childId, parentId: 'p' })
+      await s.deliver('p', '旧正文', ['c1', 'c2'], { rows: [{ childId: 'c1' }, { childId: 'c2', label: '保留任务' }] })
+      s.supervisor.forget('c1')
+      if (operation === 'remove') s.supervisor.forget('c2')
+      s.scheduleReconcileInbox('p')
+      await new Promise((resolve) => setImmediate(resolve))
+      assert.equal(attempts, permanent ? 3 : 2, `${operation}/${permanent}`)
+      if (permanent) assert.equal(s.pendingNoticeMeta.size, 1)
+      else if (operation === 'remove') assert.equal(inbox.nextTurn.length, 0)
+      else assert.match(inbox.nextTurn[0].content[0].text, /保留任务/)
+    }
+  }
+})
+
+test('a failed inbox replacement rechecks the other bucket after a concurrent queue switch', async () => {
+  const { inbox } = recordingInbox()
+  const replace = inbox.replace
+  let attempts = 0
+  inbox.replace = (...args) => {
+    attempts += 1
+    if (attempts === 1) {
+      inbox.nextStep.push(inbox.nextTurn.shift())
+      return false
+    }
+    return replace(...args)
+  }
+  const parent = { id: 'p', session: {}, inbox, followup: (message) => inbox.nextTurn.push(message) }
+  const host = fakeSupervisionHost({ parents: new Map([['p', parent], ['c1', {}], ['c2', {}]]) })
+  const s = mod.createSupervision({ ctx: host.ctx, config: {} })
+  for (const childId of ['c1', 'c2']) s.supervisor.track({ childId, parentId: 'p' })
+  await s.deliver('p', '旧正文', ['c1', 'c2'], { rows: [{ childId: 'c1' }, { childId: 'c2', label: '保留任务' }] })
+  s.supervisor.forget('c1')
+  s.scheduleReconcileInbox('p')
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(attempts, 2)
+  assert.deepEqual(inbox.nextStep[0].source.childIds, ['c2'])
+  assert.match(inbox.nextStep[0].content[0].text, /保留任务/)
+})
+
+test('a failed mutation racing inbox consumption safely drops metadata after bounded rechecks', async () => {
+  const { inbox } = recordingInbox()
+  const parent = { id: 'p', session: {}, inbox, followup: (message) => inbox.nextTurn.push(message) }
+  const host = fakeSupervisionHost({ parents: new Map([['p', parent], ['c1', {}], ['c2', {}]]) })
+  const s = mod.createSupervision({ ctx: host.ctx, config: {} })
+  for (const childId of ['c1', 'c2']) s.supervisor.track({ childId, parentId: 'p' })
+  await s.deliver('p', '旧正文', ['c1', 'c2'])
+  inbox.replace = () => { inbox.nextTurn = []; return false }
+  s.supervisor.forget('c1')
+  s.scheduleReconcileInbox('p')
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(s.pendingNoticeMeta.size, 0)
+})
+
+test('pre-step recompiles partially stale claimed notices before and after downstream waiting', async () => {
+  for (const duringNext of [false, true]) {
+    const h = await supervisionTurnHarness()
+    h.live.set('other-worker', fakeAgent({ id: 'other-worker', depth: 1 }).agent)
+    const { createSupervisionTurnState } = await import('../lib/gate.js')
+    const s = mod.createSupervision({ ctx: h.ctx, config: h.config })
+    for (const childId of [h.childId, 'other-worker']) s.supervisor.track({ childId, parentId: h.main.agent.id })
+    const { inbox } = recordingInbox()
+    h.main.agent.inbox = inbox
+    h.main.agent.followup = (message) => inbox.nextTurn.push(message)
+    await s.deliver(h.main.agent.id, '旧正文包含已结束任务', [h.childId, 'other-worker'], {
+      rows: [{ childId: h.childId, label: '已结束任务' }, { childId: 'other-worker', label: '仍运行任务', startedAt: 1_000 }],
+      composeMeta: { now: 61_000, index: 2, max: 3 },
+    })
+    const original = inbox.nextTurn.shift()
+    const turnState = createSupervisionTurnState()
+    const preStep = mod.createSupervisionPreStep({
+      ctx: h.ctx, config: h.config, supervisor: s.supervisor, supervisionTurnState: turnState,
+      todoTracker: mod.createTodoSnapshotTracker(h.ctx), rebuildNotice: s.rebuildNotice,
+      nextStep: async (payload, next) => next(),
+    })
+    if (!duringNext) s.supervisor.forget(h.childId)
+    const decision = await preStep({ agent: h.main.agent, step: 1, turn: 1, messages: [original] }, async () => {
+      if (duringNext) s.supervisor.forget(h.childId)
+      return { kind: 'enter', messages: [original] }
+    })
+    assert.deepEqual(decision.messages[0].source.childIds, ['other-worker'])
+    assert.equal(decision.messages[0].content[0].text.includes('已结束任务'), false)
+    assert.match(decision.messages[0].content[0].text, /仍运行任务/)
+    assert.match(decision.messages[0].content[0].text, /已运行 1m00s/)
+    assert.match(decision.messages[0].content[0].text, /第 2\/3 次/)
+    assert.equal(decision.messages[0].id, original.id)
+  }
+})
+
+/** Link real receipt settlement, inbox cleanup and pre-step metadata ownership. */
+async function claimedNoticeHarness() {
+  const { createSupervisionTurnState } = await import('../lib/gate.js')
+  const { inbox } = recordingInbox()
+  const parent = { id: 'p', session: {}, inbox, followup: (message) => inbox.nextTurn.push(message) }
+  const host = fakeSupervisionHost({ parents: new Map([['p', parent], ['c1', {}], ['c2', {}]]) })
+  const projection = { todos: [{ content: '原任务', status: 'in_progress' }] }
+  const writes = []
+  host.ctx.sessionProjections.snapshot = () => ({ values: { todos: projection.todos } })
+  parent.session.append = async (type, data) => { writes.push({ type, data }); projection.todos = data.todos }
+  const tracker = mod.createTodoSnapshotTracker(host.ctx)
+  tracker.bind(parent)
+  const supervision = mod.createSupervision({ ctx: host.ctx, config: {} })
+  const hooks = mod.createSupervisionHooks(supervision.supervisor, {
+    scheduleReconcileInbox: supervision.scheduleReconcileInbox,
+  })
+  let settle
+  const receipt = new Promise((resolve) => { settle = resolve })
+  hooks.onStarted(parent, { childId: 'c1', result: receipt }, { description: '已结束任务' })
+  hooks.onStarted(parent, { childId: 'c2' }, { description: '仍运行任务' })
+  await supervision.deliver('p', '旧正文包含已结束任务', ['c1', 'c2'], {
+    rows: [{ childId: 'c1', label: '已结束任务' }, { childId: 'c2', label: '仍运行任务', startedAt: 1_000 }],
+    composeMeta: { now: 61_000, index: 2, max: 3 },
+  })
+  const message = inbox.nextTurn.shift()
+  const payload = { agent: parent, step: 1, turn: 1, messages: [message] }
+  const run = ({ nextStep = async (input, next) => next(), restore = (...args) => tracker.restore(...args), extra = {} } = {}) =>
+    mod.createSupervisionPreStep({
+      ctx: host.ctx, config: {}, supervisor: supervision.supervisor,
+      supervisionTurnState: createSupervisionTurnState(),
+      todoTracker: { bind() {}, invalidate() {}, restore },
+      rebuildNotice: supervision.rebuildNotice,
+      retainNotices: supervision.retainNotices,
+      nextStep,
+    })({ ...payload, ...extra }, async () => ({ kind: 'enter', messages: [message] }))
+  const settleAndClean = async () => {
+    settle()
+    await receipt
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(supervision.supervisor.has('c1'), false)
+    assert.deepEqual(inbox.nextTurn, [])
+  }
+  return { ...supervision, host, hooks, parent, message, payload, run, settleAndClean, tracker, projection, writes }
+}
+
+function assertOriginalNotice(decision, message) {
+  assert.equal(decision.kind, 'enter')
+  assert.equal(decision.messages[0].id, message.id)
+  assert.deepEqual(decision.messages[0].source.childIds, ['c2'])
+  assert.doesNotMatch(decision.messages[0].content[0].text, /已结束任务/)
+  assert.match(decision.messages[0].content[0].text, /仍运行任务/)
+  assert.match(decision.messages[0].content[0].text, /已运行 1m00s/)
+  assert.match(decision.messages[0].content[0].text, /第 2\/3 次/)
+}
+
+test('claimed notice metadata survives receipt cleanup during downstream and todo awaits then releases', async () => {
+  for (const phase of ['downstream', 'todo']) {
+    const h = await claimedNoticeHarness()
+    let entered
+    let release
+    const waiting = new Promise((resolve) => { entered = resolve })
+    const blocked = new Promise((resolve) => { release = resolve })
+    const pause = async () => { entered(); await blocked }
+    if (phase === 'todo') {
+      h.projection.todos = null
+      const append = h.parent.session.append
+      h.parent.session.append = async (...args) => { await pause(); return append(...args) }
+    }
+    const pending = h.run(phase === 'downstream' ? {
+      nextStep: async (payload) => { await pause(); return { kind: 'enter', messages: payload.messages } },
+    } : {})
+    await waiting
+    await h.settleAndClean()
+    const retained = h.pendingNoticeMeta.has(h.message.id)
+    release()
+    const decision = await pending
+    assert.equal(retained, true, phase)
+    assertOriginalNotice(decision, h.message)
+    assert.equal(h.pendingNoticeMeta.size, 0, `${phase}: finally releases consumed metadata`)
+    assert.equal(h.writes.length, phase === 'todo' ? 1 : 0)
+  }
+})
+
+test('claimed notice metadata releases on exception, rejection, abort and missing decision messages', async () => {
+  for (const mode of ['throw', 'restore-throw', 'reject', 'abort', 'no-messages', 'stale']) {
+    const h = await claimedNoticeHarness()
+    const controller = new AbortController()
+    const result = { kind: mode === 'reject' ? 'reject' : 'enter' }
+    let retained
+    const nextStep = async () => {
+      await h.settleAndClean()
+      retained = h.pendingNoticeMeta.has(h.message.id)
+      if (mode === 'throw') throw new Error('metadata downstream failed')
+      if (mode === 'abort') controller.abort()
+      return mode === 'restore-throw' ? { kind: 'enter', messages: [h.message] } : result
+    }
+    if (mode === 'stale') {
+      h.hooks.forget('c1')
+      h.hooks.forget('c2')
+    }
+    const pending = h.run({
+      nextStep, extra: { signal: controller.signal },
+      restore: async () => { if (mode === 'restore-throw') throw new Error('metadata restoration failed') },
+    })
+    if (mode === 'throw') await assert.rejects(pending, /metadata downstream failed/)
+    else if (mode === 'restore-throw') await assert.rejects(pending, /metadata restoration failed/)
+    else assert.deepEqual(await pending, mode === 'stale' ? { kind: 'reject' } : result)
+    if (mode !== 'stale') assert.equal(retained, true, mode)
+    assert.equal(h.pendingNoticeMeta.size, 0, mode)
+  }
+})
+
+test('reentrant pre-steps count metadata owners until the last downstream waiter finishes', async () => {
+  const h = await claimedNoticeHarness()
+  const releases = []
+  const nextStep = async (payload) => {
+    await new Promise((resolve) => { releases.push(resolve) })
+    return { kind: 'enter', messages: payload.messages }
+  }
+  const first = h.run({ nextStep })
+  const second = h.run({ nextStep })
+  assert.equal(releases.length, 2)
+  await h.settleAndClean()
+  const retained = h.pendingNoticeMeta.has(h.message.id)
+  releases[0]()
+  const firstDecision = await first
+  const afterFirst = h.pendingNoticeMeta.has(h.message.id)
+  releases[1]()
+  const secondDecision = await second
+  assert.equal(retained, true)
+  assert.equal(afterFirst, true, 'one completion must not release another in-flight owner')
+  assertOriginalNotice(firstDecision, h.message)
+  assertOriginalNotice(secondDecision, h.message)
+  assert.equal(h.pendingNoticeMeta.size, 0)
+})
+
+test('claimed notice events bridge the pre-step window and release abandoned or duplicate claims', async () => {
+  for (const mode of ['pre-step', 'turn-end', 'dispose']) {
+    const h = await claimedNoticeHarness()
+    const claim = { agent: h.parent, message: h.message, turn: 1 }
+    h.claimNotice(claim)
+    h.claimNotice(claim)
+    await h.settleAndClean()
+    assert.equal(h.pendingNoticeMeta.has(h.message.id), true, mode)
+    if (mode === 'pre-step') assertOriginalNotice(await h.run(), h.message)
+    else {
+      h.releaseClaimedNotices(h.parent, mode === 'turn-end' ? 2 : undefined)
+      if (mode === 'turn-end') {
+        assert.equal(h.pendingNoticeMeta.has(h.message.id), true, 'another turn cannot release the claim')
+        h.releaseClaimedNotices(h.parent, 1)
+      }
+    }
+    assert.equal(h.pendingNoticeMeta.size, 0, mode)
+  }
+})
+
+test('metadata cap preserves active notices and independent same-turn claim batches', async () => {
+  const h = await claimedNoticeHarness()
+  await h.deliver('p', '第二批通知', ['c2'], {
+    rows: [{ childId: 'c2', label: '第二批任务' }], composeMeta: { now: 61_000, index: 3, max: 3 },
+  })
+  const second = h.parent.inbox.nextTurn.shift()
+  h.claimNotice({ agent: h.parent, message: h.message, turn: 1 })
+  h.claimNotice({ agent: h.parent, message: second, turn: 1 })
+  const release = h.retainNotices(h.payload)
+  release()
+  assert.equal(h.pendingNoticeMeta.has(h.message.id), false)
+  assert.equal(h.pendingNoticeMeta.has(second.id), true, 'a distinct claimed batch keeps its own owner')
+  h.parent.inbox = undefined
+  for (let index = 0; index < 257; index += 1) await h.deliver('p', '有界旧宿主通知', ['c2'])
+  assert.equal(h.pendingNoticeMeta.size, 256)
+  assert.equal(h.pendingNoticeMeta.has(second.id), true, 'the metadata cap cannot evict an active claim')
+  h.releaseClaimedNotices(h.parent, 1)
+  h.parent.inbox = { nextTurn: [], nextStep: [] }
+  h.scheduleReconcileInbox('p')
+  await Promise.resolve()
+  assert.equal(h.pendingNoticeMeta.size, 0)
+})
+
+test('apply wires synchronous claimed notice protection before hooks cleanup and pre-step rebuilding', async () => {
+  let scan
+  const realSet = globalThis.setInterval
+  globalThis.setInterval = (fn) => { scan = fn; return { unref() {} } }
+  const main = fakeAgent({ id: 'claim-root' })
+  const { inbox } = recordingInbox()
+  main.agent.inbox = inbox
+  main.agent.followup = (message) => inbox.nextTurn.push(message)
+  const live = new Map([[main.agent.id, main.agent], ['c1', {}], ['c2', {}]])
+  let settle
+  const receipt = new Promise((resolve) => { settle = resolve })
+  let nextChild = 0
+  let harness
+  try {
+    harness = start({
+      agents: { get: (id) => live.get(id) },
+      sessions: { get: () => ({ log: [] }), flush: async () => true },
+      subagents: {
+        resolveMaxDepth: () => 1,
+        startActivation: async () => ({ childId: `c${++nextChild}`, result: nextChild === 1 ? receipt : undefined }),
+      },
+    })
+  } finally {
+    globalThis.setInterval = realSet
+  }
+  harness.created({ agent: main.agent })
+  harness.config.superviseNotifyOnNoProgress = true
+  const realNow = Date.now
+  try {
+    Date.now = () => 1_000
+    const delegate = harness.tools.find(({ name }) => name === 'delegate')
+    for (const index of [1, 2]) await delegate.execute({
+      description: `领取窗口任务${index}`, prompt: '执行', writeScope: [`C:/repo/claim${index}.js`], provider: 'p', model: 'm',
+    }, { agent: main.agent, signal: new AbortController().signal })
+    Date.now = () => 601_000
+    scan()
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(inbox.nextTurn.length, 1)
+    const message = inbox.nextTurn.shift()
+    const claimed = harness.handlers.get('agent/inbox/claimed')
+    assert.equal(typeof claimed, 'function')
+    assert.equal(harness.handlerOptions.get('agent/inbox/claimed')?.global, true)
+    claimed({ agent: main.agent, message, turn: 1 })
+    settle()
+    await receipt
+    await new Promise((resolve) => setImmediate(resolve))
+    Date.now = () => 9_000_000
+    const decision = await harness.handlers.get('agent/pre-step')({
+      agent: main.agent, turn: 1, step: 1, messages: [message],
+    }, async () => ({ kind: 'enter', messages: [message] }))
+    assert.deepEqual(decision.messages[0].source.childIds, ['c2'])
+    assert.match(decision.messages[0].content[0].text, /领取窗口任务2/)
+    assert.match(decision.messages[0].content[0].text, /已运行 10m00s/)
+    assert.match(decision.messages[0].content[0].text, /第 1\/3 次/)
+  } finally {
+    Date.now = realNow
+  }
+})
+
+/** Hold the actual Todo append open so liveness changes happen after restoration starts. */
+function blockTodoAppend(harness) {
+  const append = harness.main.agent.session.append
+  let started
+  let release
+  const entered = new Promise((resolve) => { started = resolve })
+  const blocked = new Promise((resolve) => { release = resolve })
+  harness.main.agent.session.append = async (...args) => {
+    started()
+    await blocked
+    return append(...args)
+  }
+  return { entered, release }
+}
+
+/** Exercise the early stale branch while recording the exact downstream batch and restore calls. */
+async function initialStaleRestorationHarness() {
+  const h = await supervisionTurnHarness()
+  const { createSupervisionTurnState } = await import('../lib/gate.js')
+  const turnState = createSupervisionTurnState()
+  const tracker = mod.createTodoSnapshotTracker(h.ctx)
+  tracker.bind(h.main.agent)
+  turnState.bindTurn(h.main.agent.id, 1)
+  h.projection.todos = null
+  const append = blockTodoAppend(h)
+  const supervisor = mod.createSupervision({ ctx: h.ctx, config: h.config }).supervisor
+  const messages = [h.message]
+  const nextInputs = []
+  let restoreCalls = 0
+  const preStep = mod.createSupervisionPreStep({
+    ctx: h.ctx, config: h.config, supervisor, supervisionTurnState: turnState,
+    todoTracker: {
+      ...tracker,
+      restore: (...args) => { restoreCalls += 1; return tracker.restore(...args) },
+    },
+    nextStep: async (payload, next) => { nextInputs.push(payload.messages); return next() },
+  })
+  const run = (next = async () => ({ kind: 'enter', messages: nextInputs.at(-1) })) => preStep({
+    agent: h.main.agent, step: 1, turn: 1, messages,
+  }, next)
+  return { ...h, append, supervisor, tracker, turnState, messages, nextInputs, run, restoreCalls: () => restoreCalls }
+}
+
+for (const kind of ['user', 'subagent-settled']) {
+  test(`initially stale supervision preserves ${kind} arriving during todo restoration before next`, async () => {
+    for (const invalidateDuringAppend of kind === 'user' ? [false, true] : [false]) {
+      const h = await initialStaleRestorationHarness()
+      const pending = h.run()
+      await h.append.entered
+      const ordinary = { id: `early-append-${kind}`, source: { kind } }
+      h.messages.push(ordinary)
+      if (invalidateDuringAppend) h.tracker.invalidate(h.main.agent.session)
+      h.append.release()
+      assert.deepEqual(await pending, { kind: 'enter', messages: [ordinary] })
+      assert.deepEqual(h.nextInputs, [[ordinary]], 'next receives only the surviving ordinary input')
+      assert.equal(h.turnState.isTurnActive(h.main.agent.id, 1), false)
+      assert.equal(h.tracker.canRestore(h.main.agent.session), kind !== 'user')
+      assert.equal(h.restoreCalls(), 1)
+      assert.equal(h.writes.length, 1)
+    }
+  })
+}
+
+test('initially stale supervision rejects absent or auxiliary-only input after one restoration without next', async () => {
+  for (const kind of [undefined, 'runtime-context', 'time-context']) {
+    const h = await initialStaleRestorationHarness()
+    const pending = h.run()
+    await h.append.entered
+    if (kind !== undefined) h.messages.push({ id: `early-append-${kind}`, source: { kind } })
+    h.append.release()
+    assert.deepEqual(await pending, { kind: 'reject' }, kind)
+    assert.deepEqual(h.nextInputs, [], kind)
+    assert.equal(h.turnState.isTurnActive(h.main.agent.id, 1), false, kind)
+    assert.equal(h.restoreCalls(), 1, kind)
+    assert.equal(h.writes.length, 1, kind)
+  }
+})
+
+test('initially stale supervision reclassifies new live notices and restores only once across next', async () => {
+  for (const mixed of [false, true]) {
+    const h = await initialStaleRestorationHarness()
+    const pending = h.run()
+    await h.append.entered
+    h.supervisor.track({ childId: h.childId, parentId: h.main.agent.id })
+    const notice = supervisionMessage('new-live-notice', [h.childId])
+    const ordinary = { id: 'new-settlement', source: { kind: 'subagent-settled' } }
+    const expected = mixed ? [notice, ordinary] : [notice]
+    h.messages.push(...expected)
+    h.append.release()
+    assert.deepEqual(await pending, { kind: 'enter', messages: expected })
+    assert.deepEqual(h.nextInputs, [expected])
+    assert.equal(h.turnState.isTurnActive(h.main.agent.id, 1), !mixed)
+    assert.equal(h.restoreCalls(), 1, 'entry and downstream share a single restoration budget')
+    assert.equal(h.writes.length, 1)
+  }
+})
+
+test('ordinary input rescued before next preserves downstream continue and reject decisions', async () => {
+  for (const kind of ['continue', 'reject']) {
+    const h = await initialStaleRestorationHarness()
+    const downstream = { kind, reason: 'downstream decision' }
+    const pending = h.run(async () => downstream)
+    await h.append.entered
+    const user = { id: 'rescued-user', source: { kind: 'user' } }
+    h.messages.push(user)
+    h.append.release()
+    assert.deepEqual(await pending, downstream)
+    assert.deepEqual(h.nextInputs, [[user]])
+    assert.equal(h.turnState.isTurnActive(h.main.agent.id, 1), false)
+    assert.equal(h.tracker.canRestore(h.main.agent.session), false)
+    assert.equal(h.restoreCalls(), 1)
+  }
+})
+
+test('a concurrent user step keeps old todo eligibility invalid after an in-flight restoration', async () => {
+  const h = await supervisionTurnHarness()
+  h.projection.todos = null
+  const append = blockTodoAppend(h)
+  const pending = h.preStep()
+  await append.entered
+  const user = { id: 'concurrent-user', source: { kind: 'user' } }
+  assert.deepEqual(await h.preStep([user], { step: 2 }), { kind: 'enter', messages: [user] })
+  append.release()
+  await pending
+  assert.equal(h.main.guards[0]({ name: 'todo_write' }), undefined)
+  h.projection.todos = null
+  h.boundary.lastTurn = 2
+  await h.preStep()
+  assert.equal(h.writes.length, 1, 'the old restoration event must not requalify the invalidated snapshot')
+})
+
+test('deep-copied restoration events cannot requalify todos invalidated by a concurrent user step', async () => {
+  const h = await supervisionTurnHarness({ copyEvents: true })
+  h.projection.todos = null
+  const append = blockTodoAppend(h)
+  const pending = h.preStep()
+  await append.entered
+  const user = { id: 'copied-restoration-user', source: { kind: 'user' } }
+  await h.preStep([user], { step: 2 })
+  append.release()
+  await pending
+  assert.equal(h.writes.length, 1)
+  h.projection.todos = null
+  h.boundary.lastTurn = 2
+  await h.preStep()
+  assert.equal(h.writes.length, 1, 'the copied self event must not restore old task eligibility')
+})
+
+test('a legitimate same-content todo write during a pending restoration retains new eligibility', async () => {
+  const todos = [{ content: '同样任务', status: 'in_progress' }]
+  const h = await supervisionTurnHarness({ todos, copyEvents: true })
+  h.projection.todos = null
+  const append = blockTodoAppend(h)
+  const pending = h.preStep()
+  await append.entered
+  await h.preStep([{ id: 'same-content-user', source: { kind: 'user' } }], { step: 2 })
+  h.event('todo/write', { todos: structuredClone(todos) })
+  append.release()
+  await pending
+  h.projection.todos = null
+  h.boundary.lastTurn = 2
+  await h.preStep()
+  assert.equal(h.writes.length, 2, 'same content does not identify a self restoration event')
+  assert.deepEqual(h.writes[1].data.todos, todos)
+})
+
+test('concurrent deep-copied restorations retain distinct origin tokens until each append settles', async () => {
+  const h = await supervisionTurnHarness({ copyEvents: true })
+  h.projection.todos = null
+  const append = h.main.agent.session.append
+  const releases = []
+  let entered
+  const waiting = new Promise((resolve) => { entered = resolve })
+  h.main.agent.session.append = async (...args) => {
+    await new Promise((resolve) => {
+      releases.push(resolve)
+      if (releases.length === 2) entered()
+    })
+    return append(...args)
+  }
+  const first = h.preStep()
+  const second = h.preStep()
+  await waiting
+  await h.preStep([{ id: 'concurrent-copied-user', source: { kind: 'user' } }], { step: 2 })
+  releases[0]()
+  await first
+  releases[1]()
+  await second
+  assert.equal(h.writes.length, 2)
+  assert.notEqual(h.writes[0].data.source.token, h.writes[1].data.source.token)
+  h.projection.todos = null
+  h.boundary.lastTurn = 2
+  await h.preStep()
+  assert.equal(h.writes.length, 2, 'one settled append cannot release the other append origin')
+})
+
+test('unowned and already released restoration origins do not suppress legitimate todo writes', async () => {
+  for (const mode of ['unknown', 'released']) {
+    const h = await supervisionTurnHarness({ copyEvents: true })
+    h.projection.todos = null
+    await h.preStep()
+    await h.preStep([{ id: `unowned-origin-${mode}`, source: { kind: 'user' } }], { step: 2 })
+    const data = structuredClone(h.writes[0].data)
+    if (mode === 'unknown') data.source.token = 'unowned-token'
+    h.event('todo/write', data)
+    h.projection.todos = null
+    h.boundary.lastTurn = 2
+    await h.preStep()
+    assert.equal(h.writes.length, 2, mode)
+  }
+})
+
+test('failed restoration releases its origin token before a later genuine todo write', async () => {
+  for (const mode of ['throw', 'reject']) {
+    const h = await supervisionTurnHarness({ copyEvents: true })
+    let failedData
+    h.projection.todos = null
+    const append = h.main.agent.session.append
+    h.main.agent.session.append = (type, data) => {
+      failedData = structuredClone(data)
+      if (mode === 'throw') throw new Error('pre-commit validation failed')
+      return Promise.reject(new Error('append rejected'))
+    }
+    await h.preStep()
+    assert.equal(h.writes.length, 0)
+    await h.preStep([{ id: `failed-origin-${mode}`, source: { kind: 'user' } }], { step: 2 })
+    h.event('todo/write', failedData)
+    h.main.agent.session.append = append
+    h.projection.todos = null
+    h.boundary.lastTurn = 2
+    await h.preStep()
+    assert.equal(h.writes.length, 1, `${mode}: failed append must not leave its origin token owned`)
+  }
+})
+
+test('workers settling while todo restoration awaits append reject and clear the supervision binding', async () => {
+  for (const mode of ['settled', 'missing', 'runtime-context']) {
+    const h = await supervisionTurnHarness()
+    h.projection.todos = null
+    const append = blockTodoAppend(h)
+    const messages = [h.message]
+    if (mode === 'runtime-context') messages.push({ id: 'clock', source: { kind: 'runtime-context' } })
+    const pending = h.preStep(messages)
+    await append.entered
+    assert.match(h.main.guards[0]({ name: 'todo_write' }), /定时巡检回合/, mode)
+    if (mode === 'missing') h.live.delete(h.childId)
+    else h.handlers.get('subagent/end')({ id: h.childId, stopReason: 'completed' })
+    append.release()
+    assert.deepEqual(await pending, { kind: 'reject' }, mode)
+    assert.equal(h.main.guards[0]({ name: 'todo_write' }), undefined, mode)
+    assert.equal(h.writes.length, 1, 'the same step restores only once')
+  }
+})
+
+test('ordinary messages arriving while todo restoration awaits append survive stale notice removal', async () => {
+  for (const kind of ['user', 'subagent-settled']) {
+    const h = await supervisionTurnHarness()
+    h.projection.todos = null
+    const messages = [h.message]
+    const append = blockTodoAppend(h)
+    const pending = h.preStep(undefined, {}, async () => ({ kind: 'enter', messages }))
+    await append.entered
+    const ordinary = { id: `during-append-${kind}`, source: { kind } }
+    messages.push(ordinary)
+    h.handlers.get('subagent/end')({ id: h.childId, stopReason: 'completed' })
+    append.release()
+    assert.deepEqual(await pending, { kind: 'enter', messages: [ordinary] }, kind)
+    assert.equal(h.main.guards[0]({ name: 'todo_write' }), undefined, kind)
+    assert.equal(h.writes.length, 1, kind)
+  }
+})
+
+test('partial settlement while todo restoration awaits append recompiles live ids and saved rows', async () => {
+  const h = await supervisionTurnHarness()
+  h.live.set('other-worker', fakeAgent({ id: 'other-worker', depth: 1 }).agent)
+  const { createSupervisionTurnState } = await import('../lib/gate.js')
+  const s = mod.createSupervision({ ctx: h.ctx, config: h.config })
+  for (const childId of [h.childId, 'other-worker']) s.supervisor.track({ childId, parentId: h.main.agent.id })
+  const queued = []
+  h.main.agent.followup = (message) => queued.push(message)
+  await s.deliver(h.main.agent.id, '旧正文包含已结束任务', [h.childId, 'other-worker'], {
+    rows: [{ childId: h.childId, label: '已结束任务' }, { childId: 'other-worker', label: '仍运行任务', startedAt: 1_000 }],
+    composeMeta: { now: 61_000, index: 2, max: 3 },
+  })
+  const original = queued[0]
+  const turnState = createSupervisionTurnState()
+  const tracker = mod.createTodoSnapshotTracker(h.ctx)
+  tracker.bind(h.main.agent)
+  h.projection.todos = null
+  const append = blockTodoAppend(h)
+  const preStep = mod.createSupervisionPreStep({
+    ctx: h.ctx, config: h.config, supervisor: s.supervisor, supervisionTurnState: turnState,
+    todoTracker: tracker, rebuildNotice: s.rebuildNotice, nextStep: async (payload, next) => next(),
+  })
+  const pending = preStep({ agent: h.main.agent, step: 1, turn: 1, messages: [original] }, async () => ({
+    kind: 'enter', messages: [original],
+  }))
+  await append.entered
+  s.supervisor.forget(h.childId)
+  append.release()
+  const decision = await pending
+  assert.equal(decision.kind, 'enter')
+  assert.equal(decision.messages.length, 1)
+  assert.deepEqual(decision.messages[0].source.childIds, ['other-worker'])
+  assert.equal(decision.messages[0].source.senderSessionId, 'other-worker')
+  assert.equal(decision.messages[0].content[0].text.includes('已结束任务'), false)
+  assert.match(decision.messages[0].content[0].text, /仍运行任务/)
+  assert.match(decision.messages[0].content[0].text, /已运行 1m00s/)
+  assert.match(decision.messages[0].content[0].text, /第 2\/3 次/)
+  assert.equal(decision.messages[0].id, original.id)
+  assert.equal(turnState.isTurnActive(h.main.agent.id, 1), true)
+  assert.equal(h.writes.length, 1)
+})
+
+test('todo restoration refuses detached or replaced root instances while downstream waits', async () => {
+  for (const mode of ['disposed', 'missing', 'replaced']) {
+    const h = await supervisionTurnHarness()
+    h.projection.todos = null
+    await h.preStep(undefined, {}, async () => {
+      if (mode === 'disposed') h.handlers.get('agent/disposed')({ agent: h.main.agent })
+      if (mode === 'missing') h.live.delete(h.main.agent.id)
+      if (mode === 'replaced') h.live.set(h.main.agent.id, { id: h.main.agent.id })
+      return { kind: 'enter', messages: [h.message] }
+    })
+    assert.deepEqual(h.writes, [], mode)
+  }
+})
+
+test('session event routing ignores child and foreign sessions and cleans roots on plugin disposal', async () => {
+  const h = await supervisionTurnHarness()
+  await h.preStep()
+  const event = h.handlers.get('session/event')
+  const normal = { type: 'assistant/message', data: { turn: 1, message: { content: [{ type: 'text', text: '巡检：正常' }] } } }
+  event(h.live.get(h.childId).session, normal)
+  event({ id: h.main.agent.id }, normal)
+  assert.equal(h.main.guards[0]({ name: 'read' }), undefined)
+  const cleanup = h.effects.find(({ label }) => label === 'orchestrator: root agents')
+  assert.equal(typeof cleanup?.dispose, 'function')
+  cleanup.dispose()
+  assert.equal(h.main.guards.length, 0)
+  h.event('todo/write', { todos: [{ content: '卸载后事件' }] })
+  h.projection.todos = null
+  await h.preStep()
+  assert.deepEqual(h.writes, [])
+})
+
+test('todo tracker refuses unregistered roots even when the host has no agents.get method', async () => {
+  const writes = []
+  const agent = { id: 'root', session: { append: async (type, data) => writes.push({ type, data }) } }
+  let registered = false
+  const tracker = mod.createTodoSnapshotTracker({
+    sessionProjections: { snapshot: () => ({ values: { todos: null } }) },
+  }, { isRegistered: () => registered })
+  tracker.record(agent.session, [{ content: '有效快照' }])
+  await tracker.restore(agent, { turn: 1 }, {})
+  assert.deepEqual(writes, [])
+  registered = true
+  await tracker.restore(agent, { turn: 1 }, {})
+  assert.equal(writes.length, 1)
+})
+
+test('late disposal of a replaced root does not remove the new instance gate or session route', async () => {
+  const h = await supervisionTurnHarness()
+  const replacement = fakeAgent({ id: h.main.agent.id })
+  h.live.set(replacement.agent.id, replacement.agent)
+  h.created({ agent: replacement.agent })
+  assert.equal(h.main.guards.length, 0)
+  assert.equal(replacement.guards.length, 1)
+  h.handlers.get('agent/disposed')({ agent: h.main.agent })
+  assert.equal(replacement.guards.length, 1)
+  h.handlers.get('session/event')(replacement.agent.session, { type: 'todo/write', data: { todos: [{ content: '新实例快照' }] } })
+  h.handlers.get('session/event')(h.main.agent.session, { type: 'todo/write', data: { todos: [{ content: '旧实例事件' }] } })
+  h.projection.todos = null
+  const writes = []
+  replacement.agent.session.append = async (type, data) => writes.push({ type, data })
+  const stale = supervisionMessage('stale-after-replacement', ['gone'])
+  await h.handlers.get('agent/pre-step')({ agent: replacement.agent, turn: 1, step: 1, messages: [stale] }, async () => ({ kind: 'enter', messages: [stale] }))
+  assert.equal(writes[0].data.todos[0].content, '新实例快照')
+})
+
+test('todo tracker exposes explicit invalidate and forget without resurrecting empty lists', () => {
+  const tracker = mod.createTodoSnapshotTracker({ sessionProjections: { snapshot: () => ({ values: { todos: [{ content: 'a' }] } }) } })
+  const session = {}
+  tracker.bind({ session })
+  assert.equal(tracker.canRestore(session), true)
+  tracker.invalidate(session)
+  assert.equal(tracker.canRestore(session), false)
+  tracker.record(session, [{ content: 'b' }])
+  assert.equal(tracker.canRestore(session), true)
+  tracker.record(session, [])
+  assert.equal(tracker.canRestore(session), false)
+  tracker.forget(session)
+  assert.equal(tracker.canRestore(session), false)
 })

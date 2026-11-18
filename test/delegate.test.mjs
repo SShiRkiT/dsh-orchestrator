@@ -388,7 +388,10 @@ test('the description keeps the main-agent rule, the whitelist and the execute c
   // run_code cannot reach the host, and the route override is opt-in per dispatch.
   assert.match(tool.description, /严禁通过 run_code 触达宿主/)
   assert.match(tool.description, /禁用 import\/require\/process\/fetch\/eval/)
-  assert.match(tool.description, /run_code 内只能调用 delegate 和 orchestrate/)
+  assert.match(tool.description, /run_code 仅作为 PTC 传输层，只可通过 tools 调用当前 allowedTools 中已授权的工具/)
+  assert.doesNotMatch(tool.description, /run_code 内只能调用 delegate 和 orchestrate/)
+  assert.match(tool.description, /PTC 不扩大权限，巡检回合的 todo_write 禁令与「巡检：正常」声明后的工具锁继续生效/)
+  assert.match(tool.description, /禁用 sandbox_permissions\/justification/)
   assert.match(tool.description, /仅当当前用户消息显式点名时才传 provider\/model\/reasoning_effort/)
   assert.match(tool.description, /点名的模型仅限本次派发/)
   assert.match(tool.description, /严禁复用历史轮次、历史派发或摘要中的模型/)
@@ -408,6 +411,31 @@ test('the description keeps the main-agent rule, the whitelist and the execute c
     assert.match(description, /仅限本次派发，禁止复用历史轮次或摘要中的模型/, param)
     assert.match(description, /严禁自行选择模型/, param)
   }
+})
+
+test('PTC rules follow live allowedTools without suggesting new delegation for supervision correction', () => {
+  const rule = mainAgentRule(['send_message', 'interrupt_agent', 'todo_write'])
+  assert.match(rule, /run_code 仅作为 PTC 传输层，只可通过 tools 调用当前 allowedTools 中已授权的工具/)
+  assert.match(rule, /主代理可用工具（白名单驱动，其余全部禁用）: send_message, interrupt_agent, todo_write。/)
+  assert.match(rule, /巡检回合的 todo_write 禁令与「巡检：正常」声明后的工具锁继续生效/)
+  assert.match(rule, /禁用 import\/require\/process\/fetch\/eval/)
+  assert.match(rule, /禁用 sandbox_permissions\/justification/)
+  const ptcRule = rule.slice(rule.indexOf('严禁通过 run_code'), rule.indexOf('仅当当前用户消息'))
+  assert.doesNotMatch(ptcRule, /delegate|orchestrate/)
+})
+
+test('supervision exception and delegate description require exclusive normal or intervention paths', () => {
+  const rule = mainAgentRule(['delegate', 'todo_write'])
+  assert.match(rule, /巡检例外仅指不自动推进主任务与禁止调用 todo_write/)
+  assert.match(rule, /巡检回合仍受当前工具白名单（allowedTools）制约/)
+  assert.match(rule, /禁止修改 todo_write/)
+  assert.match(rule, /只回复一行「巡检：正常」并立即结束，禁止附加工具调用/)
+  const tool = createDelegateTool({ defineTool: (d) => d, subagents: {}, config: cfg('p', 'm'), leases: leases() })
+  assert.match(tool.description, /均仍在运行且尚未交付/)
+  assert.match(tool.description, /需干预时禁止回复「巡检：正常」/)
+  assert.match(tool.description, /巡检回合禁止修改 todo_write/)
+  assert.match(tool.description.slice(tool.description.indexOf('把一个自包含任务')), /巡检例外仅指不自动推进主任务与禁止调用 todo_write/)
+  assert.match(tool.description.slice(tool.description.indexOf('把一个自包含任务')), /巡检回合仍受当前工具白名单（allowedTools）制约/)
 })
 
 test('a delegated child no longer sees this tool, so there is no worker variant', () => {
