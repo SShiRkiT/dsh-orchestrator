@@ -23,20 +23,7 @@
 
 </div>
 
----
-<div align="center">
-  
-### 为什么有了原生 `subagent` 和 `Agent Team`，还需要这个插件？
-</div>
-DSH 客户端自带了 `subagent` / `workflow`，官方也有 `@deepseek-ai/dsh-experimental-agent-team-profile`（Agent Team），但它们在实际高强度开发中仍有三个痛点——而这正是 **DSH Orchestrator** 独有的设计核心：
 
-| 痛点场景 | 原生 `subagent` / 官方 `Agent Team` | DSH Orchestrator（本插件独有） |
-| --- | --- | --- |
-| **主代理总忍不住自己动手** | **靠自觉（软提示词）**：主代理 / Team Lead 手里依然握有 `read`、`edit`、`bash` 等全套工具，聊几轮就经常脱轨亲自去读文件、跑命令，瞬间撑爆主上下文 | **白名单式驱动（Whitelist-Driven Hard Gate）**：主代理默认仅放行 12 项规划与委派核心工具（`allowedTools`），其余一切宿主读写/终端工具及未来新增的 MCP/第三方插件工具一律自动隐藏并在执行层强制拦截（连 `run_code` 嵌套偷调也拦），**逼迫 Main Agent 100% 只做规划与验收，Subagent 100% 只干苦力活** |
-| **便宜模型干活卡死/跑偏** | **运行期黑盒**：派出后只能干等结束或超时，或者靠 `wait_agent` 阻塞轮询 | **后台事件日志定时巡检 + 强模型动态纠偏**：后台定时器直接读取运行中 Worker 的会话事件日志（读取与汇总本身不调用模型），汇总运行时长、轮次、新增工具调用与最后输出；异常或超时时以一条轻量摘要通知唤醒主代理，由强模型判断后精准纠偏 |
-| **大批量同构任务** | 原生 `workflow` 让模型手写任意 JS 脚本，容易失控且模型路由不统一 | **声明式 `orchestrate` 流水线**：`items × stages` 结构化扇出与多阶段流水线，单项失败隔离、支持 JSON Schema 强校验，全部 Worker 强制走便宜的子代理路由 |
-
----
 <div align="center">
   
 ## 核心特性
@@ -100,10 +87,28 @@ DSH 客户端自带了 `subagent` / `workflow`，官方也有 `@deepseek-ai/dsh-
   **`writeScope`（必填，`string[]`）**：整批共用一条顶层声明，按整批**原子持有**写作用域；归一化后的作用域会自动注入每个阶段的 Prompt 作为边界提示。
 - **单写者互斥（派发前拦截）**：`delegate` 按子代理持锁、`orchestrate` 按整批持锁，两者共享同一张进程级租约表并跨工具求交。一旦作用域相交，插件会在**启动任何子代理之前**直接抛出 `write-scope-conflict`（附冲突路径、持有者与到期时间，`agentsStarted: 0`），杜绝多个 Worker 同时覆写同一文件。租约在 `subagent/end`、`agent/disposed`、`orchestrate` 的 `finally`（含异常与 abort）以及插件卸载时幂等释放，另有 30 分钟 TTL 兜底防泄漏。
 
----
 
+---
+<div align="center">
+  
+### 为什么有了原生 `subagent` 和 `Agent Team`，还需要这个插件？
+</div>
+DSH 客户端自带了 `subagent` / `workflow`，官方也有 `@deepseek-ai/dsh-experimental-agent-team-profile`（Agent Team），但它们在实际高强度开发中仍有三个痛点——而这正是 **DSH Orchestrator** 独有的设计核心：
+
+| 痛点场景 | 原生 `subagent` / 官方 `Agent Team` | DSH Orchestrator（本插件独有） |
+| --- | --- | --- |
+| **主代理总忍不住自己动手** | **靠自觉（软提示词）**：主代理 / Team Lead 手里依然握有 `read`、`edit`、`bash` 等全套工具，聊几轮就经常脱轨亲自去读文件、跑命令，瞬间撑爆主上下文 | **白名单式驱动（Whitelist-Driven Hard Gate）**：主代理默认仅放行 12 项规划与委派核心工具（`allowedTools`），其余一切宿主读写/终端工具及未来新增的 MCP/第三方插件工具一律自动隐藏并在执行层强制拦截（连 `run_code` 嵌套偷调也拦），**逼迫 Main Agent 100% 只做规划与验收，Subagent 100% 只干苦力活** |
+| **便宜模型干活卡死/跑偏** | **运行期黑盒**：派出后只能干等结束或超时，或者靠 `wait_agent` 阻塞轮询 | **后台事件日志定时巡检 + 强模型动态纠偏**：后台定时器直接读取运行中 Worker 的会话事件日志（读取与汇总本身不调用模型），汇总运行时长、轮次、新增工具调用与最后输出；异常或超时时以一条轻量摘要通知唤醒主代理，由强模型判断后精准纠偏 |
+| **大批量同构任务** | 原生 `workflow` 让模型手写任意 JS 脚本，容易失控且模型路由不统一 | **声明式 `orchestrate` 流水线**：`items × stages` 结构化扇出与多阶段流水线，单项失败隔离、支持 JSON Schema 强校验，全部 Worker 强制走便宜的子代理路由 |
+
+
+<div align="center">
+  
 ## 环境要求
 
+</div>
+
+  
 | 项目 | 要求 |
 | --- | --- |
 | **宿主环境** | DeepSeek Harness Desktop / Web GUI |
@@ -111,7 +116,11 @@ DSH 客户端自带了 `subagent` / `workflow`，官方也有 `@deepseek-ai/dsh-
 | **插件形态** | Cordis 后端服务补丁（`cordis.patch.yml`）+ Web GUI 客户端扩展（`lib/client.js`） |
 | **界面语言** | 中 / 英双语自适应（`zh-CN` / `en-US`） |
 
+<div align="center">
+  
 ### 与 DSH 宿主的版本兼容性
+
+</div>
 
 插件依赖宿主的子代理接口（`startActivation` 的 spec 形状、重试投递入口、根代理枚举、工具注册表），这些接口在 DSH `0.2.2-rc.2` 发生过一次不兼容变更，因此**插件版本与宿主版本必须成对选择**：
 
@@ -125,7 +134,11 @@ DSH 客户端自带了 `subagent` / `workflow`，官方也有 `@deepseek-ai/dsh-
 
 ---
 
+<div align="center">
+  
 ## 安装
+
+</div>
 
 在 DSH 插件页选择「从 GitHub 添加」，下列三种写法都接受，直接填入输入框即可（推荐第一种，最不容易被客户端误判）：
 
@@ -146,7 +159,11 @@ dsh plugin --profile desktop add @sshirkit/dsh-orchestrator
 
 ---
 
+<div align="center">
+  
 ## 配置说明
+
+</div>
 
 所有配置项均为 volatile（动态热配置），在面板中修改后立即生效，无需重启 DSH：
 
@@ -164,6 +181,10 @@ dsh plugin --profile desktop add @sshirkit/dsh-orchestrator
 
 > 注：主代理的默认模型保存在宿主的 `agent-default-model` 中，由同一个「调度模式」面板直接读写，对新创建的会话生效；子代理模型改动从下一次委派起立即生效。
 
+<div align="center">
+  
 ## License
+
+</div>
 
 [MIT](LICENSE) © 2026 [SShiRkiT](https://github.com/SShiRkiT)
