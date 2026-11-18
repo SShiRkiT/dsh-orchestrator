@@ -44,11 +44,6 @@ const STUBS = {
       return { id: 'stub-user-msg-' + seq, role: 'user', ...input }
     }
   `,
-  zod: `
-    const z = { object: () => ({ strict: () => ({}) }), enum: () => ({}), boolean: () => ({}) }
-    export { z }
-    export default z
-  `,
 }
 
 registerHooks({
@@ -120,7 +115,6 @@ function fakeCtx({
   surface = SURFACE_TOOLS,
 } = {}) {
   const state = { enabled, allowed }
-  const projections = []
   const tools = []
   const handlers = new Map()
   // The options each subscription was made with: a lifecycle edge of a child is dispatched
@@ -138,10 +132,7 @@ function fakeCtx({
     },
   }
   const ctx = {
-    sessionProjections: {
-      register: (projection) => projections.push(projection),
-      stateOf,
-    },
+    sessionProjections: { stateOf },
     tools: {
       register(tool) {
         tools.push(tool)
@@ -190,7 +181,6 @@ function fakeCtx({
     ctx,
     config,
     state,
-    projections,
     tools,
     handlers,
     handlerOptions,

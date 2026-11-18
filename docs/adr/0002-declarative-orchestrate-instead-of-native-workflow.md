@@ -20,7 +20,7 @@
 
 - 输入：`cwd?`、`items`（1–64，任意 JSON 值）、`stages`（1–8，每项 `{name, prompt, schema?}`）、`maxConcurrency`（1–16，默认 4）。
 - 单阶段是扇出；多阶段是逐条目的流水线，没有全量屏障。
-- 所有 worker 使用插件的子代理默认路由；调用方不能指定 provider / model。`orchestrate` 和 `delegate` 一样是派发工具，因此也参与会话阶段投影。
+- 所有 worker 使用插件的子代理默认路由；调用方不能指定 provider / model。2026-10-29 原决定将 `orchestrate` 与 `delegate` 同视为派发工具，参与会话阶段投影。**后续更新（2026-11-18）：删除客户端计划按钮时已同步移除会话阶段投影，当前 `orchestrate` 不再写入该投影；编排阶段参数与流水线语义保持独立。**
 - 阶段可声明 object 的 JSON Schema，拿到结构化 `output`。
 - 返回 `{kind: 'orchestration', agentsStarted, results, errors}`：`results` 与输入同序，成功项 `{index, output, stopReason}`，失败项 `null`；单项失败不影响其他项；总结果超过 50000 字符显式报错。
 - 没有任意 JavaScript，没有后台模式。
@@ -38,5 +38,5 @@
 - 批量任务只有一种形状：条目 × 阶段。需要分支、循环、按中间结果改派时，只能回到 `delegate` 逐项处理，或由主代理重新规划。
 - 主代理多一个工具 schema，每个父级请求都要付这份 token。
 - 50000 字符上限让“一次汇总大量结果”不成立；超限必须拆成多批编排。
-- 会话阶段要把编排视为执行（术语见 `CONTEXT.md`）。
+- 2026-10-29 原决定要求会话阶段把编排视为执行。**后续更新（2026-11-18）：该会话阶段投影已随客户端计划按钮一起移除，此项仅保留历史决策背景，不再作为当前运行行为。**
 - 若上游 `workflow` 支持“固定 worker 路由 + 禁止脚本覆盖路由”，本决定应重新评估。

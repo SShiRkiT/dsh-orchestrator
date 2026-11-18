@@ -38,8 +38,7 @@
   "peerDependencies": {
     "@deepseek-ai/schemastery": ">=3.18.5 <4.0.0",
     "@deepseek-ai/dsh-tools": ">=0.2.2-rc.2 <0.2.3-0",
-    "@deepseek-ai/dsh-llm": ">=0.2.2-rc.2 <0.2.3-0",
-    "zod": "^4.6.6"
+    "@deepseek-ai/dsh-llm": ">=0.2.2-rc.2 <0.2.3-0"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-llm": {
