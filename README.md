@@ -45,9 +45,14 @@ DSH 客户端自带了 `subagent` / `workflow`，官方也有 `@deepseek-ai/dsh-
 ### 1. 强模型当 Main Agent，便宜模型当 Subagent（独立面板、即时生效）
 
 在输入框下方的**「调度模式」专属面板**中，主代理与子代理的模型路由完全解耦：
-- **主代理（Main Agent）**：配置为你最强的旗舰模型（例如 `gpt-astra-6`、`claude-opus-5.5` 等），专门负责需求澄清、任务切分、途中纠偏与最终结果验收。
-- **子代理（Subagent）**：配置为能力稍弱但极其便宜、高吞吐的模型（例如 `deepseek-v4.1-flash`、`gpt-luna-6` 等），**所有通过 `delegate` 和 `orchestrate` 派出的 Worker 强制共用这条便宜路由**（除非用户在当前消息里明确点名要求临时换模型）。
+- **主代理（Main Agent）**：配置为你最强的旗舰模型专门负责需求澄清、任务切分、途中纠偏与最终结果验收。
+  - > 例如 `gpt-astra-6`、`claude-opus-5.5` 等
+- **子代理（Subagent）**：配置为能力稍弱但极其便宜、高吞吐的模型**所有通过 `delegate` 和 `orchestrate` 派出的 Worker 强制共用这条便宜路由**
+  - > 例如 `deepseek-v4.1-flash`、`gpt-luna-6` 等
 - **防烧钱保护**：如果未配置子代理模型，派发时会直接报错拦截
+
+## 可以在`prompt` 或 `AGENTS.md`中要求当前工作区域的main agent派发子代理时传输 `provider` / `model` 参数来指定当前`会话` \ `工作区`使用你指定的模型进行
+
 
 ![调度模式面板](docs/images/dispatch-panel.png)
 
