@@ -363,79 +363,33 @@ test('the description keeps the main-agent rule, the whitelist and the execute c
   assert.match(tool.description, /主代理可用工具（白名单驱动，其余全部禁用）: delegate, orchestrate, todo_write。/)
   // The planning-only rule, in one dense Chinese paragraph.
   assert.match(tool.description, /主代理规则：主代理只负责规划/)
-  assert.match(tool.description, /都只在子代理中通过 delegate（单个任务）或 orchestrate（同构批量）执行/)
-  assert.match(tool.description, /也不为试探可用性调用一次/)
-  assert.match(tool.description, /子代理不受门禁限制/)
-  assert.match(tool.description, /新会话或压缩后无需重新确认/)
-  assert.match(tool.description, /独立任务在同一消息内并发派发/)
-  assert.match(tool.description, /无需并行时等待子代理完成再进行后续操作/)
-  assert.match(tool.description, /不要轮询其状态/)
-  assert.match(tool.description, /也不要为同一任务重复派发/)
-  assert.match(tool.description, /主代理可以直接调用 compress/)
-  // The retry contract: the plugin's own notice text and the A/B-only answer.
-  assert.match(tool.description, /插件会在同一会话自动重试/)
-  assert.match(tool.description, /结果为空时先确认插件状态，不要立即重派/)
-  assert.match(tool.description, /2 分钟内连续 3 次快速断联（插件自动重试 2 次）/)
-  assert.ok(
-    tool.description.includes(
-      '【插件重试｜子代理 <id>】它在 2 分钟内连续 3 次快速断联（failed before it finished / It left no closing message），插件已停止自动重试',
-    ),
-  )
-  assert.match(tool.description, /只提供通知中的 A\/B 选项（A 派生新子代理重做 \/ B 更换子代理模型后重试）并等待用户答复/)
-  assert.match(tool.description, /不要建议继续唤醒旧子代理/)
-  assert.match(tool.description, /未经用户选择 A 不要另派子代理重复工作/)
-  assert.match(tool.description, /也不要私自换模型重发/)
-  // run_code cannot reach the host, and the route override is opt-in per dispatch.
-  assert.match(tool.description, /严禁通过 run_code 触达宿主/)
-  assert.match(tool.description, /禁用 import\/require\/process\/fetch\/eval/)
-  assert.match(tool.description, /run_code 仅作为 PTC 传输层，只可通过 tools 调用当前 allowedTools 中已授权的工具/)
-  assert.doesNotMatch(tool.description, /run_code 内只能调用 delegate 和 orchestrate/)
-  assert.match(tool.description, /PTC 不扩大权限，巡检回合的 todo_write 禁令与「巡检：正常」声明后的工具锁继续生效/)
-  assert.match(tool.description, /禁用 sandbox_permissions\/justification/)
-  assert.match(tool.description, /仅当当前用户消息显式点名时才传 provider\/model\/reasoning_effort/)
-  assert.match(tool.description, /点名的模型仅限本次派发/)
-  assert.match(tool.description, /严禁复用历史轮次、历史派发或摘要中的模型/)
-  assert.match(tool.description, /严禁假定未声明的默认模型/)
+  assert.match(tool.description, /通过 delegate 或 orchestrate 交子代理执行/)
+  assert.match(tool.description, /勿试探调用被禁工具/)
+  assert.match(tool.description, /新会话或压缩后直接委派，无需重新确认/)
+  assert.match(tool.description, /独立任务在同一消息内并发派发，勿轮询状态或重复派发/)
+  // The retry contract.
+  assert.match(tool.description, /子代理无收尾中断时插件会自动重试，期间勿重派/)
+  assert.match(tool.description, /提示停止重试时按通知询问用户/)
+  // The route override contract and removed clauses.
+  assert.match(tool.description, /AGENTS\.md/)
+  assert.match(tool.description, /严禁复用历史轮次或摘要中的模型/)
+  assert.match(tool.description, /当前消息点名仅限本次派发，工作区指令指定的按其持续生效，两者冲突以当前消息为准/)
+  assert.equal(tool.description.includes('run_code'), false)
+  assert.equal(tool.description.includes('可直接调用 compress'), false)
+  // Separator space between rule and body when enabled.
+  assert.equal(tool.description.includes('。 把一个自包含任务'), true)
   // The body's handoff contract.
-  assert.match(tool.description, /prompt 必须写清目标、允许修改的文件、验收命令与兜底方案/)
-  assert.match(tool.description, /按用户配置的 worker 路由运行/)
-  assert.match(tool.description, /结束时由运行时自动通知你/)
-  assert.match(tool.description, /严禁要求子代理调用 send_message 汇报结果/)
-  assert.match(tool.description, /收尾消息会在结束时自动送达/)
-  assert.match(tool.description, /严禁两个子代理修改同一文件/)
-  assert.match(tool.description, /省略该字段或声明为空数组都会被拒绝/)
-  assert.match(tool.description, /【插件巡检…】/)
+  assert.match(tool.description, /prompt 须写清目标、允许修改的文件、验收命令与兜底方案，派发时必填 writeScope/)
+  assert.match(tool.description, /调用立即返回子代理 id，结束时自动通知/)
+  assert.match(tool.description, /严禁要求子代理用 send_message 汇报/)
+  assert.match(tool.description, /运行中可用 send_message 纠偏，结束后可追加任务/)
+  assert.match(tool.description, /多个独立任务在同一轮并发发起；同构批量请用 orchestrate/)
   // The route parameters carry the same one-line condition, where a model would be typed.
   for (const param of ['provider', 'model']) {
     const description = tool.parameters[param].description
-    assert.match(description, /仅限本次派发，禁止复用历史轮次或摘要中的模型/, param)
-    assert.match(description, /严禁自行选择模型/, param)
+    assert.match(description, /AGENTS\.md/, param)
+    assert.match(description, /省略走 worker 路由/, param)
   }
-})
-
-test('PTC rules follow live allowedTools without suggesting new delegation for supervision correction', () => {
-  const rule = mainAgentRule(['send_message', 'interrupt_agent', 'todo_write'])
-  assert.match(rule, /run_code 仅作为 PTC 传输层，只可通过 tools 调用当前 allowedTools 中已授权的工具/)
-  assert.match(rule, /主代理可用工具（白名单驱动，其余全部禁用）: send_message, interrupt_agent, todo_write。/)
-  assert.match(rule, /巡检回合的 todo_write 禁令与「巡检：正常」声明后的工具锁继续生效/)
-  assert.match(rule, /禁用 import\/require\/process\/fetch\/eval/)
-  assert.match(rule, /禁用 sandbox_permissions\/justification/)
-  const ptcRule = rule.slice(rule.indexOf('严禁通过 run_code'), rule.indexOf('仅当当前用户消息'))
-  assert.doesNotMatch(ptcRule, /delegate|orchestrate/)
-})
-
-test('supervision exception and delegate description require exclusive normal or intervention paths', () => {
-  const rule = mainAgentRule(['delegate', 'todo_write'])
-  assert.match(rule, /巡检例外仅指不自动推进主任务与禁止调用 todo_write/)
-  assert.match(rule, /巡检回合仍受当前工具白名单（allowedTools）制约/)
-  assert.match(rule, /禁止修改 todo_write/)
-  assert.match(rule, /只回复一行「巡检：正常」并立即结束，禁止附加工具调用/)
-  const tool = createDelegateTool({ defineTool: (d) => d, subagents: {}, config: cfg('p', 'm'), leases: leases() })
-  assert.match(tool.description, /均仍在运行且尚未交付/)
-  assert.match(tool.description, /需干预时禁止回复「巡检：正常」/)
-  assert.match(tool.description, /巡检回合禁止修改 todo_write/)
-  assert.match(tool.description.slice(tool.description.indexOf('把一个自包含任务')), /巡检例外仅指不自动推进主任务与禁止调用 todo_write/)
-  assert.match(tool.description.slice(tool.description.indexOf('把一个自包含任务')), /巡检回合仍受当前工具白名单（allowedTools）制约/)
 })
 
 test('a delegated child no longer sees this tool, so there is no worker variant', () => {

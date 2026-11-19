@@ -300,7 +300,7 @@ test('a main agent gets the full rule and no scoped registration', () => {
   // The rule is rendered once: the batch brief only points back at it.
   assert.match(orchestrate.description, /^主代理规则同 delegate/)
   assert.equal(orchestrate.description.includes('主代理可用工具'), false)
-  assert.equal(orchestrate.description.includes('【插件重试｜子代理 <id>】'), false)
+  assert.equal(orchestrate.description.includes('子代理无收尾中断'), false)
 })
 
 test('a panel write reaches the next request without a re-mask or a new registration', () => {
