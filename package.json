@@ -1,6 +1,6 @@
 {
   "name": "@sshirkit/dsh-orchestrator",
-  "version": "0.8.6",
+  "version": "0.8.7",
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
