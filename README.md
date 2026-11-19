@@ -9,7 +9,7 @@
 </div>
 
 
-**A powerful model plans, low-cost models do the work — the dispatch mode plugin with hard tool isolation for DeepSeek Harness**
+#### **A powerful model plans, low-cost models do the work — the dispatch mode plugin with hard tool isolation for DeepSeek Harness**
 
 [![version](https://img.shields.io/badge/version-0.8.7-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
 [![dsh-plugin](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
@@ -20,7 +20,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/SShiRkiT/dsh-orchestrator?style=flat-square&logo=github)](https://github.com/SShiRkiT/dsh-orchestrator/stargazers)
 [![npm](https://img.shields.io/npm/v/@sshirkit/dsh-orchestrator?color=cb3837)](https://www.npmjs.com/package/@sshirkit/dsh-orchestrator)
 
-**English** | [简体中文](README.zh.md) · [Key differences](#why-do-you-need-this-plugin-alongside-native-subagent-and-agent-team) · [Core Features](#core-features) · [Installation](#installation) · [Quick Verification](#quick-verification) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Contributing & Community](#contributing--community)
+**English** | [简体中文](README.zh.md) · [Key differences](#why-do-you-need-this-plugin-alongside-native-subagent-and-agent-team) · [Core Features](#core-features) · [Installation](#installation) · [Configuration](#configuration) · [Contributing & Community](#contributing--community)
 
 </div>
 
@@ -35,11 +35,11 @@
 In the dedicated **Dispatch mode panel** below the composer, the main-agent and subagent model routes are fully independent:
 - **Main Agent**: choose your strongest flagship model to focus on clarifying requirements, splitting tasks, correcting course, and accepting final results.
   - > For example, `gpt-astra-6` or `claude-opus-5.5`
-- **Subagent**: choose a low-cost, high-throughput model as the shared default for subagents launched with `delegate` or `orchestrate`.
+- **Subagent**: choose a slightly less capable but very inexpensive model with high throughput. **Every Worker launched through `delegate` or `orchestrate` must share this low-cost route**
   - > For example, `deepseek-v4.1-flash` or `gpt-luna-6`
-- **Cost protection**: dispatch on the default route fails with an error if no default subagent model is configured.
+- **Anti-burn protection**: dispatch fails with an error if no subagent model is configured
 
-To override the default, specify the subagent's `provider` and `model` in the session prompt or the workspace's `AGENTS.md`. The main agent passes both values at dispatch time, and the override applies only to that dispatch.
+## In your `prompt` or `AGENTS.md`, you can instruct the main agent in the current workspace to pass `provider` / `model` parameters when dispatching subagents, specifying which model to use for the current `session` \ `workspace`
 
 
 ![Dispatch Mode Panel](docs/images/dispatch-panel.png)
@@ -50,15 +50,15 @@ Instead of relying on prompts asking the main model to use subagents more often,
 - **Main Agent stripped of all execution tools**:
 <div align="center">
 
-> **DEFAULT_ALLOWED_TOOLS permits only 12 planning, delegation, and read-only session tools by default**
+> ### DEFAULT_ALLOWED_TOOLS permits only 12 planning, delegation, and read-only session tools by default
 >
 > _`delegate`, `orchestrate`, `send_message`, `interrupt_agent`, `todo_write`, `ask_user_question`, `compress`, and five read-only session log tools._
 >
-> **All file access, search, and terminal tools, plus any future MCP or third-party plugin tools, are automatically hidden and blocked at execution time**
+> ### All file access, search, and terminal tools, plus any future MCP or third-party plugin tools, are automatically hidden and blocked at execution time
 >
-> _(`read` / `edit` / `write` / `apply_patch`), (`grep` / `glob`), (`bash` / `pwsh`), `subagent` / `workflow`_
+>_(`read` / `edit` / `write` / `apply_patch`), (`grep` / `glob`), (`bash` / `pwsh`), `subagent` / `workflow`_
 >
-> **Even nested calls through run_code are blocked. To allow additional tools, check them under Allowed Tools on the right of the panel.**
+> ### Even nested calls through run_code are blocked. To allow additional tools, check them under Allowed Tools on the right of the panel.
 </div>
 
 - **Subagents retain the full toolchain**: dispatched Workers are exempt from the gate and read or write files, run tests, and inspect errors in their own contexts. When finished, they return only a concise conclusion for the main agent to review.
@@ -93,9 +93,8 @@ Low-cost Subagents can occasionally get stuck on complex shell escaping or error
 ---
 <div align="center">
 
-## Why Do You Need This Plugin Alongside Native `subagent` and `Agent Team`?
+### Why Do You Need This Plugin Alongside Native `subagent` and `Agent Team`?
 </div>
-
 DSH includes native `subagent` / `workflow` tools, and the official `@deepseek-ai/dsh-experimental-agent-team-profile` (Agent Team) is also available. However, intensive development still exposes three pain points — the problems at the heart of **DSH Orchestrator**'s distinctive design:
 
 | Pain point | Native `subagent` / official `Agent Team` | DSH Orchestrator (unique to this plugin) |
@@ -114,7 +113,7 @@ DSH includes native `subagent` / `workflow` tools, and the official `@deepseek-a
 
 | Item | Requirement |
 | --- | --- |
-| **Host environment** | DeepSeek Harness Desktop / Web GUI, version `>= 0.2.2-rc.2 < 0.2.3-0` |
+| **Host environment** | DeepSeek Harness Desktop / Web GUI |
 | **Node.js** | `>= 22` (bundled with the DSH Desktop runtime) |
 | **Plugin form** | Cordis backend service patch (`cordis.patch.yml`) + Web GUI client extension (`lib/client.js`) |
 | **UI language** | Adapts to Chinese / English (`zh-CN` / `en-US`) |
@@ -163,21 +162,6 @@ dsh plugin --profile desktop add @sshirkit/dsh-orchestrator
 
 <div align="center">
 
-## Quick Verification
-
-</div>
-
-After installing the plugin and restarting DSH, open the **Dispatch** settings panel below the message composer and make sure **Enable dispatch mode** is on.
-
-1. Select a `Provider` and `Model` for subagents. Both are required for the default route. Delegation stops with an error if either is missing.
-2. Start a new session and send a short read-only request.
-
-   > Delegate a read-only task to one subagent. Ask it to list the files in the current working directory and summarize what it finds for me.
-
-3. Check the tool call history. The main agent should call only `delegate` and should leave file access and command execution to the subagent. The subagent should run independently on the selected low-cost model and return its summary to the main agent automatically.
-
-<div align="center">
-
 ## Configuration
 
 </div>
@@ -199,16 +183,6 @@ All configuration fields are volatile (dynamic configuration), with no DSH resta
 
 > Note: the main agent's default model is stored in the host's `agent-default-model`, read and written directly by the same Dispatch mode panel, and applies to newly created sessions. Subagent model changes apply to the next delegation.
 
-
-<div align="center">
-
-## Troubleshooting
-
-</div>
-
-- **Delegation fails because the subagent model is missing (`workerProvider` / `workerModel` is empty).** The plugin never silently falls back to the more expensive main-agent model. Select the subagent's `Provider` and `Model` in the **Dispatch** panel. The change takes effect on the next delegation.
-- **The plugin conflicts or does not load after upgrading from `dsh-orchestrator`.** The package moved to `@sshirkit/dsh-orchestrator` in `v0.8.4`. Uninstall the old plugin first, install the new one, then fully quit and restart DSH.
-- **Changing the default main-agent model did not affect the current session.** The host stores the default in `agent-default-model` and uses it for new sessions. In an existing session, switch models using the selector at the top of the conversation.
 
 <div align="center">
 

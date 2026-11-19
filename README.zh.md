@@ -9,7 +9,7 @@
 </div>
 
 
-**强模型主脑规划 + 便宜模型统一打工 —— DeepSeek Harness 的「硬隔离调度模式」插件**
+#### **强模型主脑规划 + 便宜模型统一打工 —— DeepSeek Harness 的「硬隔离调度模式」插件**
 
 [![version](https://img.shields.io/badge/version-0.8.7-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
 [![dsh-plugin](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
@@ -20,7 +20,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/SShiRkiT/dsh-orchestrator?style=flat-square&logo=github)](https://github.com/SShiRkiT/dsh-orchestrator/stargazers)
 [![npm](https://img.shields.io/npm/v/@sshirkit/dsh-orchestrator?color=cb3837)](https://www.npmjs.com/package/@sshirkit/dsh-orchestrator)
 
-**简体中文** | [English](README.md) · [核心差异](#为什么有了原生-subagent-和-agent-team还需要这个插件) · [核心特性](#核心特性) · [安装](#安装) · [快速验证](#快速验证) · [配置说明](#配置说明) · [常见排障](#常见排障) · [参与贡献](#参与贡献)
+**简体中文** | [English](README.md) · [核心差异](#为什么有了原生-subagent-和-agent-team还需要这个插件) · [核心特性](#核心特性) · [安装](#安装) · [配置说明](#配置说明) · [参与贡献](#参与贡献)
 
 </div>
 
@@ -35,11 +35,11 @@
 在输入框下方的**「调度模式」专属面板**中，主代理与子代理的模型路由完全解耦：
 - **主代理（Main Agent）**：配置为你最强的旗舰模型专门负责需求澄清、任务切分、途中纠偏与最终结果验收。
   - > 例如 `gpt-astra-6`、`claude-opus-5.5` 等
-- **子代理（Subagent）**：为 `delegate` 和 `orchestrate` 派出的子代理配置共用的低成本、高吞吐默认模型。
+- **子代理（Subagent）**：配置为能力稍弱但极其便宜、高吞吐的模型**所有通过 `delegate` 和 `orchestrate` 派出的 Worker 强制共用这条便宜路由**
   - > 例如 `deepseek-v4.1-flash`、`gpt-luna-6` 等
-- **防烧钱保护**：未配置默认子代理模型时，使用默认路由的派发会直接报错拦截。
+- **防烧钱保护**：如果未配置子代理模型，派发时会直接报错拦截
 
-可在会话提示词或工作区的 `AGENTS.md` 中明确指定子代理的 `provider` 和 `model`，由主代理在派发时成对传入。覆盖仅对该次派发有效。
+## 可以在`prompt` 或 `AGENTS.md`中要求当前工作区域的main agent派发子代理时传输 `provider` / `model` 参数来指定当前`会话` \ `工作区`使用你指定的模型进行
 
 
 ![调度模式面板](docs/images/dispatch-panel.png)
@@ -50,15 +50,15 @@
 - **主代理被彻底收缴执行工具**：
 <div align="center">
 
-> **DEFAULT_ALLOWED_TOOLS 默认只放行 12 项规划、委派与会话只读工具**
+> ### DEFAULT_ALLOWED_TOOLS 默认只放行 12 项规划、委派与会话只读工具
 >
 > _`delegate`、`orchestrate`、`send_message`、`interrupt_agent`、`todo_write`、`ask_user_question`、`compress` 与 5 项只读会话日志工具。_
 >
-> **所有文件读写、搜索、终端，以及未来新增的任何 MCP / 第三方插件工具，一律自动隐藏并在执行层强制拦截**
+> ### 所有文件读写、搜索、终端，以及未来新增的任何 MCP / 第三方插件工具，一律自动隐藏并在执行层强制拦截
 >
-> _（`read` / `edit` / `write` / `apply_patch`）、（`grep` / `glob`）、（`bash` / `pwsh`）、 `subagent` / `workflow`_
+>_（`read` / `edit` / `write` / `apply_patch`）、（`grep` / `glob`）、（`bash` / `pwsh`）、 `subagent` / `workflow`_
 >
-> **连 run_code 嵌套偷调也拦。需要额外放行时，在面板右侧 Allowed Tools 勾选即可。**
+> ### 连 run_code 嵌套偷调也拦。需要额外放行时，在面板右侧 Allowed Tools 勾选即可。
 </div>
 
 - **子代理独享完整工具链**：被派出的 Worker 不受闸门限制，在各自独立的上下文中读写文件、跑测试、看报错，完工后只把干净的结论交回主代理验收。
@@ -93,9 +93,8 @@
 ---
 <div align="center">
 
-## 为什么有了原生 `subagent` 和 `Agent Team`，还需要这个插件？
+### 为什么有了原生 `subagent` 和 `Agent Team`，还需要这个插件？
 </div>
-
 DSH 客户端自带了 `subagent` / `workflow`，官方也有 `@deepseek-ai/dsh-experimental-agent-team-profile`（Agent Team），但它们在实际高强度开发中仍有三个痛点——而这正是 **DSH Orchestrator** 独有的设计核心：
 
 | 痛点场景 | 原生 `subagent` / 官方 `Agent Team` | DSH Orchestrator（本插件独有） |
@@ -114,7 +113,7 @@ DSH 客户端自带了 `subagent` / `workflow`，官方也有 `@deepseek-ai/dsh-
 
 | 项目 | 要求 |
 | --- | --- |
-| **宿主环境** | DeepSeek Harness Desktop / Web GUI，版本 `>= 0.2.2-rc.2 < 0.2.3-0` |
+| **宿主环境** | DeepSeek Harness Desktop / Web GUI |
 | **Node.js** | `>= 22`（内置于 DSH Desktop 运行时） |
 | **插件形态** | Cordis 后端服务补丁（`cordis.patch.yml`）+ Web GUI 客户端扩展（`lib/client.js`） |
 | **界面语言** | 中 / 英双语自适应（`zh-CN` / `en-US`） |
@@ -163,21 +162,6 @@ dsh plugin --profile desktop add @sshirkit/dsh-orchestrator
 
 <div align="center">
 
-## 快速验证
-
-</div>
-
-安装并重启 DSH 后，在会话输入框下方打开「调度模式」设置面板，确认「启用调度模式」已打开。
-
-1. 为子代理选择 `Provider` 与 `Model`。两项均为默认路由必填项，任一未配置时，使用默认路由的委派会报错并停止。
-2. 新建会话，发送一条只读测试指令。
-
-   > 请委派一个子代理只读检查当前工作目录的文件列表并汇总给我。
-
-3. 查看工具调用记录，确认主代理只调用了 `delegate`，没有直接调用文件读写或命令执行工具。子代理应按所选的低成本模型独立执行，结束后自动将总结交给主代理。
-
-<div align="center">
-
 ## 配置说明
 
 </div>
@@ -199,16 +183,6 @@ dsh plugin --profile desktop add @sshirkit/dsh-orchestrator
 
 > 注：主代理的默认模型保存在宿主的 `agent-default-model` 中，由同一个「调度模式」面板直接读写，对新创建的会话生效；子代理模型改动从下一次委派起立即生效。
 
-
-<div align="center">
-
-## 常见排障
-
-</div>
-
-- **委派时报未配置子代理模型（`workerProvider` / `workerModel` 为空）**。插件不会静默回退到成本较高的主代理模型。请在「调度模式」面板选好子代理的 `Provider` 与 `Model`，下一次委派立即生效。
-- **从旧版 `dsh-orchestrator` 升级后插件冲突或未生效**。自 `v0.8.4` 起，插件已迁移到 `@sshirkit/dsh-orchestrator`。请先卸载旧版，再安装新版，最后完全退出并重启 DSH。
-- **修改主代理默认模型后，当前会话未变化**。默认模型写入宿主的 `agent-default-model`，对新建会话生效。已有会话可在顶部的模型选择器中切换。
 
 <div align="center">
 
