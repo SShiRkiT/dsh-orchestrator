@@ -1,0 +1,79 @@
+name: Bug Report / 缺陷报告
+description: Report a bug or unexpected behavior in @sshirkit/dsh-orchestrator
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please search existing issues before filing a report. English and 简体中文 are both welcome.
+        Use [Private Vulnerability Reporting](https://github.com/SShiRkiT/dsh-orchestrator/security/advisories/new) for security vulnerabilities.
+  - type: input
+    id: plugin-version
+    attributes:
+      label: Plugin version / 插件版本
+      placeholder: "0.8.6"
+    validations:
+      required: true
+  - type: dropdown
+    id: installation-method
+    attributes:
+      label: Installation method / 安装方式
+      options:
+        - npm @sshirkit/dsh-orchestrator
+        - GitHub Repository URL
+        - Local Path / 本地路径
+    validations:
+      required: true
+  - type: input
+    id: host-version
+    attributes:
+      label: DeepSeek Harness version / 宿主版本
+      placeholder: "0.2.2-rc.3"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment and Node.js version / 运行环境与 Node.js 版本
+      placeholder: Windows 11 / DSH Desktop / Node v22.x
+    validations:
+      required: true
+  - type: dropdown
+    id: module
+    attributes:
+      label: Affected module / 涉及功能模块
+      options:
+        - allowedTools whitelist / allowedTools 白名单闸门
+        - delegate / 委派
+        - orchestrate pipeline / 编排流水线
+        - writeScope conflict detection / 写锁冲突检测
+        - Supervision / 后台日志巡检
+        - Web GUI Dispatch panel / Web GUI 调度模式面板
+        - Other / 其他
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction steps / 最小复现步骤
+      description: Include the smallest relevant configuration, if needed. / 如有必要，请附最小配置。
+      placeholder: |
+        1. Open ...
+        2. Change ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: behavior-and-logs
+    attributes:
+      label: Expected behavior, actual behavior, and logs / 期望行为、实际行为与日志
+      description: Include relevant logs and remove API keys, tokens, and personal information. / 请附相关日志，并删除密钥、令牌与个人信息。
+      placeholder: |
+        Expected / 期望行为:
+
+        Actual / 实际行为:
+
+        Sanitized logs / 脱敏日志（如有）:
+    validations:
+      required: true

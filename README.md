@@ -1,15 +1,15 @@
-<div align="center">   
-  
-##### Start from 28th October
+<div align="center">
 
-<div align="center">  
-  
+*Start from 28th October*
+
+<div align="center">
+
 # DSH Orchestrator
 
 </div>
 
 
-#### **强模型主脑规划 + 便宜模型统一打工 —— DeepSeek Harness 的「硬隔离调度模式」插件**
+**A powerful model plans, low-cost models do the work — the dispatch mode plugin with hard tool isolation for DeepSeek Harness**
 
 [![version](https://img.shields.io/badge/version-0.8.6-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
 [![dsh-plugin](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
@@ -18,129 +18,131 @@
 [![module](https://img.shields.io/badge/module-ESM-F7DF1E?style=flat-square&logo=javascript&logoColor=black)](package.json)
 [![license](https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/SShiRkiT/dsh-orchestrator?style=flat-square&logo=github)](https://github.com/SShiRkiT/dsh-orchestrator/stargazers)
+[![npm](https://img.shields.io/npm/v/@sshirkit/dsh-orchestrator?color=cb3837)](https://www.npmjs.com/package/@sshirkit/dsh-orchestrator)
 
-**简体中文** | [English](README.en.md) · [核心差异](#为什么有了原生-subagent-和-agent-team还需要这个插件) · [核心特性](#核心特性) · [安装](#安装) · [配置说明](#配置说明)
+**English** | [简体中文](README.zh.md) · [Key differences](#why-do-you-need-this-plugin-alongside-native-subagent-and-agent-team) · [Core Features](#core-features) · [Installation](#installation) · [Quick Verification](#quick-verification) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Contributing & Community](#contributing--community)
 
 </div>
 
 
 <div align="center">
-  
-## 核心特性
+
+## Core Features
 </div>
 
-### 1. 强模型当 Main Agent，便宜模型当 Subagent（独立面板、即时生效）
+### 1. A powerful Main Agent and low-cost Subagents (independent panel, immediate updates)
 
-在输入框下方的**「调度模式」专属面板**中，主代理与子代理的模型路由完全解耦：
-- **主代理（Main Agent）**：配置为你最强的旗舰模型专门负责需求澄清、任务切分、途中纠偏与最终结果验收。
-  - > 例如 `gpt-astra-6`、`claude-opus-5.5` 等
-- **子代理（Subagent）**：配置为能力稍弱但极其便宜、高吞吐的模型**所有通过 `delegate` 和 `orchestrate` 派出的 Worker 强制共用这条便宜路由**
-  - > 例如 `deepseek-v4.1-flash`、`gpt-luna-6` 等
-- **防烧钱保护**：如果未配置子代理模型，派发时会直接报错拦截
+In the dedicated **Dispatch mode panel** below the composer, the main-agent and subagent model routes are fully independent:
+- **Main Agent**: choose your strongest flagship model to focus on clarifying requirements, splitting tasks, correcting course, and accepting final results.
+  - > For example, `gpt-astra-6` or `claude-opus-5.5`
+- **Subagent**: choose a low-cost, high-throughput model as the shared default for subagents launched with `delegate` or `orchestrate`.
+  - > For example, `deepseek-v4.1-flash` or `gpt-luna-6`
+- **Cost protection**: dispatch on the default route fails with an error if no default subagent model is configured.
 
-## 可以在`prompt` 或 `AGENTS.md`中要求当前工作区域的main agent派发子代理时传输 `provider` / `model` 参数来指定当前`会话` \ `工作区`使用你指定的模型进行
+To override the default, specify the subagent's `provider` and `model` in the session prompt or the workspace's `AGENTS.md`. The main agent passes both values at dispatch time, and the override applies only to that dispatch.
 
 
-![调度模式面板](docs/images/dispatch-panel.png)
+![Dispatch Mode Panel](docs/images/dispatch-panel.png)
 
-### 2. 主代理「规划与验收」、子代理「纯粹 Work」的白名单式硬性闸门
+### 2. A hard whitelist gate: the main agent plans and accepts results; subagents execute
 
-不同于靠 Prompt 劝主模型“多用子代理”，本插件在 DSH 的工具声明出口（`tools.definitions`）与执行层（`tools.guard`）安装了双重守卫，且采用**白名单式驱动**：声明层实时裁剪模型可见的工具表（全局工具与 `ops_*` 等 scope 内工具一视同仁），执行层再兜底拒绝任何漏网调用；两层都按请求/按调用实时读取配置，不产生 `tools.restrict` 事件风暴，因此不会触发官方工具遮挡的抖动与 Prompt Cache 失效。
-- **主代理被彻底收缴执行工具**：
+Instead of relying on prompts asking the main model to use subagents more often, the plugin installs two guards at DSH's tool-definition outlet (`tools.definitions`) and execution layer (`tools.guard`), using a **whitelist-driven** approach. The definition layer trims the tool table visible to the model in real time, treating global tools and tools in scopes such as `ops_*` equally; the execution layer rejects any calls that slip through. Both layers read the current configuration on every request or call, without creating `tools.restrict` event storms, avoiding tool-visibility churn and prompt-cache invalidation from the official tool-hiding mechanism.
+- **Main Agent stripped of all execution tools**:
 <div align="center">
-  
-> ### DEFAULT_ALLOWED_TOOLS 默认只放行 12 项规划、委派与会话只读工具
-> 
-> _`delegate`、`orchestrate`、`send_message`、`interrupt_agent`、`todo_write`、`ask_user_question`、`compress` 与 5 项只读会话日志工具。_
-> 
-> ### 所有文件读写、搜索、终端，以及未来新增的任何 MCP / 第三方插件工具，一律自动隐藏并在执行层强制拦截
-> 
->_（`read` / `edit` / `write` / `apply_patch`）、（`grep` / `glob`）、（`bash` / `pwsh`）、 `subagent` / `workflow`_
-> 
-> ### 连 run_code 嵌套偷调也拦。需要额外放行时，在面板右侧 Allowed Tools 勾选即可。
+
+> **DEFAULT_ALLOWED_TOOLS permits only 12 planning, delegation, and read-only session tools by default**
+>
+> _`delegate`, `orchestrate`, `send_message`, `interrupt_agent`, `todo_write`, `ask_user_question`, `compress`, and five read-only session log tools._
+>
+> **All file access, search, and terminal tools, plus any future MCP or third-party plugin tools, are automatically hidden and blocked at execution time**
+>
+> _(`read` / `edit` / `write` / `apply_patch`), (`grep` / `glob`), (`bash` / `pwsh`), `subagent` / `workflow`_
+>
+> **Even nested calls through run_code are blocked. To allow additional tools, check them under Allowed Tools on the right of the panel.**
 </div>
 
-- **子代理独享完整工具链**：被派出的 Worker 不受闸门限制，在各自独立的上下文中读写文件、跑测试、看报错，完工后只把干净的结论交回主代理验收。
-- **一键随时切换**：关闭面板上的「启用调度模式」即可恢复宿主工具，无需重开会话；插件派发工具仍禁用，已绑定巡检回合的硬禁仍优先。
+- **Subagents retain the full toolchain**: dispatched Workers are exempt from the gate and read or write files, run tests, and inspect errors in their own contexts. When finished, they return only a concise conclusion for the main agent to review.
+- **Switch at any time**: turn off Enable dispatch mode to restore host tools without reopening the session. Plugin dispatch tools remain disabled, and gates for a bound inspection turn still take priority.
 
-### 3. 后台事件日志定时巡检与强模型动态纠偏
+### 3. Periodic background inspection of event logs and correction by the powerful model
 
-便宜模型充当 Subagent 时，偶尔会在复杂的 shell 转义或报错上打转。插件内置了纯日志驱动的后台巡检器：
-- **巡检读取本身不调用模型**：后台定时器直接读取运行中 Worker 的会话事件日志，按设定的巡检间隔（默认 600 秒）汇总它的运行时长、轮次、新增工具调用与最后输出，合并成一条通知唤醒主代理。读取与汇总环节不发起任何 LLM 请求
-- 但**唤醒主代理后的判断与纠偏仍会消耗主代理的 token**：巡检的价值在于把「持续轮询」压缩成「一条摘要 + 一次决策」，而不是让整个巡检功能零消耗。
-- **强模型一眼把关**：主代理收到巡检摘要后，只需极少 Token 即可做出决策：
-  - **A) 进展正常**：回复一行 `巡检：正常` 结束回合，让子代理继续跑；
-  - **B) 途中纠偏**：调用 `send_message` 直接向运行中的子代理注入修正指令（指明正确写法或跳过卡点）；
-  - **C) 及时止损**：调用 `interrupt_agent` 中断失控的子代理（若后续再用 `send_message` 重新唤醒它，巡检会自动重新接管并重置通知计数）。
+Low-cost Subagents can occasionally get stuck on complex shell escaping or errors. The plugin includes a background inspector driven entirely by logs:
+- **Reading the logs makes no model calls**: a background timer directly reads running Workers' session event logs at the configured interval (600 seconds by default), summarizes elapsed time, rounds, new tool calls, and the latest output, then combines them into a notice that wakes the main agent. Reading and summarizing make no LLM requests
+- However, **waking the Main Agent for judgment and steering still consumes Main Agent tokens**: supervision compresses continuous polling into one summary plus one decision; it does not make the entire supervision feature free.
+- **The powerful model makes a quick assessment**: after receiving an inspection summary, the main agent needs only a small number of tokens to decide:
+  - **A) Progress is normal**: reply with one line, `巡检：正常`, and end the turn while the subagent continues.
+  - **B) Correct course**: call `send_message` to inject corrective instructions directly into the running subagent, specifying the right approach or telling it to skip a blocker.
+  - **C) Stop wasted work promptly**: call `interrupt_agent` to interrupt a subagent that has gone off track. If it is later reactivated with `send_message`, supervision automatically resumes and resets its notice count.
 
 
-![巡检通知与纠偏示例](docs/images/patrol-notice.png)
+![Example inspection notice and correction](docs/images/patrol-notice.png)
 
-*巡检通知与纠偏实录：便宜的子代理卡在了 shell 引号和反斜杠转义上，巡检机制按间隔唤醒主代理后，主代理通过 `send_message` 直接给出正确写法完成纠偏。*
+*Inspection and correction in practice: a low-cost subagent got stuck on shell quotes and backslash escaping. After a scheduled inspection woke the main agent, it supplied the correct syntax directly through `send_message` to get the worker back on track.*
 
-### 4. 专为调度模式定制的 `delegate` 与 `orchestrate`
+### 4. `delegate` and `orchestrate`, built for dispatch mode
 
-- **`delegate`（按需异步单派 / 并行扇出）**：
-  用于派发自包含的独立任务（目标 + 允许修改的文件 + 验收命令 + 失败兜底）。同一回合多次调用即可同时启动多个 Worker 并行施工；插件会为每个子代理统一注入简体中文回复指令，并要求它在收尾时直接输出最终总结、禁止调用 `send_message` 向父代理汇报（收尾消息会自动送达主代理）。
-  **`writeScope`（必填，`string[]`）**：声明本次派发允许修改的文件或目录，支持精确文件（`src/index.js`）、目录（`dir/` 或 `dir/**`）与全局根（`*`）。相对路径按 `cwd` 词法归一化，Windows 下大小写不敏感判重；省略报 `write-scope-missing`，空数组 / 非法路径报 `write-scope-invalid`。
-- **`orchestrate`（声明式批量流水线）**：
-  用于处理「一组条目（`items`，1–64）× 固定多阶段步骤（`stages`，1–8）」的批量任务，通过 `maxConcurrency`（1–16，默认 4）控制并发。支持单阶段并行扇出与多阶段**逐条目无屏障流水线**（先做完阶段 1 的条目立刻进入阶段 2，不用傻等慢条目），支持阶段级 JSON Schema 强校验与单项失败隔离。
-  **`writeScope`（必填，`string[]`）**：整批共用一条顶层声明，按整批**原子持有**写作用域；归一化后的作用域会自动注入每个阶段的 Prompt 作为边界提示。
-- **单写者互斥（派发前拦截）**：`delegate` 按子代理持锁、`orchestrate` 按整批持锁，两者共享同一张进程级租约表并跨工具求交。一旦作用域相交，插件会在**启动任何子代理之前**直接抛出 `write-scope-conflict`（附冲突路径、持有者与到期时间，`agentsStarted: 0`），杜绝多个 Worker 同时覆写同一文件。租约在 `subagent/end`、`agent/disposed`、`orchestrate` 的 `finally`（含异常与 abort）以及插件卸载时幂等释放，另有 30 分钟 TTL 兜底防泄漏。
+- **`delegate` (asynchronous tasks on demand / parallel fan-out)**:
+  Dispatch self-contained, independent tasks (goal + allowed files + acceptance commands + fallback on failure). Multiple calls in the same turn start multiple Workers in parallel. The plugin injects a Simplified Chinese response instruction into every subagent's prompt and requires it to finish with a final summary in its reply, without calling `send_message` to report to its parent; the closing message is delivered to the main agent automatically.
+  **`writeScope` (required, `string[]`)**: declare the files or directories this worker may modify. Supported forms are exact files (`src/index.js`), directories (`dir/` or `dir/**`), and the global root (`*`). Relative paths are normalized lexically against `cwd`, with case-insensitive deduplication on Windows. Omitting the field produces `write-scope-missing`; an empty array or invalid path produces `write-scope-invalid`.
+- **`orchestrate` (declarative batch pipelines)**:
+  Process a batch of items (`items`, 1–64) through a fixed set of stages (`stages`, 1–8), with `maxConcurrency` (1–16, default 4) controlling concurrency. Supports single-stage parallel fan-out and multistage **per-item pipelines without a global barrier**: an item enters stage 2 as soon as its stage 1 finishes, without waiting for slower items. Supports strict stage-level JSON Schema validation and per-item failure isolation.
+  **`writeScope` (required, `string[]`)**: one top-level declaration applies to the entire batch, which **holds its write scope atomically**. The normalized scope is injected into each stage's prompt as a boundary reminder.
+- **Single-writer exclusion (enforced before dispatch)**: `delegate` holds a lease per subagent; `orchestrate` holds one for the entire batch. Both share a process-wide lease table and check for overlaps across tools. Any overlap raises `write-scope-conflict` **before any subagent starts**, including the conflicting path, lease holder, expiration time, and `agentsStarted: 0`, preventing Workers from overwriting the same file concurrently. Leases are released idempotently on `subagent/end`, `agent/disposed`, in `orchestrate`'s `finally` (including errors and aborts), and when the plugin is unloaded, with a 30-minute TTL as a backstop against leaks.
 
 
 ---
 <div align="center">
-  
-### 为什么有了原生 `subagent` 和 `Agent Team`，还需要这个插件？
-</div>
-DSH 客户端自带了 `subagent` / `workflow`，官方也有 `@deepseek-ai/dsh-experimental-agent-team-profile`（Agent Team），但它们在实际高强度开发中仍有三个痛点——而这正是 **DSH Orchestrator** 独有的设计核心：
 
-| 痛点场景 | 原生 `subagent` / 官方 `Agent Team` | DSH Orchestrator（本插件独有） |
+## Why Do You Need This Plugin Alongside Native `subagent` and `Agent Team`?
+</div>
+
+DSH includes native `subagent` / `workflow` tools, and the official `@deepseek-ai/dsh-experimental-agent-team-profile` (Agent Team) is also available. However, intensive development still exposes three pain points — the problems at the heart of **DSH Orchestrator**'s distinctive design:
+
+| Pain point | Native `subagent` / official `Agent Team` | DSH Orchestrator (unique to this plugin) |
 | --- | --- | --- |
-| **主代理总忍不住自己动手** | **靠自觉（软提示词）**：主代理 / Team Lead 手里依然握有 `read`、`edit`、`bash` 等全套工具，聊几轮就经常脱轨亲自去读文件、跑命令，瞬间撑爆主上下文 | **白名单式驱动（Whitelist-Driven Hard Gate）**：主代理默认仅放行 12 项规划与委派核心工具（`allowedTools`），其余一切宿主读写/终端工具及未来新增的 MCP/第三方插件工具一律自动隐藏并在执行层强制拦截（连 `run_code` 嵌套偷调也拦），**逼迫 Main Agent 100% 只做规划与验收，Subagent 100% 只干苦力活** |
-| **便宜模型干活卡死/跑偏** | **运行期黑盒**：派出后只能干等结束或超时，或者靠 `wait_agent` 阻塞轮询 | **后台事件日志定时巡检 + 强模型动态纠偏**：后台定时器直接读取运行中 Worker 的会话事件日志（读取与汇总本身不调用模型），汇总运行时长、轮次、新增工具调用与最后输出；异常或超时时以一条轻量摘要通知唤醒主代理，由强模型判断后精准纠偏 |
-| **大批量同构任务** | 原生 `workflow` 让模型手写任意 JS 脚本，容易失控且模型路由不统一 | **声明式 `orchestrate` 流水线**：`items × stages` 结构化扇出与多阶段流水线，单项失败隔离、支持 JSON Schema 强校验，全部 Worker 强制走便宜的子代理路由 |
+| **The main agent keeps doing the work itself** | **Relies on compliance with soft prompts**: the main agent / Team Lead still has the full set of tools, including `read`, `edit`, and `bash`. After a few turns, it often starts reading files and running commands itself, quickly filling the main context. | **Whitelist-Driven Hard Gate**: the main agent receives only 12 core planning and delegation tools by default (`allowedTools`). All other host file and terminal tools, plus any future MCP or third-party plugin tools, are automatically hidden and blocked at execution time (including nested calls through `run_code`), **enforcing a Main Agent dedicated entirely to planning and acceptance, with Subagents doing all the execution**. |
+| **Low-cost models get stuck or go off track** | **Runtime black box**: after dispatch, you can only wait for completion or timeout, or block and poll with `wait_agent`. | **Periodic background inspection of event logs + dynamic correction by the powerful model**: a background timer reads running Workers' session event logs directly (reading and summarizing make no model calls), summarizing elapsed time, rounds, new tool calls, and the latest output. A lightweight notice wakes the main agent when something looks abnormal or takes too long, so the powerful model can assess it and give targeted corrections. |
+| **Large batches of similar tasks** | Native `workflow` asks the model to write arbitrary JavaScript, which can get out of control and does not enforce consistent model routing. | **Declarative `orchestrate` pipelines**: structured `items × stages` fan-out and multistage pipelines, with per-item failure isolation and strict JSON Schema validation. Subagents share the low-cost route by default. |
 
 
 <div align="center">
-  
-## 环境要求
+
+## Requirements
 
 </div>
 
-  
-| 项目 | 要求 |
+
+| Item | Requirement |
 | --- | --- |
-| **宿主环境** | DeepSeek Harness Desktop / Web GUI |
-| **Node.js** | `>= 22`（内置于 DSH Desktop 运行时） |
-| **插件形态** | Cordis 后端服务补丁（`cordis.patch.yml`）+ Web GUI 客户端扩展（`lib/client.js`） |
-| **界面语言** | 中 / 英双语自适应（`zh-CN` / `en-US`） |
+| **Host environment** | DeepSeek Harness Desktop / Web GUI, version `>= 0.2.2-rc.2 < 0.2.3-0` |
+| **Node.js** | `>= 22` (bundled with the DSH Desktop runtime) |
+| **Plugin form** | Cordis backend service patch (`cordis.patch.yml`) + Web GUI client extension (`lib/client.js`) |
+| **UI language** | Adapts to Chinese / English (`zh-CN` / `en-US`) |
 
 <div align="center">
-  
-### 与 DSH 宿主的版本兼容性
+
+### DSH host version compatibility
 
 </div>
 
 
-| 插件版本 | 适配的 DSH 宿主 | 说明 |
+| Plugin version | Supported DSH host | Notes |
 | --- | --- | --- |
-| `@sshirkit/dsh-orchestrator >= 0.8.3`（当前版本 `0.8.6`） | **DSH `>= 0.2.2-rc.2 < 0.2.3-0`** | 已验证 `0.2.2-rc.2` / `0.2.2-rc.3`。宿主自 `0.2.2-rc.2` 起扁平化了 subagent spec、移除了 `Symbol.for('dsh.subagent.deliverPrompt')` 投递入口与 `agents.roots()`，并新增 `wait_agent` 工具；因此**不兼容 `0.2.2-rc.1` 及更早版本**。注意：宿主虽新增了 `wait_agent`，但本插件默认白名单**有意维持 12 项、不予放行 `wait_agent`**——阻塞式轮询等待会让主代理陷入空转与超时误判，巡检机制已用「一条摘要 + 一次决策」替代轮询；确有需要时可在面板 `allowedTools` 中手动勾选放行。 |
-| `dsh-orchestrator 0.8.0 – 0.8.2` | **DSH `<= 0.2.2-rc.1`** | 已实测支持 `0.2.1-rc.3`、`0.2.2-rc.1`。自 `0.8.0` 起引入 `@deepseek-ai/dsh-tools` 依赖。 |
-| `dsh-orchestrator <= 0.7.3` | `0.8.0` 之前的旧版 DSH | 早期独立工具注册架构，未依赖 `@deepseek-ai/dsh-tools`。 |
+| `@sshirkit/dsh-orchestrator >= 0.8.3` (current version: `0.8.6`) | **DSH `>= 0.2.2-rc.2 < 0.2.3-0`** | Verified against `0.2.2-rc.2` / `0.2.2-rc.3`. Since `0.2.2-rc.2`, the host has flattened the subagent spec, removed the `Symbol.for('dsh.subagent.deliverPrompt')` delivery entry point and `agents.roots()`, and added the `wait_agent` tool. It is therefore **incompatible with `0.2.2-rc.1` and earlier**. Note: although the host adds `wait_agent`, the plugin **intentionally keeps its default whitelist at 12 tools and excludes `wait_agent`**. Blocking polling can leave the main agent idling and misjudging timeouts; supervision already replaces polling with one summary plus one decision. If needed, allow it manually in the panel's `allowedTools` list. |
+| `dsh-orchestrator 0.8.0 – 0.8.2` | **DSH `<= 0.2.2-rc.1`** | Tested against `0.2.1-rc.3` and `0.2.2-rc.1`. Since `0.8.0`, the plugin has depended on `@deepseek-ai/dsh-tools`. |
+| `dsh-orchestrator <= 0.7.3` | DSH releases predating plugin `0.8.0` | Early standalone tool-registration architecture, without a dependency on `@deepseek-ai/dsh-tools`. |
 
-> 升级前请先确认宿主版本：在 DSH 中查看「关于」或读取安装目录下的 `package.json`。**插件 `0.8.3+` 配 `0.2.2-rc.1` 及更早宿主会在派发时直接报错**；反之，旧插件配 `0.2.2-rc.2+` 宿主同样不可用。若暂时无法升级宿主，请停留在插件 `v0.8.2`。
+> Check the host version before upgrading: see About in DSH or read `package.json` in the installation directory. **Plugin `0.8.3+` with a `0.2.2-rc.1` or older host fails outright when dispatching**; an older plugin with a `0.2.2-rc.2+` host is also unusable. If you cannot upgrade the host yet, stay on plugin `v0.8.2`.
 
 ---
 
 <div align="center">
-  
-## 安装
+
+## Installation
 
 </div>
 
-在 DSH 插件页选择「从 GitHub 添加」，下列三种写法都接受，直接填入输入框即可（推荐第一种，最不容易被客户端误判）：
+Select Add from GitHub on the DSH plugin page. All three forms below are accepted; paste one into the input field. The first is recommended because it is the least likely to be misinterpreted by the client:
 
 ```text
 https://github.com/SShiRkiT/dsh-orchestrator
@@ -149,42 +151,84 @@ SShiRkiT/dsh-orchestrator#main
 ```
 
 ```bash
-# CLI 等价安装
+# Equivalent CLI installation
 dsh plugin --profile desktop add https://github.com/SShiRkiT/dsh-orchestrator
-# npm 安装（npm 发布后可用）
+# npm installation (available after publication to npm)
 dsh plugin --profile desktop add @sshirkit/dsh-orchestrator
 ```
 
-> 装完后请**完全退出并重新打开 DSH**（客户端插件在启动时组合，不支持热更新）。升级时请先在插件页**卸载旧版**再重新添加本仓库或 `@sshirkit/dsh-orchestrator`（npm 发布后可用），两份同时存在会争抢同一批工具声明。
+> After installation, **fully quit and reopen DSH** (client plugins are composed at startup and do not support hot updates). When upgrading, **uninstall the old version** from the plugin page before adding this repository again or `@sshirkit/dsh-orchestrator` (available after publication to npm); two installed copies will compete over the same tool declarations.
 
 ---
 
 <div align="center">
-  
-## 配置说明
+
+## Quick Verification
 
 </div>
 
-所有配置项均为 volatile（动态热配置），无需重启 DSH：执行门禁每次调用重读，工具面从下一次请求生效，子代理路由从下一次派发生效。
+After installing the plugin and restarting DSH, open the **Dispatch** settings panel below the message composer and make sure **Enable dispatch mode** is on.
 
-| 字段 | 默认值 | 说明 |
+1. Select a `Provider` and `Model` for subagents. Both are required for the default route. Delegation stops with an error if either is missing.
+2. Start a new session and send a short read-only request.
+
+   > Delegate a read-only task to one subagent. Ask it to list the files in the current working directory and summarize what it finds for me.
+
+3. Check the tool call history. The main agent should call only `delegate` and should leave file access and command execution to the subagent. The subagent should run independently on the selected low-cost model and return its summary to the main agent automatically.
+
+<div align="center">
+
+## Configuration
+
+</div>
+
+All configuration fields are volatile (dynamic configuration), with no DSH restart required. Execution gates reread them on each call, tool surfaces on the next request, and subagent routes on the next dispatch.
+
+| Field | Default | Description |
 | --- | --- | --- |
-| `enabled` | `true` | 调度模式总开关。关闭时恢复宿主工具，但 `delegate` / `orchestrate` 仍禁用，已绑定巡检回合的 Todo 禁令与正常声明锁仍优先。 |
-| `workerProvider` / `workerModel` | `""` | 子代理默认模型路由（必填，未配置时派发直接报错，绝不静默继承主代理模型）。 |
-| `workerReasoningEffort` | `""` | 子代理思考强度，留空则由所选模型自行决定默认值。 |
-| `allowedTools` | 12 项内置白名单 | 白名单式驱动：主代理仅可使用列表内的工具，其余宿主/MCP/插件工具自动隐藏并禁用；面板右侧 Allowed Tools 可直接勾选放行或取消勾选禁用，下一条消息即刻生效。 |
-| `superviseEnabled` | `true` | 子代理后台巡检总开关；位于宿主插件设置卡片。 |
-| `superviseIntervalSeconds` | `600` | 巡检间隔（秒），范围 10–86400，运行中修改立即生效。 |
-| `superviseMaxNoticesPerChild` | `3` | 每个子代理最多发送几次巡检通知（0–20）。未开无限巡检时，`0` 表示关闭（运行中的子代理仍保留在注册表中，改回 >0 或打开无限巡检后恢复到期判定）。 |
-| `superviseUnlimited` | `false` | 无限次数巡检开关。开启后忽略 `superviseMaxNoticesPerChild` 上限（含 `0`），只要子代理没有停止 / 交付 / 结束，就按间隔持续巡检，通知标题不带分母（`第 N 次`）。 |
-| `superviseNotifyOnNoProgress` | `false` | 子代理日志无新活动时是否仍然发送通知（开启 `superviseUnlimited` 时等效于始终发送）；位于宿主插件设置卡片。 |
-| `restoreTodoOnSupervision` | `true` | 巡检时按有效快照静默补写 `todo/write`，仅恢复 UI 状态，不增加模型历史或消耗模型 Token。与 `superviseEnabled` / `superviseNotifyOnNoProgress` 一致位于宿主插件设置卡片，不在输入栏快捷弹层。 |
+| `enabled` | `true` | Master switch for dispatch mode. Turning it off restores host tools, while `delegate` / `orchestrate` remain disabled and bound inspection Todo/normal-declaration gates still take priority. |
+| `workerProvider` / `workerModel` | `""` | Default subagent model route (required; dispatch fails if unconfigured and never silently inherits the main-agent model). |
+| `workerReasoningEffort` | `""` | Subagent reasoning effort. Leave empty to let the selected model use its own default. |
+| `allowedTools` | 12 built-in tools | Whitelist-driven: the main agent may use only the listed tools; other host, MCP, and plugin tools are automatically hidden and disabled. Check or uncheck tools under Allowed Tools on the right of the panel to allow or disable them; changes apply on the next message. |
+| `superviseEnabled` | `true` | Master switch for background subagent inspection, in the host plugin settings card. |
+| `superviseIntervalSeconds` | `600` | Inspection interval in seconds, from 10 to 86400. Changes take effect immediately while workers are running. |
+| `superviseMaxNoticesPerChild` | `3` | Maximum inspection notices per subagent (0–20). Unless unlimited inspection is enabled, `0` disables inspection. Running subagents remain registered; raising the value above 0 or enabling unlimited inspection restores due-time checks. |
+| `superviseUnlimited` | `false` | Enables unlimited inspections. Ignores the `superviseMaxNoticesPerChild` limit (including `0`) and continues inspecting at each interval until the subagent stops, delivers, or ends. Notice titles omit the denominator (`第 N 次`). |
+| `superviseNotifyOnNoProgress` | `false` | Whether to notify even when the subagent log has no new activity (effectively always enabled when `superviseUnlimited` is on), in the host plugin settings card. |
+| `restoreTodoOnSupervision` | `true` | Silently restores Todo UI state via `todo/write` from an eligible snapshot during supervision, with no model history entry or model token cost. Like `superviseEnabled` / `superviseNotifyOnNoProgress`, this appears in the host plugin settings card, outside the input-bar shortcut popup. |
 
-> 注：主代理的默认模型保存在宿主的 `agent-default-model` 中，由同一个「调度模式」面板直接读写，对新创建的会话生效；子代理模型改动从下一次委派起立即生效。
+> Note: the main agent's default model is stored in the host's `agent-default-model`, read and written directly by the same Dispatch mode panel, and applies to newly created sessions. Subagent model changes apply to the next delegation.
 
 
 <div align="center">
-  
+
+## Troubleshooting
+
+</div>
+
+- **Delegation fails because the subagent model is missing (`workerProvider` / `workerModel` is empty).** The plugin never silently falls back to the more expensive main-agent model. Select the subagent's `Provider` and `Model` in the **Dispatch** panel. The change takes effect on the next delegation.
+- **The plugin conflicts or does not load after upgrading from `dsh-orchestrator`.** The package moved to `@sshirkit/dsh-orchestrator` in `v0.8.4`. Uninstall the old plugin first, install the new one, then fully quit and restart DSH.
+- **Changing the default main-agent model did not affect the current session.** The host stores the default in `agent-default-model` and uses it for new sessions. In an existing session, switch models using the selector at the top of the conversation.
+
+<div align="center">
+
+## Contributing & Community
+
+</div>
+
+The Chinese README is maintained first, and this English version is kept in sync. These resources cover the project design, how to contribute, and where to ask for help.
+
+- Project glossary [`CONTEXT.md`](CONTEXT.md)
+- Architecture decision records (ADRs) [`docs/adr/`](docs/adr/)
+- Release notes [`docs/releases/`](docs/releases/)
+- Contribution guide [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md)
+- Code of conduct [`.github/CODE_OF_CONDUCT.md`](.github/CODE_OF_CONDUCT.md)
+- Security policy and private vulnerability reporting [`.github/SECURITY.md`](.github/SECURITY.md)
+- Support and help [`.github/SUPPORT.md`](.github/SUPPORT.md)
+- Accessibility statement [`.github/ACCESSIBILITY.md`](.github/ACCESSIBILITY.md)
+
+<div align="center">
+
 ## License
 
 </div>

@@ -63,3 +63,8 @@
 早期实现用 `WeakSet` 按 Todo 数组引用识别自身恢复；宿主 `session.append` 复制载荷后，引用不再相同，恢复事件可能重新赋予并发用户已作废的旧清单资格。现已改为每会话独立持有的唯一来源令牌：追加事件携带 `source.kind = 'orchestrator-todo-restoration'` 与随机 `token`，`record` 只忽略本会话仍持有该令牌的自身事件，不再比较数组引用或内容。载荷深复制保留来源信息，同内容的合法新写入仍可更新快照；每次追加的令牌在成功/失败后的 `finally` 释放，并发恢复各自持有令牌（`lib/index.js:301-307`、`lib/index.js:331-358`、`lib/index.js:1224-1225`）。
 
 验收范围：上一实现代理实跑 `node --test test/` 为 424 项通过、0 失败、0 跳过；本轮文档任务未重跑。测试索引包含深复制回流、同内容新写入、并发唯一令牌、未知/已释放令牌及追加失败释放用例（`test/index.test.mjs:2404`、`test/index.test.mjs:2421`、`test/index.test.mjs:2439`、`test/index.test.mjs:2469`、`test/index.test.mjs:2485`）。真实隔离宿主端到端验收尚未完成，单测和源码核对不等同于实际 UI 验收。
+
+### 巡检配置与主代理白名单的现行行为
+
+- **通知预算与无限巡检分开配置。** `superviseMaxNoticesPerChild` 默认值为 `3`。未开启无限巡检时，设为 `0` 即关闭巡检。独立布尔项 `superviseUnlimited` 默认关闭，开启后忽略通知预算（包括 `0`），持续巡检直至子代理停止、交付或结束（[`lib/index.js`](../../lib/index.js#L118-L124)、[`lib/supervise.js`](../../lib/supervise.js#L549-L553)）。
+- **主代理可主动止损。** 默认 `allowedTools` 已放行宿主的 `interrupt_agent`。巡检通知唤醒主代理后，若主代理判定子代理失控，可主动调用该工具中断子代理，实际调用仍受当前白名单和巡检回合闸门约束（[`lib/index.js`](../../lib/index.js#L48-L64)、[`lib/gate.js`](../../lib/gate.js#L198)）。

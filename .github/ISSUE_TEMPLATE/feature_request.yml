@@ -1,0 +1,29 @@
+name: Feature Request / 功能建议
+description: Suggest an enhancement or new capability for @sshirkit/dsh-orchestrator
+title: "[Feat]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Context and pain point / 背景与痛点
+      description: Describe what you are trying to do and what makes it difficult today. / 请说明你的使用场景和目前遇到的困难。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution / 期望方案
+      description: Describe the behavior or result that would solve the problem. / 请描述希望实现的行为或结果。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives / 备选方案
+      description: Share other approaches or workarounds you considered. / 请分享曾考虑的其他方案或临时做法。
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context / 附加信息
+      description: Include examples, screenshots, or related issues if useful. / 可补充示例、截图或关联 Issue。
