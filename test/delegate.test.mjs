@@ -366,7 +366,7 @@ test('the description keeps the main-agent rule, the whitelist and the execute c
   assert.match(tool.description, /通过 delegate 或 orchestrate 交子代理执行/)
   assert.match(tool.description, /勿试探调用被禁工具/)
   assert.match(tool.description, /新会话或压缩后直接委派，无需重新确认/)
-  assert.match(tool.description, /独立任务在同一消息内并发派发，勿轮询状态或重复派发/)
+  assert.match(tool.description, /独立任务在同一消息内并发派发，delegate 完成后直接结束回合等待子代理完成，勿轮询状态或为同一任务重复派发。/)
   // The retry contract.
   assert.match(tool.description, /子代理无收尾中断时插件会自动重试，期间勿重派/)
   assert.match(tool.description, /提示停止重试时按通知询问用户/)
@@ -382,7 +382,8 @@ test('the description keeps the main-agent rule, the whitelist and the execute c
   assert.match(tool.description, /prompt 须写清目标、允许修改的文件、验收命令与兜底方案，派发时必填 writeScope/)
   assert.match(tool.description, /调用立即返回子代理 id，结束时自动通知/)
   assert.match(tool.description, /严禁要求子代理用 send_message 汇报/)
-  assert.match(tool.description, /运行中可用 send_message 纠偏，结束后可追加任务/)
+  assert.match(tool.description, /子代理运行中可用 send_message 实时纠偏；/)
+  assert.match(tool.description, /已结束的子代理也可以通过 send_message 复用原代理因错返工或追加任务（保留其已有上下文），同一类型任务勿重新 delegate。/)
   assert.match(tool.description, /多个独立任务在同一轮并发发起；同构批量请用 orchestrate/)
   // The route parameters carry the same one-line condition, where a model would be typed.
   for (const param of ['provider', 'model']) {
