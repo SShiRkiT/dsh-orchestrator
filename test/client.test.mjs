@@ -1573,6 +1573,74 @@ test('missing modelDirectories reloads on each open and ignores late responses w
   picker.view.unmount()
 })
 
+function mountPickerFromCordis({ directory, loadCatalog }) {
+  let entry
+  const main = fakeScope()
+  const config = fakeScope()
+  mod.apply({
+    effect: (fn) => fn(),
+    locale: { register: () => {} },
+    configForms: { get: (name) => name === T.MAIN.ns ? main : config },
+    remote: { session: { modelCatalog: loadCatalog } },
+    slots: {
+      inject: (_name, callback) => callback(),
+      register: (options, component) => { entry = { options, component } },
+    },
+    get(name) {
+      assert.equal(name, 'modelDirectories')
+      return directory
+    },
+    get modelDirectories() {
+      throw new Error('cannot get property "modelDirectories" without inject')
+    },
+  })
+  assert.equal(entry.options.name, 'conversation.input.right')
+  const view = mount(entry.component, { t, ...entry.options.inject('S1') })
+  const open = () => nodes(view.tree).find((node) => node.type === 'button').props.onClick()
+  const modelIds = () => nodes(view.tree)
+    .filter((node) => node.type === T.RouteRow)
+    .map((row) => row.props.groups[0].models[0].id)
+  return { view, open, modelIds }
+}
+
+test('Cordis optional lookup reaches the host model directory without reading the strict getter', () => {
+  const host = directoryForTest()
+  let rpcCalls = 0
+  const picker = mountPickerFromCordis({
+    directory: {
+      directoryFor(sessionId) {
+        assert.equal(sessionId, 'S1')
+        return host.directory
+      },
+    },
+    loadCatalog: async () => { rpcCalls += 1 },
+  })
+  picker.open()
+  assert.deepEqual(picker.modelIds(), ['old', 'old'])
+  host.push({ groups: modelGroups('new') })
+  assert.deepEqual(picker.modelIds(), ['new', 'new'])
+  assert.equal(rpcCalls, 0)
+  assert.equal(host.listenerCount(), 1)
+  picker.view.unmount()
+  assert.equal(host.listenerCount(), 0)
+})
+
+test('Cordis optional lookup keeps the RPC fallback when the directory service is absent', async () => {
+  let rpcCalls = 0
+  const picker = mountPickerFromCordis({
+    loadCatalog: async () => {
+      rpcCalls += 1
+      return { ok: true, value: { groups: modelGroups('rpc') } }
+    },
+  })
+  assert.equal(rpcCalls, 0)
+  picker.open()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(rpcCalls, 1)
+  assert.deepEqual(picker.modelIds(), ['rpc', 'rpc'])
+  picker.view.unmount()
+})
+
 test('the popover reserves the host top chrome, so its rounded top is never clipped', () => {
   // A centred composer in an empty session: trigger.top 493 leaves 437px, which puts the panel's
   // top edge at y = 48 — right under the session header — instead of the 8px that was being
