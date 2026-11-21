@@ -30,7 +30,33 @@
 ## 核心特性
 </div>
 
-### 1. 强模型当 Main Agent，便宜模型当 Subagent（独立面板、即时生效）
+
+### 1. 主代理「规划与验收」、子代理「纯粹 Work」的白名单式硬性闸门
+
+不同于靠 Prompt 劝主模型“多用子代理”，本插件在 DSH 的工具声明出口（`tools.definitions`）与执行层（`tools.guard`）安装了双重守卫，且采用**白名单式驱动**：
+
+> ###### _声明层实时裁剪模型可见的工具表，执行层再兜底拒绝任何漏网调用_
+> ###### _两层都按请求/按调用实时读取配置，不产生 `tools.restrict` ，因此不会触发官方工具遮挡的抖动与 Prompt Cache 失效。_
+- #### 主代理被彻底收缴执行工具 ：
+<div align="center">
+
+> ###### DEFAULT_ALLOWED_TOOLS 默认只放行 12 项规划、委派与会话只读工具
+>
+> ###### _`delegate`、`orchestrate`、`send_message`、`interrupt_agent`、`todo_write`、`ask_user_question`、`compress` 与 5 项只读会话日志工具。_
+>
+> ###### 所有文件读写、搜索、终端，以及未来新增的任何 MCP / 第三方插件工具，一律自动隐藏并在执行层强制拦截
+>
+> ###### _（`read` / `edit` / `write` / `apply_patch`）、（`grep` / `glob`）、（`bash` / `pwsh`）、 `subagent` / `workflow`_
+>
+> ###### 连 run_code 嵌套偷调也拦。需要额外放行时，在面板右侧 Allowed Tools 勾选即可。
+</div>
+
+- **子代理独享完整工具链**：被派出的 Worker 不受闸门限制，在各自独立的上下文中读写文件、跑测试、看报错，完工后只把干净的结论交回主代理验收。
+- **一键随时切换**：关闭面板上的「启用调度模式」即可恢复宿主工具，无需重开会话；插件派发工具仍禁用，已绑定巡检回合的硬禁仍优先。
+
+---
+
+### 2. 强模型当 Main Agent，便宜模型当 Subagent（独立面板、即时生效）
 
 在输入框下方的**「调度模式」专属面板**中，主代理与子代理的模型路由完全解耦：
 - **主代理（Main Agent）**：配置为你最强的旗舰模型专门负责需求澄清、任务切分、途中纠偏与最终结果验收。
@@ -46,25 +72,7 @@
 
 ![调度模式面板](docs/images/dispatch-panel.png)
 
-### 2. 主代理「规划与验收」、子代理「纯粹 Work」的白名单式硬性闸门
-
-不同于靠 Prompt 劝主模型“多用子代理”，本插件在 DSH 的工具声明出口（`tools.definitions`）与执行层（`tools.guard`）安装了双重守卫，且采用**白名单式驱动**：声明层实时裁剪模型可见的工具表（全局工具与 `ops_*` 等 scope 内工具一视同仁），执行层再兜底拒绝任何漏网调用；两层都按请求/按调用实时读取配置，不产生 `tools.restrict` 事件风暴，因此不会触发官方工具遮挡的抖动与 Prompt Cache 失效。
-- **主代理被彻底收缴执行工具**：
-<div align="center">
-
-> ### DEFAULT_ALLOWED_TOOLS 默认只放行 12 项规划、委派与会话只读工具
->
-> _`delegate`、`orchestrate`、`send_message`、`interrupt_agent`、`todo_write`、`ask_user_question`、`compress` 与 5 项只读会话日志工具。_
->
-> ### 所有文件读写、搜索、终端，以及未来新增的任何 MCP / 第三方插件工具，一律自动隐藏并在执行层强制拦截
->
->_（`read` / `edit` / `write` / `apply_patch`）、（`grep` / `glob`）、（`bash` / `pwsh`）、 `subagent` / `workflow`_
->
-> ### 连 run_code 嵌套偷调也拦。需要额外放行时，在面板右侧 Allowed Tools 勾选即可。
-</div>
-
-- **子代理独享完整工具链**：被派出的 Worker 不受闸门限制，在各自独立的上下文中读写文件、跑测试、看报错，完工后只把干净的结论交回主代理验收。
-- **一键随时切换**：关闭面板上的「启用调度模式」即可恢复宿主工具，无需重开会话；插件派发工具仍禁用，已绑定巡检回合的硬禁仍优先。
+---
 
 ### 3. 后台事件日志定时巡检与强模型动态纠偏
 
@@ -80,6 +88,8 @@
 ![巡检通知与纠偏示例](docs/images/patrol-notice.png)
 
 *巡检通知与纠偏实录：便宜的子代理卡在了 shell 引号和反斜杠转义上，巡检机制按间隔唤醒主代理后，主代理通过 `send_message` 直接给出正确写法完成纠偏。*
+
+---
 
 ### 4. 专为调度模式定制的 `delegate` 与 `orchestrate`
 

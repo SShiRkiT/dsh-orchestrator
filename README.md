@@ -30,7 +30,33 @@
 ## Core Features
 </div>
 
-### 1. A powerful Main Agent and low-cost Subagents (independent panel, immediate updates)
+
+### 1. A hard whitelist gate: the main agent plans and accepts results; subagents execute
+
+Instead of relying on prompts asking the main model to use subagents more often, the plugin installs two guards at DSH's tool-definition outlet (`tools.definitions`) and execution layer (`tools.guard`), using a **whitelist-driven** approach:
+
+> ###### _The definition layer trims the tools visible to the model in real time; the execution layer rejects any calls that slip through._
+> ###### _Both layers read the current configuration on every request or call without using `tools.restrict`, avoiding the tool-visibility churn and prompt-cache invalidation that come with the host's tool-hiding mechanism._
+- #### The main agent loses access to execution tools:
+<div align="center">
+
+> ###### DEFAULT_ALLOWED_TOOLS permits only 12 planning, delegation, and read-only session tools by default
+>
+> ###### _`delegate`, `orchestrate`, `send_message`, `interrupt_agent`, `todo_write`, `ask_user_question`, `compress`, and five read-only session log tools._
+>
+> ###### All file access, search, and terminal tools, plus any future MCP or third-party plugin tools, are automatically hidden and blocked at execution time
+>
+> ###### _(`read` / `edit` / `write` / `apply_patch`), (`grep` / `glob`), (`bash` / `pwsh`), `subagent` / `workflow`_
+>
+> ###### Even nested calls through `run_code` are blocked. To allow additional tools, check them under Allowed Tools on the right of the panel.
+</div>
+
+- **Subagents retain the full toolchain**: dispatched Workers are exempt from the gate and read or write files, run tests, and inspect errors in their own contexts. When finished, they return only a concise conclusion for the main agent to review.
+- **Switch at any time**: turn off Enable dispatch mode to restore host tools without reopening the session. Plugin dispatch tools remain disabled, and gates for a bound inspection turn still take priority.
+
+---
+
+### 2. A powerful Main Agent and low-cost Subagents (independent panel, immediate updates)
 
 In the dedicated **Dispatch mode panel** below the composer, the main-agent and subagent model routes are fully independent:
 - **Main Agent**: choose your strongest flagship model to focus on clarifying requirements, splitting tasks, correcting course, and accepting final results.
@@ -46,25 +72,7 @@ The session-level main-agent model can be switched directly with DSH's original 
 
 ![Dispatch Mode Panel](docs/images/dispatch-panel.png)
 
-### 2. A hard whitelist gate: the main agent plans and accepts results; subagents execute
-
-Instead of relying on prompts asking the main model to use subagents more often, the plugin installs two guards at DSH's tool-definition outlet (`tools.definitions`) and execution layer (`tools.guard`), using a **whitelist-driven** approach. The definition layer trims the tool table visible to the model in real time, treating global tools and tools in scopes such as `ops_*` equally; the execution layer rejects any calls that slip through. Both layers read the current configuration on every request or call, without creating `tools.restrict` event storms, avoiding tool-visibility churn and prompt-cache invalidation from the official tool-hiding mechanism.
-- **Main Agent stripped of all execution tools**:
-<div align="center">
-
-> ### DEFAULT_ALLOWED_TOOLS permits only 12 planning, delegation, and read-only session tools by default
->
-> _`delegate`, `orchestrate`, `send_message`, `interrupt_agent`, `todo_write`, `ask_user_question`, `compress`, and five read-only session log tools._
->
-> ### All file access, search, and terminal tools, plus any future MCP or third-party plugin tools, are automatically hidden and blocked at execution time
->
->_(`read` / `edit` / `write` / `apply_patch`), (`grep` / `glob`), (`bash` / `pwsh`), `subagent` / `workflow`_
->
-> ### Even nested calls through run_code are blocked. To allow additional tools, check them under Allowed Tools on the right of the panel.
-</div>
-
-- **Subagents retain the full toolchain**: dispatched Workers are exempt from the gate and read or write files, run tests, and inspect errors in their own contexts. When finished, they return only a concise conclusion for the main agent to review.
-- **Switch at any time**: turn off Enable dispatch mode to restore host tools without reopening the session. Plugin dispatch tools remain disabled, and gates for a bound inspection turn still take priority.
+---
 
 ### 3. Periodic background inspection of event logs and correction by the powerful model
 
@@ -80,6 +88,8 @@ Low-cost Subagents can occasionally get stuck on complex shell escaping or error
 ![Example inspection notice and correction](docs/images/patrol-notice.png)
 
 *Inspection and correction in practice: a low-cost subagent got stuck on shell quotes and backslash escaping. After a scheduled inspection woke the main agent, it supplied the correct syntax directly through `send_message` to get the worker back on track.*
+
+---
 
 ### 4. `delegate` and `orchestrate`, built for dispatch mode
 
