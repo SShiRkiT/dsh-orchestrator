@@ -1470,6 +1470,109 @@ test('the popover height is capped to the room above its trigger, not just the v
   assert.equal(T.panelStyle.maxHeight, 'calc(100vh - 96px)')
 })
 
+
+function modelGroups(name) {
+  return [{ id: 'provider', name: 'Provider', models: [{ id: name, name }] }]
+}
+
+function directoryForTest(initialGroups = modelGroups('old')) {
+  let snapshot = { groups: initialGroups, status: 'ready', error: null }
+  const listeners = new Set()
+  const store = {
+    getSnapshot: () => snapshot,
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+  }
+  return {
+    directory: { store },
+    push(next) {
+      snapshot = { ...snapshot, ...next }
+      for (const listener of [...listeners]) listener()
+    },
+    listenerCount: () => listeners.size,
+  }
+}
+
+function mountPicker({ directory, loadCatalog = async () => ({ ok: true, value: { groups: [] } }) } = {}) {
+  const scopes = { main: fakeScope({ initial: { provider: 'provider', model: 'old' } }), worker: fakeScope(), orch: fakeScope() }
+  const view = mount(T.RoutePicker, {
+    t,
+    scopes,
+    orch: scopes.orch,
+    sessionId: 'S1',
+    modelDirectories: directory,
+    loadCatalog,
+  })
+  const open = () => nodes(view.tree).find((node) => node.type === 'button').props.onClick()
+  return { view, scopes, open }
+}
+
+test('modelDirectories renders its groups without calling modelCatalog, updates both rows, and unsubscribes', () => {
+  const host = directoryForTest()
+  let calls = 0
+  const picker = mountPicker({
+    directory: { directoryFor: () => host.directory },
+    loadCatalog: async () => {
+      calls += 1
+      return { ok: true, value: { groups: modelGroups('rpc') } }
+    },
+  })
+  picker.open()
+  const rows = () => nodes(picker.view.tree).filter((node) => node.type === T.RouteRow)
+  assert.equal(rows().length, 2)
+  assert.equal(rows()[0].props.groups[0].models[0].id, 'old')
+  assert.equal(rows()[1].props.groups[0].models[0].id, 'old')
+  assert.equal(calls, 0)
+  host.push({ groups: modelGroups('new') })
+  assert.equal(rows()[0].props.groups[0].models[0].id, 'new')
+  assert.equal(rows()[1].props.groups[0].models[0].id, 'new')
+  assert.equal(host.listenerCount(), 1)
+  picker.view.unmount()
+  assert.equal(host.listenerCount(), 0)
+})
+
+test('missing modelDirectories reloads on each open and ignores late responses while retaining old groups on failure', async () => {
+  const responses = []
+  let calls = 0
+  const picker = mountPicker({
+    loadCatalog: () => {
+      calls += 1
+      return new Promise((resolve) => responses.push(resolve))
+    },
+  })
+  picker.open()
+  await Promise.resolve()
+  const first = responses.shift()
+  assert.equal(typeof first, 'function')
+  first({ ok: true, value: { groups: modelGroups('old') } })
+  await new Promise((resolve) => setImmediate(resolve))
+  const trigger = () => nodes(picker.view.tree).find((node) => node.type === 'button')
+  const models = () => nodes(picker.view.tree).filter((node) => node.type === T.RouteRow)[0].props.groups[0].models.map((model) => model.id)
+  assert.equal(calls, 1)
+  trigger().props.onClick()
+  trigger().props.onClick()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(calls, 2)
+  const second = responses.shift()
+  assert.equal(typeof second, 'function')
+  second({ ok: true, value: { groups: modelGroups('new') } })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.ok(models().includes('new'))
+  assert.equal(models().includes('old'), false)
+  trigger().props.onClick()
+  trigger().props.onClick()
+  await new Promise((resolve) => setImmediate(resolve))
+  const failed = responses.shift()
+  assert.equal(typeof failed, 'function')
+  failed({ ok: false })
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.ok(models().includes('new'))
+  picker.view.unmount()
+})
+
 test('the popover reserves the host top chrome, so its rounded top is never clipped', () => {
   // A centred composer in an empty session: trigger.top 493 leaves 437px, which puts the panel's
   // top edge at y = 48 — right under the session header — instead of the 8px that was being

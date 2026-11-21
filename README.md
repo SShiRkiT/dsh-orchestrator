@@ -41,6 +41,8 @@ In the dedicated **Dispatch mode panel** below the composer, the main-agent and 
 
 ## In your `prompt` or `AGENTS.md`, you can instruct the main agent in the current workspace to pass `provider` / `model` parameters when dispatching subagents, specifying which model to use for the current `session` \ `workspace`
 
+The session-level main-agent model can be switched directly with DSH's original model selector. Changing the main-agent global default route in the Dispatch mode panel does not override the model already selected for the current session. Each setting serves its own scope.
+
 
 ![Dispatch Mode Panel](docs/images/dispatch-panel.png)
 
