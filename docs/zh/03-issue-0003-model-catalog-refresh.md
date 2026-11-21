@@ -3,7 +3,7 @@
 > **Issue：** [SShiRkiT/dsh-orchestrator#3](https://github.com/SShiRkiT/dsh-orchestrator/issues/3)，仅分析第一条；图 1 第二条按反馈已解决，不纳入本报告。
 > **分析日期：** `2026-11-21`。
 > **版本：** 插件 `0.9.1`（[`package.json:3`](../../package.json#L3)），宿主 DSH `0.2.2-rc.5`（本机安装包 `dsh/package.json:4`）。
-> **当前模式：** 解决模式 · T5 实施与验收已完成，T6 待用户确认合并。
+> **当前模式：** 解决模式 · T5 已完成 Cordis 注入回归修复与单测，T6 记录本地合并后的复验条件。
 
 证据分为三类：**源码事实**是插件或本机宿主安装包可静态复核的实现；**宿主假设**是仍待验证的兼容性和运行时条件；**推断**是对反馈的归因、风险判断和设计提案。宿主锚点以安装包 `dsh/node_modules/` 下的包路径表示，不代表已验证其他宿主版本。
 
@@ -113,6 +113,20 @@
 - **覆盖内容：** 新增选项 A 的目录快照展示、双行同步热更新、已选路由保留和卸载退订测试，新增选项 C 的每次重开刷新、迟到响应保护和失败保留旧列表测试。客户端测试 82 项全部通过。
 - **验收结论：** 本地代码、单测与指纹核对通过。
 
+### Cordis 可选服务读取回归（`2026-11-21`）
+
+- **源码事实与复现：** Issue #3 初版在 `conversation.input.right` 的插槽参数回调中直接读取 `ctx.modelDirectories`。Cordis 拒绝通过属性访问未声明注入的兄弟插件服务，抛出 `cannot get property "modelDirectories" without inject`（`@deepseek-ai/cordis/src/reflect.ts:152-177`）；回调在 `RoutePicker` 渲染前失败，无论目录服务是否存在，按钮和原有 RPC 降级都无法出现。前次用宿主下发的初版脚本和安装包实际 Cordis 在内存中复现。
+- **修复：** [客户端插槽入口](../../lib/client.js#L1682) 改用 `ctx.get('modelDirectories')` 可选查询；只有没有 `get()` 的简单上下文使用属性兼容分支。不增加硬 `inject`，不改已有订阅或 RPC 降级逻辑。本轮仅修改 [客户端](../../lib/client.js)、[客户端测试](../../test/client.test.mjs) 和本报告。
+- **指纹命令：** `sha256sum lib/client.js test/client.test.mjs` 与 `wc -l -c lib/client.js test/client.test.mjs`；修复前后使用同一组命令。
+
+| 文件 | 修复前 SHA-256；行数 / 字节 | 修复后 SHA-256；行数 / 字节 |
+| --- | --- | --- |
+| [`lib/client.js`](../../lib/client.js) | `96221a5070402fb5bc8616ca88aabace0531c14c5e87a2f87b62a4a3e7438e63`；1741 / 76220 | `4f6cbbebeb611853bc41d29ade54c3ddaa2028461bc34fce40908891bc218337`；1742 / 76357 |
+| [`test/client.test.mjs`](../../test/client.test.mjs) | `c9268c3e0d8ff3c62763f6fa8898b594a3750712df1eaf415bcfb6cadbe00e16`；1594 / 72173 | `28e51b28ca47b25337d5d22b5ac3861332dd0aa7fae270652519184a30f75446`；1662 / 74464 |
+
+- **回归测试：** `node --test --test-name-pattern='Cordis optional lookup' test/client.test.mjs`。旧代码两条均因严格属性读取失败；修复后 2/2 通过。服务存在时，两行随订阅更新且不发 RPC，卸载后退订；服务缺失时，面板打开后走 RPC，两行均展示其结果。
+- **全量验收：** `node --test test/`，`ℹ tests 426`、`ℹ pass 426`、`ℹ fail 0`、`ℹ cancelled 0`、`ℹ skipped 0`、`ℹ todo 0`。分支上的代码、回归用例和指纹核对通过。
+
 ## T6 状态与结论
 
-Issue #3 已完成本地实施和自动化验收，当前分支保持 `issue-0003-model-catalog-refresh`，待用户确认后合并至 `main`。浏览器端旧会话中实时编辑 `cordis.patch.yml` 并观察宿主目录事件到调度面板的端到端验证，待宿主运行环境确认。该项不影响本地代码与单测验收结论。
+Issue #3 首轮实现已本地合并；本次修复解决了随之出现的调度按钮消失回归，获授权本地合并。合并后复算主分支与桌面链接的指纹、重新运行全量测试，并通过运行中宿主的客户端脚本和随包 Cordis 内存复验插槽参数组装。该复验不等同于检查用户已打开页面，也不覆盖真实供应商模型变更后的浏览器端到端热更新或 `rc.2` 的兼容性；本次不改宿主配置，不重启宿主。
