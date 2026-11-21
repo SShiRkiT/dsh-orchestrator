@@ -3,7 +3,7 @@
 > **Issue：** [SShiRkiT/dsh-orchestrator#3](https://github.com/SShiRkiT/dsh-orchestrator/issues/3)，仅分析第一条；图 1 第二条按反馈已解决，不纳入本报告。
 > **分析日期：** `2026-11-21`。
 > **版本：** 插件 `0.9.1`（[`package.json:3`](../../package.json#L3)），宿主 DSH `0.2.2-rc.5`（本机安装包 `dsh/package.json:4`）。
-> **当前模式：** 分析模式 · 只读（待用户决策是否进入解决模式）。
+> **当前模式：** 解决模式 · T5 实施与验收已完成，T6 待用户确认合并。
 
 证据分为三类：**源码事实**是插件或本机宿主安装包可静态复核的实现；**宿主假设**是仍待验证的兼容性和运行时条件；**推断**是对反馈的归因、风险判断和设计提案。宿主锚点以安装包 `dsh/node_modules/` 下的包路径表示，不代表已验证其他宿主版本。
 
@@ -99,4 +99,20 @@
 - **源码事实：调度 → 原版。** 调度面板主代理行走 `saveRoute` 写 `agent-default-model`，不执行会话选模 RPC（[`lib/client.js:1469`](../../lib/client.js#L1469)）。原版优先用会话投影 `next`，即 `pending ?? lastUsed`（`@deepseek-ai/dsh-agent/src/model-selection.ts:72-88`）；仅当没有会话选择时回退到部署默认值（`@deepseek-ai/dsh-client-ui-model-selection/src/client/directory.ts:158-187`）。
 - **推断：** 若产品把调度面板主代理行定义为「当前会话模型」，可复用 `directoryFor(sessionId).store` 的 `current` 和 `directory.select()`，或使用 `remote.session.selectModel`，预计一个客户端文件约 30–70 行加测试；无需自建事件或多层 Hook。它把默认路由切换改成会话切换，并且宿主 RPC 可能异步写部署默认值。实施前明确不可写会话、已寻址子代理、模型不可用、会话写成功但默认保存失败的界面与反馈；须与模型列表热更新拆开决策和验收。
 
-> T5 验收与 T6 关闭留待用户明确授权进入解决模式后填写。本次不实施方案、不关闭 Issue。
+
+## T5 实施与验收
+
+- **实施方案：** 采用选项 A，运行时订阅 `ctx.modelDirectories.directoryFor(sessionId).store` 的宿主目录快照，由宿主负责目录热更新；采用选项 C 作为服务缺失、会话不可解析或 store 契约不可用时的降级路径，每次面板由关闭变为打开时重新调用 `modelCatalog()`。两条路径均保留错误态、旧列表和请求代际保护，组件卸载时清理订阅与异步响应。
+- **主代理双向同步决策：** 不实施。调度面板主代理行继续只读写全局默认路由 `agent-default-model`，不调用 `selectModel`，不覆盖当前会话已经选定的原版模型。
+- **改动文件：** `lib/client.js`、`test/client.test.mjs`、`README.zh.md`、`README.md`、`docs/zh/03-issue-0003-model-catalog-refresh.md`。
+- **未改动约束：** 未修改 `AGENTS.md`、`package.json`、其他 `lib/*.js`、其他测试、宿主文件或 `.gitignore`。
+- **改动前指纹基线：** `lib/client.js` 为 `f1784efa403cebb6b9c7b105b2d2489fb5024ba728740d0f0a7859dcf9b5fe92`，1672 行，72851 字节。其余 `lib/*.js` 基线保持原报告记录。
+- **改动后指纹：** `lib/client.js` 为 `96221a5070402fb5bc8616ca88aabace0531c14c5e87a2f87b62a4a3e7438e63`，1741 行，76220 字节。其余 `lib/*.js` 的哈希、行数和字节数与基线一致。
+- **测试命令：** `node --test test/`。
+- **实际输出摘要：** `ℹ tests 424`、`ℹ pass 424`、`ℹ fail 0`、`ℹ cancelled 0`、`ℹ skipped 0`、`ℹ todo 0`。
+- **覆盖内容：** 新增选项 A 的目录快照展示、双行同步热更新、已选路由保留和卸载退订测试，新增选项 C 的每次重开刷新、迟到响应保护和失败保留旧列表测试。客户端测试 82 项全部通过。
+- **验收结论：** 本地代码、单测与指纹核对通过。
+
+## T6 状态与结论
+
+Issue #3 已完成本地实施和自动化验收，当前分支保持 `issue-0003-model-catalog-refresh`，待用户确认后合并至 `main`。浏览器端旧会话中实时编辑 `cordis.patch.yml` 并观察宿主目录事件到调度面板的端到端验证，待宿主运行环境确认。该项不影响本地代码与单测验收结论。
