@@ -37,19 +37,21 @@
 
 > ###### _声明层实时裁剪模型可见的工具表，执行层再兜底拒绝任何漏网调用_
 > ###### _两层都按请求/按调用实时读取配置，不产生 `tools.restrict` ，因此不会触发官方工具遮挡的抖动与 Prompt Cache 失效。_
-- #### 主代理被彻底收缴执行工具 ：
-<div align="center">
+- #### 主代理被彻底收缴执行工具 ：  
 
-> ###### DEFAULT_ALLOWED_TOOLS 默认只放行 12 项规划、委派与会话只读工具
->
-> ###### _`delegate`、`orchestrate`、`send_message`、`interrupt_agent`、`todo_write`、`ask_user_question`、`compress` 与 5 项只读会话日志工具。_
->
-> ###### 所有文件读写、搜索、终端，以及未来新增的任何 MCP / 第三方插件工具，一律自动隐藏并在执行层强制拦截
->
-> ###### _（`read` / `edit` / `write` / `apply_patch`）、（`grep` / `glob`）、（`bash` / `pwsh`）、 `subagent` / `workflow`_
->
-> ###### 连 run_code 嵌套偷调也拦。需要额外放行时，在面板右侧 Allowed Tools 勾选即可。
-</div>
+  -
+    <div align="center">
+    
+    > ###### DEFAULT_ALLOWED_TOOLS 默认只放行 12 项规划、委派与会话只读工具
+    > ###### _`delegate`、`orchestrate`、`send_message`、`interrupt_agent`、`todo_write`、`ask_user_question`、`compress` 与 5 项只读会话日志工具。_
+    > 
+    > ###### 所有文件读写、搜索、终端，以及未来新增的任何 MCP / 第三方插件工具，一律自动隐藏并在执行层强制拦截
+    > 
+    > ###### _（`read` / `edit` / `write` / `apply_patch`）、（`grep` / `glob`）、（`bash` / `pwsh`）、 `subagent` / `workflow`_
+    > 
+    > ###### 连 run_code 嵌套偷调也拦。需要额外放行时，在面板右侧 Allowed Tools 勾选即可。
+    
+    </div>
 
 - **子代理独享完整工具链**：被派出的 Worker 不受闸门限制，在各自独立的上下文中读写文件、跑测试、看报错，完工后只把干净的结论交回主代理验收。
 - **一键随时切换**：关闭面板上的「启用调度模式」即可恢复宿主工具，无需重开会话；插件派发工具仍禁用，已绑定巡检回合的硬禁仍优先。

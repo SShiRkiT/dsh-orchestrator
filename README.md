@@ -37,19 +37,21 @@ Instead of relying on prompts asking the main model to use subagents more often,
 
 > ###### _The definition layer trims the tools visible to the model in real time; the execution layer rejects any calls that slip through._
 > ###### _Both layers read the current configuration on every request or call without using `tools.restrict`, avoiding the tool-visibility churn and prompt-cache invalidation that come with the host's tool-hiding mechanism._
-- #### The main agent loses access to execution tools:
-<div align="center">
+- #### The main agent loses access to execution tools:  
 
-> ###### DEFAULT_ALLOWED_TOOLS permits only 12 planning, delegation, and read-only session tools by default
->
-> ###### _`delegate`, `orchestrate`, `send_message`, `interrupt_agent`, `todo_write`, `ask_user_question`, `compress`, and five read-only session log tools._
->
-> ###### All file access, search, and terminal tools, plus any future MCP or third-party plugin tools, are automatically hidden and blocked at execution time
->
-> ###### _(`read` / `edit` / `write` / `apply_patch`), (`grep` / `glob`), (`bash` / `pwsh`), `subagent` / `workflow`_
->
-> ###### Even nested calls through `run_code` are blocked. To allow additional tools, check them under Allowed Tools on the right of the panel.
-</div>
+  -
+    <div align="center">
+    
+    > ###### DEFAULT_ALLOWED_TOOLS permits only 12 planning, delegation, and read-only session tools by default
+    > ###### _`delegate`, `orchestrate`, `send_message`, `interrupt_agent`, `todo_write`, `ask_user_question`, `compress`, and five read-only session log tools._
+    > 
+    > ###### All file access, search, and terminal tools, plus any future MCP or third-party plugin tools, are automatically hidden and blocked at execution time
+    > 
+    > ###### _(`read` / `edit` / `write` / `apply_patch`), (`grep` / `glob`), (`bash` / `pwsh`), `subagent` / `workflow`_
+    > 
+    > ###### Even nested calls through `run_code` are blocked. To allow additional tools, check them under Allowed Tools on the right of the panel.
+    
+    </div>
 
 - **Subagents retain the full toolchain**: dispatched Workers are exempt from the gate and read or write files, run tests, and inspect errors in their own contexts. When finished, they return only a concise conclusion for the main agent to review.
 - **Switch at any time**: turn off Enable dispatch mode to restore host tools without reopening the session. Plugin dispatch tools remain disabled, and gates for a bound inspection turn still take priority.
