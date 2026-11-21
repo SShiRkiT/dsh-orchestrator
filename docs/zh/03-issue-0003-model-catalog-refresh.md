@@ -76,11 +76,11 @@
 
 ### 写作用域声明
 
-以下是进入解决模式后的**拟授权**写作用域，不是本次分析提交的文件清单。
+以下是解决模式的**已授权**写作用域。分析阶段新增本报告，并在[中文文档地图](./README.md)登记；这两项是分析阶段的既有提交，不属于解决模式新增文件。
 
 | 新增 | 修改 | 不修改 |
 | --- | --- | --- |
-| 无 | [`lib/client.js`](../../lib/client.js)：目录读取、订阅与降级；[`test/client.test.mjs`](../../test/client.test.mjs)：对应回归覆盖 | 其余文件，包括 [`package.json`](../../package.json)、[`lib/catalog.js`](../../lib/catalog.js)、其他 `lib/` 或 `test/` 文件、宿主及已有设置。若 T6 回写或包声明涉及额外文件，另行授权。 |
+| 无 | [`lib/client.js`](../../lib/client.js)：目录读取、订阅与降级；[`test/client.test.mjs`](../../test/client.test.mjs)：对应回归覆盖；[`README.zh.md`](../../README.zh.md) 与 [`README.md`](../../README.md)：先中文后英文，同步说明当前会话模型与全局默认路由的区别；本报告：记录实施与验收 | 其余文件，包括 [`package.json`](../../package.json)、[`lib/catalog.js`](../../lib/catalog.js)、其他 `lib/` 或 `test/` 文件、宿主及已有设置。若回写涉及其他文件，另行授权。 |
 
 ### 验收标准
 
