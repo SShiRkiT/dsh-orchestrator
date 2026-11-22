@@ -206,7 +206,7 @@ dsh plugin --profile desktop add @sshirkit/dsh-orchestrator
 
 本项目先维护中文版，再同步英文版。以下文档涵盖项目设计、贡献流程和求助渠道。
 
-- 项目术语表 [`CONTEXT.md`](CONTEXT.md)
+- 项目术语表 [`GLOSSARY.md`](docs/GLOSSARY.md)
 - 架构决策记录（ADR）[`docs/adr/`](docs/adr/)
 - 版本发布说明 [`docs/releases/`](docs/releases/)
 - 贡献指南 [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md)

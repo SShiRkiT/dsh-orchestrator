@@ -206,7 +206,7 @@ All configuration fields are volatile (dynamic configuration), with no DSH resta
 
 The Chinese README is maintained first, and this English version is kept in sync. These resources cover the project design, how to contribute, and where to ask for help.
 
-- Project glossary [`CONTEXT.md`](CONTEXT.md)
+- Project glossary [`GLOSSARY.md`](docs/GLOSSARY.md)
 - Architecture decision records (ADRs) [`docs/adr/`](docs/adr/)
 - Release notes [`docs/releases/`](docs/releases/)
 - Contribution guide [`.github/CONTRIBUTING.md`](.github/CONTRIBUTING.md)

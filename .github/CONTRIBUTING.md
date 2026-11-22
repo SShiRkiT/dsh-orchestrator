@@ -16,7 +16,7 @@ Issues and pull requests are welcome in English or Simplified Chinese. 请遵守
 
 ## Terminology / 领域术语
 
-Use the canonical definitions in [CONTEXT.md](../CONTEXT.md) in code, tests, documentation, and reviews. Use *delegation* (委派) for a task dispatched with `delegate`, *orchestration* (编排) for the declarative item-by-stage operation in `orchestrate`, and *supervision* (巡检) for reading delegated subagents' session logs during execution.
+Use the canonical definitions in [GLOSSARY.md](../docs/GLOSSARY.md) in code, tests, documentation, and reviews. Use *delegation* (委派) for a task dispatched with `delegate`, *orchestration* (编排) for the declarative item-by-stage operation in `orchestrate`, and *supervision* (巡检) for reading delegated subagents' session logs during execution.
 
 ## Local checks / 本地验证
 
