@@ -1,11 +1,12 @@
 {
   "name": "@sshirkit/dsh-orchestrator",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
   "description": "Main agent that plans and delegates work; orchestrate fans out with pipelines and structured results; long-running workers are supervised by reading session logs",
+  "icon": "./docs/images/plugin-icon.png",
   "type": "module",
   "exports": {
     ".": "./lib/index.js",
