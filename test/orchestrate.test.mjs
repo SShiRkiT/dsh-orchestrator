@@ -101,6 +101,7 @@ test('the tool is named orchestrate, takes optional route overrides and defaults
     'readOnly',
     'reasoning_effort',
     'stages',
+    'team_task_id',
     'writeScope',
   ])
   for (const key of ['provider', 'model', 'reasoning_effort']) {
@@ -110,6 +111,14 @@ test('the tool is named orchestrate, takes optional route overrides and defaults
     assert.match(definition.parameters[key].description, /仅当用户显式点名/)
   }
   assert.match(definition.parameters.reasoning_effort.description, /仅当用户点名时才设置/)
+  const stageParams = definition.parameters.stages.items.properties
+  for (const key of ['provider', 'model', 'reasoning_effort']) {
+    assert.equal(stageParams[key].type, 'string')
+    assert.equal('required' in stageParams[key], false)
+  }
+  assert.match(stageParams.provider.description, /仅当用户显式点名.*与 model 同传.*优先于顶层批次/)
+  assert.match(stageParams.model.description, /仅当用户显式点名.*与 provider 同传.*优先于顶层批次/)
+  assert.match(stageParams.reasoning_effort.description, /仅当用户点名时才设置.*与阶段 provider\/model 同传/)
   assert.equal('required' in definition.parameters.writeScope, false)
   assert.equal('default' in definition.parameters.writeScope, false)
   assert.equal(definition.parameters.writeScope.type, 'array')
@@ -194,8 +203,15 @@ test('invalid arguments and stage schemas fail globally before any worker starts
     [{ items: [1], stages: [stage], cwd: '   ' }, /"cwd" must be a non-empty string/],
     [{ items: [1], stages: [stage], cwd: '\t\n' }, /"cwd" must be a non-empty string/],
     [{ items: [1], stages: [stage], extra: true }, /arguments has unknown field "extra"/],
-    [{ items: [1], stages: [{ ...stage, provider: 'nexus-deepseek' }] }, /stage 1 has unknown field "provider"/],
-    [{ items: [1], stages: [{ ...stage, model: 'deepseek-v4.1-flash' }] }, /stage 1 has unknown field "model"/],
+    [
+      { items: [1], stages: [{ ...stage, provider: 'nexus-deepseek' }] },
+      /orchestrate\.stages\[0\]: "provider" and "model" must be given together/,
+    ],
+    [
+      { items: [1], stages: [stage, { ...stage, model: 'deepseek-v4.1-flash' }], ...ROUTE },
+      /orchestrate\.stages\[1\]: "provider" and "model" must be given together/,
+    ],
+    [{ items: [1], stages: [{ ...stage, foo: true }] }, /stage 1 has unknown field "foo"/],
     // A batch is one write unit: per-stage scope is not part of the contract, and silently
     // accepting it would promise an isolation the first version does not provide.
     [{ items: [1], stages: [{ ...stage, writeScope: ['src/a.js'] }] }, /stage 1 has unknown field "writeScope"/],
@@ -667,16 +683,17 @@ test('readStageOutput handles text, a missing result, an empty result and text p
 })
 
 test('runOrchestration can be driven directly with a plan and a declared scope', async () => {
-  const { subagents } = trackedSubagents(async () => textResult('direct'))
+  const { subagents, calls } = trackedSubagents(async () => textResult('direct'))
   const result = await runOrchestration({
     plan: { cwd: undefined, items: [1], stages: [{ name: 's', prompt: 'p' }], maxConcurrency: 1 },
     parent: { id: 'main' },
-    route: ROUTE,
+    defaultRoute: ROUTE,
     maxDepth: 2,
     subagents,
     signal: new AbortController().signal,
     writeScope: TEST_SCOPE,
   })
+  assert.deepEqual(calls[0].agentOptions, ROUTE)
   assert.deepEqual(result, {
     kind: 'orchestration',
     agentsStarted: 1,
@@ -703,6 +720,132 @@ test('an explicit provider and model apply to every worker of the call and skip 
   }
   assert.equal(result.agentsStarted, 2)
   assert.equal(result.errors.length, 0)
+})
+
+test('multiple items use each whole stage route before the batch or panel route', async () => {
+  const strong = { provider: 'strong-provider', model: 'strong-model', reasoningEffort: 'high' }
+  const light = { provider: 'light-provider', model: 'light-model' }
+  const panel = { ...ROUTE, reasoningEffort: 'medium' }
+  const batch = { provider: 'batch-provider', model: 'batch-model' }
+  const stages = [
+    {
+      name: 'reason',
+      prompt: 'p',
+      provider: ` ${strong.provider} `,
+      model: strong.model,
+      reasoning_effort: ' high ',
+    },
+    { name: 'fallback', prompt: 'p' },
+    { name: 'summarize', prompt: 'p', ...light },
+  ]
+
+  for (const [override, fallbackRoute] of [
+    [{ ...batch, reasoning_effort: 'low' }, { ...batch, reasoningEffort: 'low' }],
+    [batch, batch],
+    [{}, panel],
+  ]) {
+    const { subagents, calls } = trackedSubagents(async () => textResult('done'))
+    const result = await tool(cfg(panel.provider, panel.model, panel.reasoningEffort), subagents).execute(
+      { items: [1, 2], stages, ...override },
+      exec(),
+    )
+    assert.equal(calls.length, 6)
+    const expectedRoutes = [strong, fallbackRoute, light]
+    for (const itemIndex of [0, 1]) {
+      const itemRoutes = calls.filter((spec) => itemOf(spec) === itemIndex)
+      assert.deepEqual(itemRoutes.map(stageOf), [0, 1, 2])
+      assert.deepEqual(itemRoutes.map((spec) => spec.agentOptions), expectedRoutes)
+    }
+    assert.equal(result.agentsStarted, 6)
+    assert.deepEqual(result.errors, [])
+    assert.deepEqual(result.results, [
+      { index: 0, output: 'done', stopReason: 'completed' },
+      { index: 1, output: 'done', stopReason: 'completed' },
+    ])
+  }
+})
+
+test('all stages can override the route without reading an unconfigured panel', async () => {
+  const route = { provider: 'stage-provider', model: 'stage-model' }
+  const { subagents, calls } = trackedSubagents(async () => textResult('done'))
+  const result = await tool({}, subagents).execute(
+    {
+      items: [1],
+      stages: [
+        { name: 'one', prompt: 'p', ...route },
+        { name: 'two', prompt: 'p', ...route, reasoning_effort: 'high' },
+      ],
+    },
+    exec(),
+  )
+  assert.equal(result.agentsStarted, 2)
+  assert.deepEqual(calls.map((spec) => spec.agentOptions), [route, { ...route, reasoningEffort: 'high' }])
+})
+
+test('a stage needing an unconfigured panel route fails before creating a Worktree or acquiring a lease', async () => {
+  for (const isolation of ['worktree', 'shared']) {
+    const { subagents, calls } = trackedSubagents(async () => textResult('done'))
+    const attemptedWrites = []
+    const definition = createOrchestrateTool({
+      defineTool: (d) => d,
+      subagents,
+      config: cfg('', ''),
+      probeGitRepo: () => ({ isGit: true, headCommit: 'head' }),
+      worktrees: { create: () => attemptedWrites.push('worktree') },
+      leases: { acquire: () => attemptedWrites.push('lease') },
+    })
+    await assert.rejects(
+      () => definition.execute({
+        cwd: 'C:/repo',
+        items: [1, 2],
+        stages: [
+          { name: 'one', prompt: 'p', provider: 'stage-provider', model: 'stage-model' },
+          { name: 'two', prompt: 'p' },
+        ],
+        isolation,
+        writeScope: TEST_SCOPE,
+      }, exec()),
+      /worker route is not configured \(set workerProvider and workerModel\)/,
+    )
+    assert.deepEqual(attemptedWrites, [], isolation)
+    assert.equal(calls.length, 0, isolation)
+  }
+})
+
+test('an invalid batch override is rejected even when all stages override the route', async () => {
+  const { subagents, calls } = trackedSubagents(async () => textResult('done'))
+  await assert.rejects(
+    () => tool({}, subagents).execute({
+      items: [1],
+      stages: [{ name: 'one', prompt: 'p', provider: 'stage-provider', model: 'stage-model' }],
+      provider: 'batch-provider',
+    }, exec()),
+    /^Error: orchestrate: "provider" and "model" must be given together/,
+  )
+  assert.equal(calls.length, 0)
+})
+
+test('invalid stage route types and an effort-only route report the stage index without starting workers', async () => {
+  const route = { provider: 'stage-provider', model: 'stage-model' }
+  for (const [override, pattern] of [
+    [{ ...route, provider: 7 }, /orchestrate\.stages\[1\]: "provider" must be a string/],
+    [{ ...route, model: null }, /orchestrate\.stages\[1\]: "model" must be a string/],
+    [{ ...route, reasoning_effort: false }, /orchestrate\.stages\[1\]: "reasoning_effort" must be a string/],
+    [{ reasoning_effort: 'high' }, /orchestrate\.stages\[1\]: "provider" and "model" must be given together/],
+  ]) {
+    const { subagents, calls } = trackedSubagents(async () => textResult('done'))
+    await assert.rejects(
+      () => tool(cfg(), subagents).execute({
+        items: [1],
+        stages: [
+          { name: 'one', prompt: 'p', ...route },
+          { name: 'two', prompt: 'p', ...override },
+        ],
+      }, exec()),
+      pattern,
+    )
+    assert.equal(calls.length, 0, JSON.stringify(override))
+  }
 })
 
 test('provider and model must be given together, and no worker starts', async () => {
@@ -814,6 +957,7 @@ test('the description has no worker variant and does not follow the live whiteli
     'readOnly',
     'reasoning_effort',
     'stages',
+    'team_task_id',
     'writeScope',
   ])
 })

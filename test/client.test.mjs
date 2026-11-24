@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import test from 'node:test'
 import vm from 'node:vm'
+import { createSessionToolsDescriptors } from '../lib/session-tools.js'
 import { DEFAULT_ALLOWED_TOOLS as HOST_DEFAULT_ALLOWED_TOOLS } from '../lib/tool-surface.js'
 
 const src = fs.readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
@@ -128,6 +129,10 @@ function mount(component, props) {
   return {
     get tree() {
       return owner.tree
+    },
+    update(patch) {
+      props = { ...props, ...patch }
+      render()
     },
     unmount() {
       for (const effect of owner.committed) {
@@ -346,7 +351,7 @@ test('apply registers only the picker in input.right and keeps model catalog acc
   const dictionaries = []
   const ctx = {
     effect: (fn) => fn(),
-    locale: { register: (ns) => dictionaries.push(ns) },
+    locale: { register: (ns, translations) => dictionaries.push({ ns, translations }) },
     configForms: { get: (ns) => ({ ns }) },
     remote: { session: { modelCatalog: async () => ({ ok: true, value: { groups: [] } }) } },
     slots: { inject: (_n, cb) => cb(), register: (opts, comp) => regs.push({ opts, comp }) },
@@ -359,7 +364,16 @@ test('apply registers only the picker in input.right and keeps model catalog acc
   assert.deepEqual([props.scopes.main.ns, props.scopes.worker.ns, props.scopes.orch.ns], [
     'agent-default-model', 'orchestrator', 'orchestrator',
   ])
-  assert.deepEqual(dictionaries, ['orchestrator'])
+  assert.deepEqual(dictionaries.map(({ ns }) => ns), ['orchestrator'])
+  const { zh, en } = dictionaries[0].translations
+  const allowedKeys = (dictionary) => Object.keys(dictionary).filter((key) => key.startsWith('allowed.')).sort()
+  assert.deepEqual(allowedKeys(zh), allowedKeys(en))
+  for (const key of allowedKeys(en)) {
+    assert.ok(zh[key].trim(), `missing zh text for ${key}`)
+    assert.ok(en[key].trim(), `missing en text for ${key}`)
+  }
+  assert.match(zh['allowed.teamDisabled'], /调度模式下禁止主代理调用原生 Team 任务板工具/)
+  assert.match(en['allowed.teamDisabled'], /In dispatch mode, the main agent cannot call native Team task-board tools/)
   assert.equal(regs[0].opts.locale, 'orchestrator')
   assert.deepEqual(await props.loadCatalog(), { ok: true, value: { groups: [] } })
   assert.deepEqual(plain(mod.inject), ['slots', 'locale', 'remote', 'remote.session', 'configForms'])
@@ -1049,13 +1063,20 @@ test('the switch draws a focus ring only while focused', () => {
 })
 
 /** Mount the allowed-tools column and expose the nodes the tests reach for. */
-function mountAllowed(scope) {
-  const view = mount(T.AllowedToolsPanel, { scope, t })
-  const rows = () => nodes(view.tree).filter((node) => node.type === 'label')
+function mountAllowed(scope, props = {}) {
+  const view = mount(T.AllowedToolsPanel, { scope, t, ...props })
+  const rows = () => nodes(view.tree).filter((node) => node.type === 'label' && node.props?.['data-tool'])
+  const box = (name) => rows().find((row) => row.props['data-tool'] === name).kids[0]
+  const sessionRow = () => nodes(view.tree).find((node) => node.props?.['data-scope'] === 'session-tools')
+  const session = () => {
+    const control = nodes(sessionRow()).find((node) => node.type === T.EnableSwitch)
+    return nodes(mountSwitch(control.props).view.tree).find((node) => node.props?.role === 'switch')
+  }
+  const alert = () => nodes(view.tree).find((node) => node.props?.role === 'alert')?.kids[0]
   const search = () => nodes(view.tree).find((node) => node.props?.['data-search'] === 'allowed-tools')
   const button = () => nodes(view.tree).find((node) => node.type === 'button')
   const text = () => nodes(view.tree).map((node) => node.kids?.[0]).filter((kid) => typeof kid === 'string')
-  return { view, rows, search, button, text }
+  return { view, rows, box, sessionRow, session, alert, search, button, text }
 }
 
 test('the column is headed Allowed Tools and lists one checked row per shipped tool', () => {
@@ -1221,6 +1242,475 @@ test('a rejected write is reported without dropping the stored state', async () 
   const alert = nodes(panel.view.tree).find((node) => node.props?.role === 'alert')
   assert.match(alert.kids[0], /settings changed/)
   assert.equal(row().kids[0].props.checked, true)
+})
+
+const settleSessionPanel = () => new Promise((resolve) => setImmediate(resolve))
+const sessionState = (sessionId, enabled, allowedTools = [], revision = 0, storageReady = true) => ({
+  sessionId, enabled, allowedTools, revision, storageReady,
+})
+const changeBox = (box, checked) => box.props.onChange({ target: { checked } })
+
+function deferredSessionResult() {
+  let resolve, reject
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no })
+  return { promise, resolve, reject }
+}
+
+test('the slot mounts the strict session Remote before any call and releases it exactly once', async () => {
+  const mounted = deferredSessionResult()
+  const effects = []
+  let register, unmounted = 0
+  const calls = []
+  const ctx = {
+    effect: (setup) => effects.push(setup()),
+    configForms: { get: () => fakeScope() },
+    locale: { register() {} },
+    slots: { inject: (_name, callback) => callback(), register: (spec) => { register = spec } },
+    remote: {
+      $mount: (contribution) => {
+        assert.equal(contribution.package, '@sshirkit/dsh-orchestrator')
+        const expected = createSessionToolsDescriptors()
+        assert.deepEqual(plain(contribution.descriptors), plain(expected))
+        for (const [i, descriptor] of expected.entries()) {
+          const client = contribution.descriptors[i]
+          for (const [j, param] of descriptor.parameters.entries()) {
+            const parse = client.parameters[j].codec.create().parse
+            const sample = { sessionId: 'S1', allowedTools: ['a', 'a', 'b'], expectedRevision: 1 }[param.name]
+            assert.deepEqual(plain(parse(sample)), plain(param.codec.create().parse(sample)))
+            assert.throws(() => parse(undefined), { name: 'TypeError' })
+          }
+          const parse = client.result.create().parse
+          const sample = sessionState('S1', false)
+          assert.deepEqual(plain(parse(sample)), descriptor.result.create().parse(sample))
+          assert.throws(() => parse({ ...sample, unexpected: true }), { name: 'TypeError' })
+        }
+        return mounted.promise
+      },
+      orchestratorSession: {
+        get: async (id) => { calls.push(id); return { ok: true, value: sessionState(id, false) } },
+      },
+    },
+  }
+  mod.apply(ctx)
+  const { sessionRemote, sessionId } = register.inject('S1')
+  assert.equal(sessionId, 'S1')
+  const response = sessionRemote.call('get', sessionId)
+  await settleSessionPanel()
+  assert.deepEqual(calls, [])
+  mounted.resolve(async () => { unmounted += 1 })
+  assert.equal((await response).sessionId, 'S1')
+  assert.deepEqual(calls, ['S1'])
+  for (const dispose of effects) if (typeof dispose === 'function') await dispose()
+  await sessionRemote.dispose()
+  assert.equal(unmounted, 1)
+  await assert.rejects(sessionRemote.call('get', 'S1'), /unavailable/)
+  assert.deepEqual(calls, ['S1'])
+})
+
+function strictSessionCordis(service, { fiberDisposal = Promise.resolve(), scopeError } = {}) {
+  const scope = fakeScope({ initial: { allowedTools: ['delegate'] } })
+  const registration = deferredSessionResult()
+  const activation = deferredSessionResult()
+  const events = []
+  const effects = []
+  let entry, dictionaries, bind, disposeScope
+  let registered = false
+  const ctx = {
+    effect: (setup) => effects.push(setup()),
+    configForms: { get: () => scope },
+    locale: { register: (_ns, translations) => { dictionaries = translations } },
+    slots: {
+      inject: (_name, callback) => callback(),
+      register: (spec, component) => { entry = { spec, component } },
+    },
+    get(name) {
+      assert.equal(name, 'modelDirectories')
+    },
+    remote: {
+      session: { modelCatalog: async () => ({ ok: true, value: { groups: [] } }) },
+      async $mount() {
+        events.push('mount')
+        await registration.promise
+        registered = true
+        return async () => {
+          events.push('unmount')
+          registered = false
+        }
+      },
+      get orchestratorSession() {
+        events.push('parent guard')
+        throw new Error('cannot get property "remote.orchestratorSession" without inject')
+      },
+    },
+    inject(names, callback) {
+      assert.deepEqual(plain(names), ['remote.orchestratorSession'])
+      assert.equal(registered, true)
+      events.push('inject')
+      bind = () => callback({
+        remote: {
+          get orchestratorSession() {
+            assert.equal(registered, true)
+            if (scopeError) throw scopeError
+            events.push('bind')
+            return service
+          },
+        },
+        on(event, listener) {
+          assert.equal(event, 'dispose')
+          disposeScope = listener
+        },
+      })
+      return {
+        then: (resolve, reject) => activation.promise.then(resolve, reject),
+        async dispose() {
+          events.push('dispose inject')
+          await fiberDisposal
+          disposeScope?.()
+          activation.resolve()
+          events.push('disposed inject')
+        },
+      }
+    },
+  }
+  mod.apply(ctx)
+  assert.equal(entry.spec.name, 'conversation.input.right')
+  const props = entry.spec.inject('S1')
+  return {
+    scope, registration, activation, events,
+    sessionRemote: props.sessionRemote,
+    bind: () => bind(),
+    loseScope: () => disposeScope(),
+    dispose: () => effects.find((entry) => typeof entry === 'function')(),
+    open(locale) {
+      const t = (key) => dictionaries[locale][key]
+      const view = mount(entry.component, { ...props, t })
+      nodes(view.tree).find((node) => node.type === 'button').props.onClick()
+      const column = nodes(view.tree).find((node) => node.type === T.AllowedToolsPanel)
+      assert.ok(column)
+      const panel = mountAllowed(scope, column.props)
+      return { ...panel, close() { panel.view.unmount(); view.unmount() } }
+    },
+  }
+}
+
+test('the desktop slot waits for the guarded Cordis injection and writes only to the session', async (context) => {
+  const calls = []
+  const fiberDisposal = deferredSessionResult()
+  let rejectClear = true
+  const host = strictSessionCordis({
+    async get(id) {
+      calls.push(['get', id])
+      return { ok: true, value: sessionState(id, false, [], 4) }
+    },
+    async set(id, names, revision) {
+      calls.push(['set', id, plain(names), revision])
+      return { ok: true, value: sessionState(id, true, names, 5) }
+    },
+    async clear(id, revision) {
+      calls.push(['clear', id, revision])
+      if (rejectClear) return { ok: false, error: new Error('session clear refused') }
+      return { ok: true, value: sessionState(id, false, [], 6) }
+    },
+  }, { fiberDisposal: fiberDisposal.promise })
+  const panel = host.open('en')
+  context.after(async () => {
+    panel.close()
+    host.registration.resolve()
+    fiberDisposal.resolve()
+    await host.dispose()
+  })
+
+  await settleSessionPanel()
+  assert.deepEqual(host.events, ['mount'])
+  assert.deepEqual(calls, [])
+  assert.equal(panel.session().props.disabled, true)
+  assert.equal(panel.alert(), undefined)
+  host.registration.resolve()
+  await settleSessionPanel()
+  assert.deepEqual(host.events, ['mount', 'inject'])
+  assert.deepEqual(calls, [])
+  assert.equal(panel.session().props.disabled, true)
+  assert.equal(panel.alert(), undefined)
+
+  host.bind()
+  await settleSessionPanel()
+  assert.deepEqual(calls, [])
+  assert.equal(panel.session().props.disabled, true)
+  host.activation.resolve()
+  await settleSessionPanel()
+  assert.deepEqual(calls, [['get', 'S1']])
+  assert.equal(panel.session().props.disabled, false)
+  assert.equal(panel.session().props.checked, false)
+  assert.equal(panel.alert(), undefined)
+
+  const saving = changeBox(panel.session(), true)
+  assert.equal(panel.session().props.disabled, true)
+  await saving
+  assert.equal(panel.session().props.checked, true)
+  await changeBox(panel.session(), false)
+  assert.equal(panel.alert(), 'session clear refused')
+  assert.equal(panel.session().props.checked, true)
+  assert.deepEqual(host.scope.calls, [])
+  rejectClear = false
+  await changeBox(panel.session(), false)
+  assert.equal(panel.alert(), undefined)
+  assert.equal(panel.session().props.checked, false)
+  assert.deepEqual(calls, [['get', 'S1'], ['set', 'S1', ['delegate'], 4], ['clear', 'S1', 5], ['clear', 'S1', 5]])
+  assert.deepEqual(host.scope.calls, [])
+
+  host.loseScope()
+  await assert.rejects(host.sessionRemote.call('get', 'S1'), /Remote is unavailable/)
+  const closing = host.dispose()
+  assert.equal(host.dispose(), closing)
+  await settleSessionPanel()
+  assert.deepEqual(host.events, ['mount', 'inject', 'bind', 'dispose inject'])
+  fiberDisposal.resolve()
+  await closing
+  await host.dispose()
+  assert.deepEqual(host.events, ['mount', 'inject', 'bind', 'dispose inject', 'disposed inject', 'unmount'])
+})
+
+test('the session capsule uses the same switch and accessible labels in both locales', async (context) => {
+  const host = strictSessionCordis({ async get(id) { return { ok: true, value: sessionState(id, false) } } })
+  host.registration.resolve()
+  await settleSessionPanel()
+  host.bind()
+  host.activation.resolve()
+  context.after(host.dispose)
+  for (const [locale, label, status] of [
+    ['zh', '仅当前会话', '继承全局默认；编辑将修改全局设置。'],
+    ['en', 'Only for this session', 'Inherits global defaults; edits change the global settings.'],
+  ]) {
+    const panel = host.open(locale)
+    const container = panel.sessionRow()
+    assert.equal(container.type, 'div')
+    const [row, hint] = container.kids
+    assert.equal(row.type, 'div')
+    assert.equal(row.props.style.display, 'flex')
+    assert.equal(row.props.style.alignItems, 'center')
+    assert.equal(row.props.style.justifyContent, 'space-between')
+    assert.ok(row.props.style.gap)
+    const [title, control] = row.kids
+    assert.equal(title.type, 'span')
+    assert.equal(title.kids[0], label)
+    assert.equal(title.props.style.whiteSpace, 'nowrap')
+    assert.equal(title.props.style.fontWeight, 600)
+    assert.notEqual(title.props.style.fontStyle, 'italic')
+    assert.equal(control.type, T.EnableSwitch)
+    const switchView = mountSwitch(control.props)
+    const rendered = switchView.view.tree
+    assert.equal(rendered.type, 'label')
+    const expanded = { ...container, kids: [{ ...row, kids: [title, rendered] }, hint] }
+    assert.deepEqual(nodes(expanded).filter((node) => node.type === 'label'), [rendered])
+    assert.equal(panel.session().props['aria-label'], label)
+    assert.equal(switchView.track().props.style.borderRadius, '999px')
+    await settleSessionPanel()
+    assert.equal(panel.sessionRow().kids[1].kids[0], status)
+    panel.close()
+  }
+})
+
+test('disposing during child injection settles pending requests and ignores a late callback', async () => {
+  const host = strictSessionCordis({ get() { assert.fail('disposal must prevent the request') } })
+  host.registration.resolve()
+  const request = host.sessionRemote.call('get', 'S1')
+  await settleSessionPanel()
+  assert.deepEqual(host.events, ['mount', 'inject'])
+  // The callback has bound the service, but the fork can still be activating at disposal.
+  host.bind()
+  await host.dispose()
+  await assert.rejects(request, /Remote is unavailable/)
+  host.bind()
+  assert.deepEqual(host.events, ['mount', 'inject', 'bind', 'dispose inject', 'disposed inject', 'unmount'])
+})
+
+test('a failed scoped binding reports the error and releases both Cordis handles', async () => {
+  const host = strictSessionCordis({}, { scopeError: new Error('scope rejected the service') })
+  host.registration.resolve()
+  const request = host.sessionRemote.call('get', 'S1')
+  await settleSessionPanel()
+  host.bind()
+  await assert.rejects(request, /scope rejected the service/)
+  await settleSessionPanel()
+  assert.deepEqual(host.events, ['mount', 'inject', 'dispose inject', 'disposed inject', 'unmount'])
+  await host.dispose()
+})
+
+test('a failed injection activation reports the error and releases both Cordis handles', async () => {
+  const host = strictSessionCordis({})
+  host.registration.resolve()
+  const request = host.sessionRemote.call('get', 'S1')
+  await settleSessionPanel()
+  host.activation.reject(new Error('fiber activation failed'))
+  await assert.rejects(request, /fiber activation failed/)
+  await host.dispose()
+  assert.deepEqual(host.events, ['mount', 'inject', 'dispose inject', 'disposed inject', 'unmount'])
+})
+
+test('an injection that never calls back times out and releases both Cordis handles', async () => {
+  const host = strictSessionCordis({})
+  host.registration.resolve()
+  const request = host.sessionRemote.call('get', 'S1')
+  const timerCount = timers.length
+  await settleSessionPanel()
+  const [timeout] = timers.slice(timerCount)
+  assert.ok(timeout.ms > 0)
+  timeout.fn()
+  await assert.rejects(request, /Timed out waiting for Session tools Remote injection/)
+  await host.dispose()
+  assert.deepEqual(host.events, ['mount', 'inject', 'dispose inject', 'disposed inject', 'unmount'])
+})
+
+test('disposing during Remote registration still releases the returned asynchronous disposer', async () => {
+  const mounted = deferredSessionResult()
+  let released = 0
+  const remote = T.mountSessionRemote({
+    remote: { $mount: () => mounted.promise },
+    inject() { assert.fail('disposal must prevent child injection') },
+  })
+  await Promise.resolve()
+  const request = remote.call('get', 'S1')
+  const closing = remote.dispose()
+  assert.equal(remote.dispose(), closing)
+  await assert.rejects(request, /Remote is unavailable/)
+  assert.equal(released, 0)
+  mounted.resolve(async () => { released += 1 })
+  await closing
+  assert.equal(released, 1)
+})
+
+test('a context without inject can look up the session Remote with get', async () => {
+  const calls = []
+  const remote = T.mountSessionRemote({
+    remote: {
+      async $mount() { return async () => {} },
+      get orchestratorSession() { assert.fail('ctx.get should supply the service') },
+    },
+    get(name) {
+      calls.push(name)
+      return { async get(id) { return { ok: true, value: sessionState(id, false) } } }
+    },
+  })
+  assert.equal((await remote.call('get', 'S1')).sessionId, 'S1')
+  assert.deepEqual(calls, ['remote.orchestratorSession'])
+  await remote.dispose()
+})
+
+test('enabling, editing, resetting and clearing a session never writes global config', async () => {
+  const scope = fakeScope({ initial: { allowedTools: [] } })
+  const calls = []
+  let state = sessionState('A', false, [], 4)
+  const sessionRemote = { async call(method, ...args) {
+    calls.push(plain([method, ...args]))
+    if (method === 'set') state = sessionState('A', true, args[1], state.revision + 1)
+    if (method === 'clear') state = sessionState('A', false, [], state.revision + 1)
+    return state
+  } }
+  const panel = mountAllowed(scope, { sessionId: 'A', sessionRemote })
+  assert.equal(panel.session().props.disabled, true)
+  await settleSessionPanel()
+  assert.equal(panel.session().props.disabled, false)
+  assert.equal(panel.session().props.checked, false)
+  await changeBox(panel.session(), true)
+  assert.equal(panel.session().props.checked, true)
+  assert.equal(panel.box('delegate').props.checked, false)
+  await changeBox(panel.box('delegate'), true)
+  assert.equal(panel.box('delegate').props.checked, true)
+  scope.externalSet({ allowedTools: HOST_DEFAULT_ALLOWED_TOOLS })
+  assert.equal(panel.box('orchestrate').props.checked, false)
+  await panel.button().props.onClick()
+  assert.equal(panel.session().props.checked, true)
+  assert.equal(panel.box('orchestrate').props.checked, true)
+  await changeBox(panel.session(), false)
+  assert.equal(panel.session().props.checked, false)
+  assert.equal(panel.box('orchestrate').props.checked, true)
+  assert.deepEqual(calls, [
+    ['get', 'A'],
+    ['set', 'A', [], 4],
+    ['set', 'A', ['delegate'], 5],
+    ['set', 'A', HOST_DEFAULT_ALLOWED_TOOLS, 6],
+    ['clear', 'A', 7],
+  ])
+  assert.deepEqual(scope.calls, [])
+  await changeBox(panel.box('delegate'), false)
+  assert.equal(scope.calls.length, 1)
+  assert.equal(calls.length, 5)
+})
+
+test('mount failure, invalid ID and failed state loads never fall back to global writes', async () => {
+  const reject = new Error('session query failed')
+  const mountFailure = T.mountSessionRemote({ remote: { $mount: async () => { throw new Error('mount refused') } } })
+  for (const [sessionId, sessionRemote, message] of [
+    ['', mountFailure, 'allowed.sessionMissing'],
+    ['A', mountFailure, 'mount refused'],
+    ['A', { call: async () => { throw reject } }, 'session query failed'],
+    ['A', { call: async () => sessionState('A', false, [], 0, false) }, 'allowed.sessionStorage'],
+  ]) {
+    const scope = fakeScope()
+    const panel = mountAllowed(scope, { sessionId, sessionRemote })
+    await settleSessionPanel()
+    assert.equal(panel.alert(), message)
+    assert.equal(panel.session().props.disabled, true)
+    assert.equal(panel.box('delegate').props.disabled, true)
+    await changeBox(panel.session(), true)
+    await changeBox(panel.box('delegate'), false)
+    await panel.button().props.onClick()
+    assert.deepEqual(scope.calls, [])
+    panel.view.unmount()
+  }
+})
+
+test('a failed session edit stays local, and a failed global mutate is reported', async () => {
+  const scope = fakeScope()
+  scope.mutate = async () => false
+  const sessionRemote = { async call(method, id) {
+    if (method === 'get') return sessionState(id, id === 'A', ['delegate'], 3)
+    throw { code: 'STORAGE_WRITE_FAILED', message: 'disk refused' }
+  } }
+  const panel = mountAllowed(scope, { sessionId: 'A', sessionRemote })
+  await settleSessionPanel()
+  await changeBox(panel.box('delegate'), false)
+  assert.equal(panel.alert(), 'disk refused')
+  assert.equal(panel.box('delegate').props.checked, true)
+  assert.equal(panel.session().props.checked, true)
+  panel.view.update({ sessionId: 'B' })
+  await settleSessionPanel()
+  assert.equal(panel.alert(), undefined)
+  await changeBox(panel.box('delegate'), false)
+  assert.equal(panel.alert(), 'route.saveFailed')
+  assert.equal(panel.box('delegate').props.checked, true)
+})
+
+test('late reads and writes cannot overwrite the new session loading, state or error', async () => {
+  const slowA = deferredSessionResult()
+  const slowBWrite = deferredSessionResult()
+  const calls = []
+  const sessionRemote = { async call(method, id) {
+    calls.push([method, id])
+    if (method === 'set' && id === 'B') return slowBWrite.promise
+    if (id === 'A') return slowA.promise
+    if (id === 'B') return sessionState(id, true, ['compress'], 2)
+    throw new Error('C unavailable')
+  } }
+  const scope = fakeScope()
+  const panel = mountAllowed(scope, { sessionId: 'A', sessionRemote })
+  await settleSessionPanel()
+  panel.view.update({ sessionId: 'B' })
+  await settleSessionPanel()
+  assert.equal(panel.box('delegate').props.checked, false)
+  assert.equal(panel.box('compress').props.checked, true)
+  slowA.resolve(sessionState('A', true, ['delegate'], 9))
+  await settleSessionPanel()
+  assert.equal(panel.box('delegate').props.checked, false)
+  const saving = changeBox(panel.box('compress'), false)
+  panel.view.update({ sessionId: 'C' })
+  await settleSessionPanel()
+  slowBWrite.reject(new Error('stale B error'))
+  await saving
+  assert.equal(panel.alert(), 'C unavailable')
+  assert.equal(panel.session().props.disabled, true)
+  assert.deepEqual(calls, [['get', 'A'], ['get', 'B'], ['set', 'B'], ['get', 'C']])
+  assert.deepEqual(scope.calls, [])
 })
 
 test('the popover is two columns, the original panel then the allowed tools column', () => {

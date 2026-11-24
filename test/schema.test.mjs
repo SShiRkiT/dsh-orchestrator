@@ -91,6 +91,8 @@ test('delegate schemas stay inside the host author dialect', () => {
   assert.deepEqual(authorProblems(tool), [])
   assert.equal(tool.parameters.description.required, true)
   assert.equal(tool.parameters.prompt.required, true)
+  assert.equal(tool.parameters.team_task_id.type, 'string')
+  assert.equal('required' in tool.parameters.team_task_id, false)
   assert.equal('required' in tool.parameters.writeScope, false)
   assert.equal(tool.parameters.readOnly.type, 'boolean')
   assert.equal(tool.parameters.expectedFingerprints.type, 'object')
@@ -116,6 +118,7 @@ test('orchestrate schemas stay inside the host author dialect and expose the sta
     'readOnly',
     'reasoning_effort',
     'stages',
+    'team_task_id',
     'writeScope',
   ])
   assert.equal(tool.parameters.items.required, true)
@@ -132,18 +135,21 @@ test('orchestrate schemas stay inside the host author dialect and expose the sta
   assert.equal('default' in tool.parameters.writeScope, false)
   const stage = tool.parameters.stages.items
   assert.equal(stage.type, 'object')
-  assert.deepEqual(Object.keys(stage.properties).sort(), ['name', 'prompt', 'schema'])
+  assert.deepEqual(Object.keys(stage.properties).sort(), [
+    'model', 'name', 'prompt', 'provider', 'reasoning_effort', 'schema',
+  ])
   assert.equal(stage.properties.name.required, true)
   assert.equal(stage.properties.prompt.required, true)
   assert.equal('required' in stage.properties.schema, false)
-  // A route override is spelled like the native subagent tool, and only the call accepts one.
-  for (const key of ['provider', 'model', 'reasoning_effort']) {
-    assert.equal(tool.parameters[key].type, 'string')
-    assert.equal('required' in tool.parameters[key], false)
+  // Issue #8 accepts the same optional route fields at the batch and stage levels.
+  for (const properties of [tool.parameters, stage.properties]) {
+    for (const key of ['provider', 'model', 'reasoning_effort']) {
+      assert.equal(properties[key].type, 'string')
+      assert.equal('required' in properties[key], false)
+    }
   }
-  const stageText = JSON.stringify(stage.properties)
-  assert.equal(stageText.includes('"provider"'), false)
-  assert.equal(stageText.includes('"model"'), false)
+  assert.equal(tool.parameters.team_task_id.type, 'string')
+  assert.equal('required' in tool.parameters.team_task_id, false)
   assert.equal(tool.isConcurrencySafe(), true)
 })
 

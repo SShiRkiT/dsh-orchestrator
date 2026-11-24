@@ -88,6 +88,7 @@ test('the tool is concurrency-safe, named delegate, and takes optional route ove
     'provider',
     'readOnly',
     'reasoning_effort',
+    'team_task_id',
     'writeScope',
   ])
   // The author dialect spells requiredness per property, not as a `required` array.

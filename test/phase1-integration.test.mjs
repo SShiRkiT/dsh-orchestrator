@@ -5,6 +5,7 @@ import { registerHooks } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { SESSION_TOOLS_DOMAIN, SESSION_TOOLS_NAMESPACE } from '../lib/session-tools.js'
 import { NATIVE_TEAM_TOOLS } from '../lib/tool-surface.js'
 
 // Exercise the real plugin assembly; only the host-framework imports and services are fake.
@@ -38,7 +39,7 @@ const drain = () => new Promise((resolve) => setImmediate(resolve))
 const hasConflict = (owner) => (error) => error?.code === 'write-scope-conflict' &&
   error.details.some((row) => row.owner === owner)
 
-function harness(t, { onStart, onAudit, onPrompt, team = NATIVE_TEAM_TOOLS } = {}) {
+function harness(t, { onStart, onAudit, onPrompt, team = NATIVE_TEAM_TOOLS, host = {} } = {}) {
   const cwd = mkdtempSync(path.join(os.tmpdir(), 'dsh-phase1-'))
   const names = [...DEFAULT_ALLOWED_TOOLS, ...team, 'subagent_fork', 'workflow']
   const subscriptions = new Map()
@@ -77,7 +78,7 @@ function harness(t, { onStart, onAudit, onPrompt, team = NATIVE_TEAM_TOOLS } = {
       id,
       cwd,
       inbox,
-      session: { header: { cwd } },
+      session: { id, header: { cwd } },
       followup(message) { notices.push(message); inbox.nextTurn.push(message) },
       ctx: { tools: { guard: (fn) => { guards.set(id, fn) } } },
     }
@@ -88,10 +89,11 @@ function harness(t, { onStart, onAudit, onPrompt, team = NATIVE_TEAM_TOOLS } = {
   const parent = makeRoot('root')
   const exec = { agent: parent, signal: new AbortController().signal }
   const ctx = {
+    ...host,
     tools: {
       register: (spec) => { toolSpecs.set(spec.name, spec) },
       view: () => ({ knownNames: names }),
-      definitions: () => names.map((name) => ({ name })),
+      definitions: () => names.map((name) => toolSpecs.get(name) ?? { name }),
     },
     agents: { get: (id) => liveAgents.get(id), list: () => [...liveAgents.values()] },
     sessions: { get: (id) => liveAgents.get(id)?.session, flush: async () => true },
@@ -122,15 +124,16 @@ function harness(t, { onStart, onAudit, onPrompt, team = NATIVE_TEAM_TOOLS } = {
       },
     },
   }
+  ctx.get ??= (name) => ctx[name]
   apply(ctx, config)
-  t.after(() => {
-    for (const dispose of disposers.reverse()) if (typeof dispose === 'function') dispose()
+  t.after(async () => {
+    for (const dispose of disposers.reverse()) if (typeof dispose === 'function') await dispose()
     rmSync(cwd, { recursive: true, force: true })
   })
   const route = { provider: 'test', model: 'test' }
   return {
     cwd, config, ctx, parent, starts, notices, audits, prompts, toolSpecs, makeRoot, removed, replacements,
-    check: (name) => guards.get(parent.id)({ name, agent: parent }),
+    check: (name, agent = parent, args) => guards.get(parent.id)({ name, agent, arguments: args }),
     definitions: (agent = parent) => ctx.tools.definitions(agent).map(({ name }) => name),
     delegate: (options, agent = parent) => toolSpecs.get('delegate').execute({
       ...route, prompt: '执行', description: '测试', ...options,
@@ -179,7 +182,8 @@ test('phase 1: installed gate and definitions follow native Team catalog and liv
     assert.ok(!h.definitions().includes(name))
     assert.match(h.check(name), /ADR-0004 默认禁用/)
   }
-  assert.match(h.toolSpecs.get('delegate').description, /team_task_\* 仅用于共享任务板/)
+  assert.match(h.ctx.tools.definitions(h.parent).find(({ name }) => name === 'delegate').description,
+    /team_task_\* 仅用于共享任务板/)
   h.config.allowAgentTeam = false
   assert.ok(available.every((name) => !h.definitions().includes(name)))
   assert.match(h.check(available[0]), /allowAgentTeam: false/)
@@ -189,6 +193,89 @@ test('phase 1: installed gate and definitions follow native Team catalog and liv
   assert.deepEqual(h.definitions(), [...available, 'workflow'])
   h.config.allowedTools = []
   assert.deepEqual(h.definitions(), [])
+})
+
+test('one session override drives declarations, delegate descriptions and direct or PTC guards', async (t) => {
+  let remote
+  const domains = new Set()
+  const rows = new Map()
+  const h = harness(t, { host: {
+    provide(name, service) {
+      assert.equal(name, SESSION_TOOLS_NAMESPACE)
+      assert.equal(service.typertRemote.service, service)
+      remote = service
+      return () => { remote = undefined }
+    },
+    typert: { register: () => async () => {} },
+    storageDomain: { async open(spec) {
+      domains.add(spec.name)
+      const table = {
+        entries: () => rows.entries(),
+        async put(key, value) { rows.set(key, value) },
+        async delete(key) { return rows.delete(key) },
+      }
+      return {
+        table: () => spec.name === SESSION_TOOLS_DOMAIN ? table : { entries: () => new Map().entries() },
+        getGlobal: () => spec.global?.initial,
+        async close() {},
+      }
+    } },
+  } })
+  const a = h.parent
+  const b = h.makeRoot('B')
+  const worker = { id: 'child', session: { id: 'root', header: { delegationDepth: 1 } } }
+  h.config.allowedTools = ['delegate', 'orchestrate']
+  const shared = h.ctx.tools.definitions().find(({ name }) => name === 'delegate')
+  const description = (agent) => h.ctx.tools.definitions(agent).find(({ name }) => name === 'delegate')?.description
+  const base = await remote.get(a.session.id)
+  assert.equal(base.storageReady, true)
+  assert.deepEqual(base.allowedTools, ['delegate', 'orchestrate'])
+  assert.deepEqual(domains, new Set(['dsh_orchestrator_state', SESSION_TOOLS_DOMAIN]))
+
+  // Model-facing copies may differ even as the registry object and other sessions stay stable.
+  const custom = await remote.set(a.session.id, ['delegate', 'workflow', NATIVE_TEAM_TOOLS[0]], base.revision)
+  assert.deepEqual(h.definitions(a), ['delegate', NATIVE_TEAM_TOOLS[0], 'workflow'])
+  assert.deepEqual(h.definitions(b), ['delegate', 'orchestrate'])
+  assert.match(description(a), /: delegate, workflow, team_task_create。/)
+  assert.match(description(b), /: delegate, orchestrate。/)
+  assert.match(shared.description, /: delegate, orchestrate。/)
+  assert.doesNotMatch(shared.description, /: delegate, workflow/)
+  assert.equal(h.ctx.tools.definitions().find(({ name }) => name === 'delegate'), shared)
+  assert.equal(h.check('workflow', a), undefined)
+  assert.match(h.check('workflow', b), /默认禁用/)
+  assert.match(h.check('orchestrate', a), /not available/)
+  assert.equal(h.check('orchestrate', b), undefined)
+
+  // Like the host PTC pipeline, admit the transport first, then guard the nested call
+  // separately with the same executing agent (without executing a real user program).
+  const ptc = (agent, name) => h.check('run_code', agent, { code: `await tools.${name}()` }) ?? h.check(name, agent)
+  assert.equal(ptc(a, 'workflow'), undefined)
+  assert.match(ptc(b, 'workflow'), /默认禁用/)
+  assert.match(ptc(a, 'orchestrate'), /not available/)
+  assert.equal(ptc(b, 'orchestrate'), undefined)
+  h.config.allowAgentTeam = false
+  assert.ok(!h.definitions(a).includes(NATIVE_TEAM_TOOLS[0]))
+  assert.match(h.check(NATIVE_TEAM_TOOLS[0], a), /allowAgentTeam: false/)
+  assert.doesNotMatch(description(a), /team_task_create/)
+  assert.ok(h.definitions(worker).includes('workflow'))
+  assert.ok(!h.definitions(worker).includes('delegate'))
+  assert.equal(h.check('workflow', worker), undefined)
+
+  const empty = await remote.set(a.session.id, [], custom.revision)
+  assert.deepEqual(h.definitions(a), [])
+  assert.equal(description(a), undefined)
+  assert.match(ptc(a, 'delegate'), /not available/)
+  assert.deepEqual(h.definitions(b), ['delegate', 'orchestrate'])
+  const sameAsGlobal = await remote.set(a.session.id, ['delegate', 'orchestrate'], empty.revision)
+  assert.equal(sameAsGlobal.enabled, true)
+  h.config.allowedTools = ['delegate']
+  assert.deepEqual(h.definitions(a), ['delegate', 'orchestrate'])
+  assert.deepEqual(h.definitions(b), ['delegate'])
+  const cleared = await remote.clear(a.session.id, sameAsGlobal.revision)
+  assert.equal(cleared.enabled, false)
+  assert.deepEqual(h.definitions(a), ['delegate'])
+  assert.deepEqual(h.config.allowedTools, ['delegate'])
+  assert.equal(rows.size, 0)
 })
 
 test('phase 1: read-only delegate and batch coexist with an active writer and report observed writes', async (t) => {

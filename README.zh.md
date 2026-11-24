@@ -99,8 +99,17 @@
 在输入栏右侧的「调度模式」面板里，主模型和子代理模型彻底分开配置：  
   - 默认主模型与子模型都可以指定设置。
 
-> 支持`prompt`或者是`AGENTS.md`传入 `provider / model`及可选 `reasoning_effort`即可单独指定本轮/本工作区所用子代理模型  
-> 工作区主代理模型可以自行在`dsh原生模型选择器`内切换，对整个会话`单独`永久生效
+> 可在提示词或 `AGENTS.md` 中指定本轮或本工作区的子代理模型，由主代理派发时成对传入 `provider` 和 `model`，并按需添加 `reasoning_effort`。工作区的主代理模型仍可在 DSH 原生模型选择器中独立切换。
+
+**在 `AGENTS.md` 或提示词中配置分级模型路由表**
+
+可把下面的表写进工作区的 `AGENTS.md` 或直接放入提示词。这是供主代理阅读和应用的规则，插件不会解析表格。当前消息显式点名的路由优先于工作区规则。请把占位符替换成 DSH 中真实可用的 Provider ID 和 Model ID；任务未匹配时，省略三个路由参数。
+
+| 任务类别 | `provider` | `model` | `reasoning_effort` |
+| --- | --- | --- | --- |
+| 轻量任务（如提取、分类） | `<轻量-provider-id>` | `<轻量-model-id>` | 省略 |
+| 重量任务（如架构推演、复杂复核） | `<重量-provider-id>` | `<重量-model-id>` | `high`（模型支持时） |
+| 其他任务 | 省略 | 省略 | 省略 |
 
 ![调度模式面板](docs/images/dispatch-panel.png)
 
@@ -134,6 +143,8 @@
 
 > 由 `orchestrate` 驱动，支持 1–64 个条目 × 1–8 个阶段、1–16 路并发（默认 4），每阶段可选 JSON 格式校验；隔离模式下按条目自动分配并跨阶段复用独立目录，不进入后台巡检。
 
+显式指定某个阶段的模型时，在对应的 `stages` 条目中成对传入 `provider` 和 `model`，可同时传入 `reasoning_effort`。每个阶段按 **阶段覆盖 > 顶层批次覆盖 > 面板默认子代理路由** 的顺序选择整组路由，不跨层拼接，也不从后备路由继承推理强度。仅当某个阶段需要回退到面板默认路由时，才要求面板已配置子代理模型；缺失时整批不会启动。
+
 ---
 
 <div align="center">
@@ -146,10 +157,12 @@
 
 | 工具 | 做什么用 | 常用参数 | 注意事项 |
 | --- | --- | --- | --- |
-| `delegate` | 异步派活，支持同回合同时派多个 | `prompt`、`description`、`writeScope`（写任务必填）、`readOnly`、`isolation`、`expectedFingerprints`、`expectedTargets`、`cwd`、`provider` + `model` | 仅主代理可用；写任务自动开隔离目录或加文件锁；交工时自动附上审计结果，运行中受后台巡检覆盖 |
-| `orchestrate` | 批量 / 多步骤流水线自动并行跑 | `items`（1–64）、`stages`（1–8，可配 `schema`）、`maxConcurrency`（1–16，默认 4）、`writeScope`、`readOnly`、`isolation`、`cwd`、`provider` + `model` | 逐条目推进互不卡顿，单条失败互不拖累；隔离模式按条目复用目录；同步等待完成，不进后台巡检 |
+| `delegate` | 异步派活，支持同回合同时派多个 | `prompt`、`description`、`writeScope`（写任务必填）、`readOnly`、`isolation`、`expectedFingerprints`、`expectedTargets`、`cwd`、`provider` + `model`、可选 `team_task_id` | 仅主代理可用；写任务自动开隔离目录或加文件锁；交工时自动附上审计结果，运行中受后台巡检覆盖 |
+| `orchestrate` | 批量 / 多步骤流水线自动并行跑 | `items`（1–64）、`stages`（1–8，可配 `schema`）、`maxConcurrency`（1–16，默认 4）、`writeScope`、`readOnly`、`isolation`、`cwd`、可选顶层 `team_task_id`；顶层或单个阶段均可指定 `provider` + `model`，可选 `reasoning_effort` | 路由优先级：阶段覆盖 > 顶层批次覆盖 > 面板默认；各条目独立推进，隔离模式按条目复用目录，同步等待，不进后台巡检 |
 | `delegate_status` | 一眼查看当前会话所有子代理的验收进度 | `childId`（可选）、`includeCompleted`（默认 `true`）、`limit`（1–64，默认 20） | 只读查询；清晰区分运行状态、审计结果、文件锁与待评审目录，没查到记录不代表已通过 |
 | `worktree_manage` | 查看、审阅、合并、丢弃或清理隔离目录 | `action`（`list`/`inspect`/`merge`/`discard`/`prune`）、`worktreeId` / `childId`、`strategy`（`merge`/`squash`/`ff-only`）、`autoStageDirty`、`deleteAfterMerge`、`force`、`dryRun` | 仅主代理可用；审计通过不等于已合回主分支；合并冲突会保留现场；清理或丢弃后自动锁死旧子代理 |
+
+宿主根会话已开启原生「智能体团队协作」，且调度模式放行当前会话的 `team_task_create` 时，主代理可在派发复杂任务前建立共享目标，将工具返回的 `id` 作为 `team_task_id` 传给子代理（编排时传给每个阶段）。子代理可在 `team_task_get` 可用时读取目标作为参考；任务说明仍须自包含，共享目标不替代派发或写租约。
 
 ---
 
@@ -219,7 +232,7 @@ dsh plugin --profile desktop add @sshirkit/dsh-orchestrator
 - **默认启用 Git Worktree 隔离**：控制 `isolation: "auto"` 在 Git 仓库写任务下的隔离行为；
 - **主代理 / 子代理默认模型与推理强度**：支持关键词搜索选择模型；主代理写入宿主 `agent-default-model`（仅影响新会话），子代理从下一次派发生效；
 - **子代理巡检间隔 / 巡检次数 / 无限巡检**：运行中动态调整后台旁路巡检策略；
-- **右侧 `Allowed Tools` 列表**：按关键字搜索、实时勾选 / 取消勾选主代理可用工具，支持一键重置默认白名单。
+- **右侧 `Allowed Tools` 列表**支持按关键字搜索、勾选主代理可用工具和重置默认白名单。打开「仅当前会话」开关（英文界面显示 `Only for this session`）可单独编辑当前会话的白名单，关闭后恢复继承全局设置。
 
 ## 配置项速查表
 
@@ -229,10 +242,10 @@ dsh plugin --profile desktop add @sshirkit/dsh-orchestrator
 | --- | --- | --- |
 | `enabled` | `true` | 调度模式总开关。关闭后一键恢复宿主原生工具面；`delegate` / `orchestrate` 仍禁用，已绑定巡检回合的硬禁仍优先。 |
 | `worktreeIsolationEnabled` | `true` | 控制 `isolation: "auto"` 下是否为 Git 仓库写任务默认启用独立 Worktree 隔离与 `git diff` / `git log` 审计（非 Git 目录自动降级快照审计）。 |
-| `allowedTools` | 未配置（默认 9 项基础工具；`allowAgentTeam: true` 时自动追加已注册的 4 项原生 Team 工具） | 主代理显式工具白名单。显式数组（包括 `[]`）会**替换**默认名单而非追加；面板右侧 `Allowed Tools` 勾选实时写入此项。 |
-| `allowAgentTeam` | `true` | 是否允许被闸门管控的主代理使用宿主原生 Agent Teams 任务板工具（`team_task_*`）。设为 `false` 时优先级高于白名单。 |
-| `workerProvider` | `""` | 子代理默认路由 Provider（必填；与 `workerModel` 任一为空且无单次覆盖时直接报错，绝不静默回退主模型）。 |
-| `workerModel` | `""` | 子代理默认路由 Model（必填，约束同上）。 |
+| `allowedTools` | 未配置（默认 9 项基础工具；`allowAgentTeam: true` 时自动追加已注册的 4 项原生 Team 工具） | 主代理显式工具白名单。显式数组（包括 `[]`）会**替换**默认名单。关闭「仅当前会话」开关时，右侧 `Allowed Tools` 列表的改动实时写入此项。 |
+| `allowAgentTeam` | `true` | 只控制调度模式下主代理能否调用原生 Team 任务板工具（`team_task_*`），不切换宿主「智能体团队协作」模式。设为 `false` 时优先于会话和全局白名单。宿主根会话已开启原生 Team 且会话放行 `team_task_create` 时，主代理可建立共享目标并用可选 `team_task_id` 传给子代理读取。 |
+| `workerProvider` | `""` | 子代理默认路由 Provider。未命中任何显式路由覆盖时，必须同时配置此项和 `workerModel`；不会回退到主模型。 |
+| `workerModel` | `""` | 子代理默认路由 Model；约束同上。 |
 | `workerReasoningEffort` | `""` | 子代理默认推理强度；留空则由所选子代理模型自行决定默认值。 |
 | `superviseEnabled` | `true` | 子代理后台旁路巡检总开关（位于宿主插件设置卡片）。 |
 | `superviseIntervalSeconds` | `600` | 旁路巡检间隔（秒），范围 `10–86400`，运行中修改立即生效。 |

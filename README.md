@@ -98,8 +98,18 @@ At handoff, the plugin also checks whether a subagent touched files outside its 
 In the **Dispatch** panel next to the composer, main-agent and subagent models are configured completely separately:
 - Both the default main model and default subagent model can be set explicitly.
 
-> Pass `provider` / `model` (and optional `reasoning_effort`) via your prompt or `AGENTS.md` to specify the subagent model for a particular turn or workspace;
-> The workspace's main-agent model can still be switched independently in DSH's native model selector for that session.
+> Specify a subagent model for a turn or workspace in your prompt or `AGENTS.md`. The main agent passes `provider` and `model` together and adds `reasoning_effort` only when requested.
+> The workspace’s main-agent model can still be switched independently in DSH’s native model selector.
+
+**Set up a tiered model routing table in `AGENTS.md` or your prompt**
+
+Copy the table below into your workspace’s `AGENTS.md` or your prompt. The main agent reads and applies these rules; the plugin does not parse the table. An explicit route in the current message takes precedence over workspace rules. Replace the placeholders with actual provider and model IDs available in DSH. If no rule matches, omit all three route parameters.
+
+| Task type | `provider` | `model` | `reasoning_effort` |
+| --- | --- | --- | --- |
+| Lightweight tasks (e.g. extraction or classification) | `<light-provider-id>` | `<light-model-id>` | Omit |
+| Heavyweight tasks (e.g. architecture analysis or complex review) | `<heavy-provider-id>` | `<heavy-model-id>` | `high` (if supported by the model) |
+| Other tasks | Omit | Omit | Omit |
 
 ![Dispatch Mode Panel](docs/images/dispatch-panel.png)
 
@@ -132,6 +142,8 @@ For repetitive or multi-step jobs like "inspect → edit → verify across 20 fi
 
 > Powered by `orchestrate`, supporting 1–64 items × 1–8 stages and 1–16 concurrent workers (default 4), with optional per-stage JSON format checks; in isolated mode each item gets its own working directory reused across stages, excluded from background check-ins.
 
+To explicitly select a model for a stage, pass `provider` and `model` together in that `stages` entry, with optional `reasoning_effort`. Each stage chooses one whole route: **stage override > top-level batch override > panel default worker route**. Routes are never combined, and reasoning effort is not inherited from a fallback route. The panel default is required only when a stage needs it; if it is missing, the batch starts no workers.
+
 ---
 
 <div align="center">
@@ -144,10 +156,12 @@ The plugin exposes 4 orchestration and review tools exclusively to the main agen
 
 | Tool | What It Does | Common Parameters | Good to Know |
 | --- | --- | --- | --- |
-| `delegate` | Async task dispatch; supports parallel fan-out in one turn | `prompt`, `description`, `writeScope` (required for writes), `readOnly`, `isolation`, `expectedFingerprints`, `expectedTargets`, `cwd`, `provider` + `model` | Main agent only; auto-allocates an isolated directory or file lock for writes; attaches audit results at handoff and includes background check-ins |
-| `orchestrate` | Parallel batch & multi-stage pipelines | `items` (1–64), `stages` (1–8, optional `schema`), `maxConcurrency` (1–16, default 4), `writeScope`, `readOnly`, `isolation`, `cwd`, `provider` + `model` | Each item advances without waiting on slower ones; single-item failures stay isolated; reuses one isolated directory per item; runs synchronously without background check-ins |
+| `delegate` | Async task dispatch; supports parallel fan-out in one turn | `prompt`, `description`, `writeScope` (required for writes), `readOnly`, `isolation`, `expectedFingerprints`, `expectedTargets`, `cwd`, `provider` + `model`, optional `team_task_id` | Main agent only; auto-allocates an isolated directory or file lock for writes; attaches audit results at handoff and includes background check-ins |
+| `orchestrate` | Parallel batch & multi-stage pipelines | `items` (1–64), `stages` (1–8, optional `schema`), `maxConcurrency` (1–16, default 4), `writeScope`, `readOnly`, `isolation`, `cwd`, optional top-level `team_task_id`; `provider` + `model` with optional `reasoning_effort` at the top level or per stage | Route priority: stage override > batch override > panel default. Items advance independently, reuse their own isolated directory, and run synchronously without background check-ins |
 | `delegate_status` | One-stop acceptance overview for all subagents in this session | `childId` (optional), `includeCompleted` (default `true`), `limit` (1–64, default 20) | Read-only; separates run state, audit status, file locks, and directories awaiting review; missing records never mean "passed" |
 | `worktree_manage` | List, inspect, merge, discard, or prune isolated directories | `action` (`list`/`inspect`/`merge`/`discard`/`prune`), `worktreeId` / `childId`, `strategy` (`merge`/`squash`/`ff-only`), `autoStageDirty`, `deleteAfterMerge`, `force`, `dryRun` | Main agent only; passing audit ≠ merged to your branch; merge conflicts preserve the scene; cleaning up or discarding locks retired workers |
+
+When native Agent Teams is on for the host's root session and dispatch mode permits `team_task_create` in that session, the main agent can create a shared goal before dispatching complex work. Pass the returned `id` as `team_task_id`; subagents (every stage in `orchestrate`) can read the goal with `team_task_get` when available. Keep the task prompt self-contained: the shared goal is a reference, not a substitute for dispatch or write leases.
 
 ---
 
@@ -219,7 +233,7 @@ The bilingual panel adapts automatically to DSH's locale and provides live contr
 - **Enable Git Worktree isolation by default**: controls `isolation: "auto"` behavior for Git write tasks;
 - **Main agent / Subagent default model & reasoning effort**: searchable model picker; main writes host `agent-default-model` (new sessions only), subagent applies from the next dispatch;
 - **Subagent check interval / check count / Unlimited checks**: adjusts sidecar supervision live while workers run;
-- **Right-hand `Allowed Tools` checklist**: live search, toggle individual tools on/off, or one-click reset to defaults.
+- **Right-hand `Allowed Tools` checklist**: search, check individual tools, or reset to defaults. Turn on **Only for this session** (shown as **仅当前会话** in Chinese) to edit a separate list for the current conversation. Turn it off to restore inheritance from the global list.
 
 ## Configuration Reference
 
@@ -229,10 +243,10 @@ All 13 user-configurable fields below are `volatile` (dynamic hot config, no res
 | --- | --- | --- |
 | `enabled` | `true` | Master switch for dispatch mode. Turning it off restores the native host tool surface; `delegate` / `orchestrate` stay disabled and bound supervision-turn hard locks still take priority. |
 | `worktreeIsolationEnabled` | `true` | Controls whether `isolation: "auto"` creates isolated Git Worktrees with `git diff` / `git log` audits for Git write tasks (non-Git directories fall back to snapshot audits). |
-| `allowedTools` | Unset (9 base tools; plus 4 registered native Team tools when `allowAgentTeam: true`) | Explicit main-agent tool whitelist. An explicit array (including `[]`) **replaces** the defaults rather than appending; updated live by the panel's `Allowed Tools` checklist. |
-| `allowAgentTeam` | `true` | Allows the gated main agent to use host native Agent Teams task-board tools (`team_task_*`). Setting `false` takes precedence over the whitelist. |
-| `workerProvider` | `""` | Default worker route provider (required; fails loudly if unset alongside `workerModel` without a per-call override — never falls back to the main model). |
-| `workerModel` | `""` | Default worker route model (required; same anti-burn guard as above). |
+| `allowedTools` | Unset (9 base tools; plus 4 registered native Team tools when `allowAgentTeam: true`) | Explicit main-agent tool whitelist. An explicit array (including `[]`) **replaces** the defaults rather than appending. The panel's `Allowed Tools` checklist updates this field when **Only for this session** is off. |
+| `allowAgentTeam` | `true` | Controls only the main agent's access to native task-board tools (`team_task_*`) in dispatch mode; it does not switch host Agent Teams on or off. `false` overrides the session and global whitelists. When the root session has native Agent Teams on and its whitelist permits `team_task_create`, the main agent can create a shared goal and pass its ID as optional `team_task_id` for subagents to read. |
+| `workerProvider` | `""` | Default worker route provider. When no explicit override applies, both this and `workerModel` are required; there is no fallback to the main model. |
+| `workerModel` | `""` | Default worker route model; same requirement as above. |
 | `workerReasoningEffort` | `""` | Default worker reasoning effort; leave empty to let the chosen worker model use its own default. |
 | `superviseEnabled` | `true` | Master switch for background sidecar supervision (in the host plugin settings card). |
 | `superviseIntervalSeconds` | `600` | Sidecar supervision interval in seconds (`10–86400`); changes apply immediately to running workers. |
