@@ -1,8 +1,8 @@
 # Getting Support / 获取帮助
 
-1. Start with the verification and troubleshooting sections in your language.
-   - English: [Quick Verification](../README.md#quick-verification) and [Troubleshooting](../README.md#troubleshooting).
-   - 简体中文：[快速验证](../README.zh.md#快速验证)与[常见排障](../README.zh.md#常见排障)。
+1. Start with the dsh-orchestrator installation and compatibility instructions in your language.
+   - English: [Installation](../README.md#installation).
+   - 简体中文：[安装方式](../README.zh.md#安装方式)。
 2. For terminology and design decisions, consult [GLOSSARY.md](../docs/GLOSSARY.md) and [docs/adr/](../docs/adr/).
 3. Search [existing issues](https://github.com/SShiRkiT/dsh-orchestrator/issues?q=is%3Aissue) for your symptom, error message, or affected module. If the issue is new, use the [structured issue forms](https://github.com/SShiRkiT/dsh-orchestrator/issues/new/choose) to report it.
 

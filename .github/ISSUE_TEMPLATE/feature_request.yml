@@ -1,5 +1,5 @@
 name: Feature Request / 功能建议
-description: Suggest an enhancement or new capability for @sshirkit/dsh-orchestrator
+description: Suggest an enhancement or new capability for dsh-orchestrator
 title: "[Feat]: "
 labels: ["enhancement"]
 body:

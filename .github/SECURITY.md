@@ -2,10 +2,10 @@
 
 ## Supported versions / 受支持版本
 
-| Version | Security updates |
-| --- | --- |
-| `0.8.x` | Supported |
-| `<= 0.7.x` | Unsupported |
+| Package | Version | Security updates |
+| --- | --- | --- |
+| `@sshirkit/dsh-orchestrator` | `1.0.x` | Supported |
+| `@sshirkit/dsh-orchestrator` | `< 1.0.0` | Unsupported |
 
 ## Security-sensitive areas / 安全关注点
 

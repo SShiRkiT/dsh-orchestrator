@@ -91,10 +91,14 @@ test('the tool is named orchestrate, takes optional route overrides and defaults
   assert.equal(definition.isConcurrencySafe(), true)
   assert.deepEqual(Object.keys(definition.parameters).sort(), [
     'cwd',
+    'expectedFingerprints',
+    'expectedTargets',
+    'isolation',
     'items',
     'maxConcurrency',
     'model',
     'provider',
+    'readOnly',
     'reasoning_effort',
     'stages',
     'writeScope',
@@ -106,12 +110,12 @@ test('the tool is named orchestrate, takes optional route overrides and defaults
     assert.match(definition.parameters[key].description, /仅当用户显式点名/)
   }
   assert.match(definition.parameters.reasoning_effort.description, /仅当用户点名时才设置/)
-  // The batch-level declaration is required and has no default: every batch declares it.
-  assert.equal(definition.parameters.writeScope.required, true)
+  assert.equal('required' in definition.parameters.writeScope, false)
   assert.equal('default' in definition.parameters.writeScope, false)
   assert.equal(definition.parameters.writeScope.type, 'array')
   assert.equal(definition.parameters.writeScope.items.type, 'string')
-  assert.match(definition.parameters.writeScope.description, /^必填/)
+  assert.equal(definition.parameters.readOnly.default, false)
+  assert.match(definition.parameters.writeScope.description, /^非只读任务必填/)
   assert.match(definition.parameters.writeScope.description, /write-scope-conflict/)
   assert.deepEqual(
     parseOrchestrateArgs({ items: [1], stages: [{ name: 's', prompt: 'p' }], writeScope: ['src/a.js'] }),
@@ -121,6 +125,7 @@ test('the tool is named orchestrate, takes optional route overrides and defaults
       stages: [{ name: 's', prompt: 'p' }],
       maxConcurrency: 4,
       writeScope: ['src/a.js'],
+      readOnly: false,
     },
   )
   assert.equal(parseOrchestrateArgs({ cwd: '  work  ', items: [1], stages: [{ name: 's', prompt: 'p' }] }).cwd, 'work')
@@ -771,7 +776,9 @@ test('the description is a compact pipeline brief and does not repeat the main-a
   assert.match(definition.description, /声明 schema 的阶段输出校验过的 JSON，否则为文本/)
   assert.match(definition.description, /单 item 失败置为 null 并记入 errors/)
   assert.match(definition.description, /maxConcurrency 限制并发数/)
-  assert.match(definition.description, /调用必填 writeScope，整批共享一个写租约，冲突时整批失败不排队/)
+  assert.match(definition.description, /调用必填 writeScope/)
+  assert.match(definition.description, /按 item 分配独立 Worktree，同 item 多 stage 复用一树/)
+  assert.match(definition.description, /共享模式整批共享一个写租约，冲突时整批失败不排队/)
   assert.match(definition.description, /无关批次可并发调用；单任务请用 delegate/)
   // The route parameters carry the same one-line condition, where a model would be typed.
   for (const param of ['provider', 'model']) {
@@ -797,10 +804,14 @@ test('the description has no worker variant and does not follow the live whiteli
   assert.equal(bare.parameters.items.required, true)
   assert.deepEqual(Object.keys(bare.parameters).sort(), [
     'cwd',
+    'expectedFingerprints',
+    'expectedTargets',
+    'isolation',
     'items',
     'maxConcurrency',
     'model',
     'provider',
+    'readOnly',
     'reasoning_effort',
     'stages',
     'writeScope',

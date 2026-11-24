@@ -80,9 +80,13 @@ test('the tool is concurrency-safe, named delegate, and takes optional route ove
   assert.deepEqual(Object.keys(tool.parameters).sort(), [
     'cwd',
     'description',
+    'expectedFingerprints',
+    'expectedTargets',
+    'isolation',
     'model',
     'prompt',
     'provider',
+    'readOnly',
     'reasoning_effort',
     'writeScope',
   ])
@@ -90,12 +94,13 @@ test('the tool is concurrency-safe, named delegate, and takes optional route ove
   assert.equal(tool.parameters.prompt.required, true)
   assert.equal(tool.parameters.description.required, true)
   assert.equal('required' in tool.parameters.cwd, false)
-  // The declaration is required now: nothing may fall back to the old undeclared path.
-  assert.equal(tool.parameters.writeScope.required, true)
+  // The schema allows omission only because execute also supports explicit read-only mode.
+  assert.equal('required' in tool.parameters.writeScope, false)
   assert.equal(tool.parameters.writeScope.type, 'array')
   assert.equal(tool.parameters.writeScope.items.type, 'string')
   assert.equal('default' in tool.parameters.writeScope, false)
-  assert.match(tool.parameters.writeScope.description, /^必填/)
+  assert.equal(tool.parameters.readOnly.default, false)
+  assert.match(tool.parameters.writeScope.description, /^非只读任务必填/)
   assert.match(tool.parameters.writeScope.description, /write-scope-conflict/)
   for (const key of ['provider', 'model', 'reasoning_effort']) {
     assert.equal('required' in tool.parameters[key], false)
@@ -351,7 +356,7 @@ test('reasoning_effort passes through with the override and is trimmed', async (
 test('the description keeps the main-agent rule, the whitelist and the execute contract', () => {
   // The rule names exactly what the gate lets through, so the test drives it with a
   // whitelist rather than a deny list: every other tool is blocked by not being named.
-  const allowed = ['delegate', 'orchestrate', 'todo_write']
+  const allowed = ['delegate', 'orchestrate', 'delegate_status', 'todo_write']
   const tool = createDelegateTool({
     defineTool: (d) => d,
     subagents: {},
@@ -360,13 +365,18 @@ test('the description keeps the main-agent rule, the whitelist and the execute c
     allowedTools: allowed,
   })
   assert.equal(tool.description.startsWith(mainAgentRule(allowed)), true)
-  assert.match(tool.description, /主代理可用工具（白名单驱动，其余全部禁用）: delegate, orchestrate, todo_write。/)
+  assert.match(tool.description, /主代理可用工具（白名单驱动，其余全部禁用）: delegate, orchestrate, delegate_status, todo_write。/)
   // The planning-only rule, in one dense Chinese paragraph.
   assert.match(tool.description, /主代理规则：主代理只负责规划/)
   assert.match(tool.description, /通过 delegate 或 orchestrate 交子代理执行/)
   assert.match(tool.description, /勿试探调用被禁工具/)
-  assert.match(tool.description, /新会话或压缩后直接委派，无需重新确认/)
-  assert.match(tool.description, /独立任务在同一消息内并发派发，delegate 完成后直接结束回合等待子代理完成，勿轮询状态或为同一任务重复派发。/)
+  assert.match(tool.description, /同任务报错重试、参数纠偏、小幅返工或追问，优先用 send_message 复用原代理；仅在 writeScope 需变更、Worktree 已锁定、原上下文严重跑偏或无法继续时才新开 delegate。/)
+  assert.match(tool.description, /已结束的写任务续跑前重抢原写租约并拍新基线，租约冲突或工作树已锁定时拒绝投递；本轮结束后写审计并再次释放租约。/)
+  assert.match(tool.description, /新会话或压缩后直接推进，无需重新确认/)
+  assert.match(tool.description, /独立任务在同一消息内并发派发，delegate 完成后直接结束回合等待子代理完成，勿空转轮询状态。/)
+  assert.ok(tool.description.indexOf('优先用 send_message') < tool.description.indexOf('并发派发'))
+  assert.match(tool.description, /子代理完成通知只代表执行结束，不等于写作用域审计通过。/)
+  assert.match(tool.description, /若未见同帧审计通过确认，验收前按需调用一次 delegate_status 核验审计状态（pending \/ passed \/ failed）；只有 passed 才确认通过，勿盲等或循环轮询。/)
   // The retry contract.
   assert.match(tool.description, /子代理无收尾中断时插件会自动重试，期间勿重派/)
   assert.match(tool.description, /提示停止重试时按通知询问用户/)
@@ -379,11 +389,11 @@ test('the description keeps the main-agent rule, the whitelist and the execute c
   // Separator space between rule and body when enabled.
   assert.equal(tool.description.includes('。 把一个自包含任务'), true)
   // The body's handoff contract.
-  assert.match(tool.description, /prompt 须写清目标、允许修改的文件、验收命令与兜底方案，派发时必填 writeScope/)
-  assert.match(tool.description, /调用立即返回子代理 id，结束时自动通知/)
+  assert.match(tool.description, /prompt 须写清目标、允许修改的文件、验收命令与兜底方案。非只读任务必填 writeScope/)
+  assert.match(tool.description, /逻辑写后审计而非物理隔离/)
+  assert.match(tool.description, /立即返回子代理 ID 及宿主提供的 agentName，二者均可填 send_message\.agent。结束时自动通知/)
   assert.match(tool.description, /严禁要求子代理用 send_message 汇报/)
-  assert.match(tool.description, /子代理运行中可用 send_message 实时纠偏；/)
-  assert.match(tool.description, /已结束的子代理也可以通过 send_message 复用原代理因错返工或追加任务（保留其已有上下文），同一类型任务勿重新 delegate。/)
+  assert.match(tool.description, /独立 Worktree 交付物须经 worktree_manage 评审、合回或丢弃/)
   assert.match(tool.description, /多个独立任务在同一轮并发发起；同构批量请用 orchestrate/)
   // The route parameters carry the same one-line condition, where a model would be typed.
   for (const param of ['provider', 'model']) {
@@ -391,6 +401,22 @@ test('the description keeps the main-agent rule, the whitelist and the execute c
     assert.match(description, /AGENTS\.md/, param)
     assert.match(description, /省略走 worker 路由/, param)
   }
+})
+
+test('the description only recommends delegate_status while it is on the live whitelist', () => {
+  let allowed = ['delegate', 'delegate_status']
+  const tool = createDelegateTool({
+    defineTool: (definition) => definition,
+    subagents: {},
+    config: cfg('p', 'm'),
+    leases: leases(),
+    allowedTools: () => allowed,
+  })
+
+  assert.match(tool.description, /按需调用一次 delegate_status/)
+  allowed = ['delegate']
+  assert.doesNotMatch(tool.description, /delegate_status/)
+  assert.match(tool.description, /子代理完成通知只代表执行结束，不等于写作用域审计通过。/)
 })
 
 test('a delegated child no longer sees this tool, so there is no worker variant', () => {

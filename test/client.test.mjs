@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import test from 'node:test'
 import vm from 'node:vm'
+import { DEFAULT_ALLOWED_TOOLS as HOST_DEFAULT_ALLOWED_TOOLS } from '../lib/tool-surface.js'
 
 const src = fs.readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
 
@@ -342,9 +343,10 @@ test('saveRoute surfaces a rejected write and a write that did not land', async 
 
 test('apply registers only the picker in input.right and keeps model catalog access', async () => {
   const regs = []
+  const dictionaries = []
   const ctx = {
     effect: (fn) => fn(),
-    locale: { register: () => {} },
+    locale: { register: (ns) => dictionaries.push(ns) },
     configForms: { get: (ns) => ({ ns }) },
     remote: { session: { modelCatalog: async () => ({ ok: true, value: { groups: [] } }) } },
     slots: { inject: (_n, cb) => cb(), register: (opts, comp) => regs.push({ opts, comp }) },
@@ -354,7 +356,11 @@ test('apply registers only the picker in input.right and keeps model catalog acc
     ['conversation.input.right', 'orchestrator-route-picker', 11],
   ])
   const props = regs[0].opts.inject('S1')
-  assert.deepEqual([props.scopes.main.ns, props.scopes.worker.ns, props.scopes.orch.ns], ['agent-default-model', 'orchestrator', 'orchestrator'])
+  assert.deepEqual([props.scopes.main.ns, props.scopes.worker.ns, props.scopes.orch.ns], [
+    'agent-default-model', 'orchestrator', 'orchestrator',
+  ])
+  assert.deepEqual(dictionaries, ['orchestrator'])
+  assert.equal(regs[0].opts.locale, 'orchestrator')
   assert.deepEqual(await props.loadCatalog(), { ok: true, value: { groups: [] } })
   assert.deepEqual(plain(mod.inject), ['slots', 'locale', 'remote', 'remote.session', 'configForms'])
 })
@@ -746,27 +752,76 @@ test('the patrol count hint disappears when its timer fires', async () => {
   assert.equal(field.alert(), undefined)
 })
 
+// ---- Worktree isolation -------------------------------------------------------------
+
+function mountWorktreeIsolation(scope) {
+  const view = mount(T.WorktreeIsolationField, { scope, t })
+  const toggle = () => nodes(view.tree).find((node) => node.type === T.EnableSwitch)
+  const alert = () => nodes(view.tree).find((node) => node.props?.role === 'alert')
+  return { view, toggle, alert }
+}
+
+test('the Worktree switch defaults on and persists boolean changes to the orchestrator scope', async () => {
+  const scope = fakeScope()
+  const field = mountWorktreeIsolation(scope)
+  assert.equal(field.toggle().props.label, 'worktreeIsolation.label')
+  assert.equal(field.toggle().props.checked, true)
+  assert.equal(field.toggle().props.disabled, false)
+  assert.equal(scope.calls.length, 0, 'a missing legacy field does not trigger a write')
+
+  await field.toggle().props.onChange(false)
+  assert.deepEqual(plain(scope.calls[0]), {
+    ops: [{ op: 'set', path: ['worktreeIsolationEnabled'], value: false }],
+    expected: 1,
+  })
+  assert.equal(field.toggle().props.checked, false)
+  assert.equal(scope.getSnapshot().value.worktreeIsolationEnabled, false)
+
+  await field.toggle().props.onChange(true)
+  assert.deepEqual(plain(scope.calls[1]), {
+    ops: [{ op: 'set', path: ['worktreeIsolationEnabled'], value: true }],
+    expected: 2,
+  })
+  assert.equal(field.toggle().props.checked, true)
+  assert.equal(scope.getSnapshot().value.worktreeIsolationEnabled, true)
+  assert.equal(field.alert(), undefined)
+  field.view.unmount()
+})
+
+test('the Worktree switch honors stored false and never writes in a read-only form', async () => {
+  const scope = fakeScope({ writable: false, initial: { worktreeIsolationEnabled: false } })
+  const field = mountWorktreeIsolation(scope)
+  assert.equal(field.toggle().props.checked, false)
+  assert.equal(field.toggle().props.disabled, true)
+  await field.toggle().props.onChange(true)
+  assert.equal(scope.calls.length, 0)
+  assert.equal(field.alert().kids[0], 'route.readonly')
+  field.view.unmount()
+})
+
+test('an unpersisted Worktree switch change reports failure without changing the shown value', async () => {
+  const scope = fakeScope({ drop: 'worktreeIsolationEnabled' })
+  const field = mountWorktreeIsolation(scope)
+  await field.toggle().props.onChange(false)
+  assert.equal(field.toggle().props.checked, true)
+  assert.equal(field.alert().kids[0], 'route.enableFailed')
+  field.view.unmount()
+})
+
 // ---- Allowed tools ------------------------------------------------------------------
 
-// The panel cannot ask the host for a tool catalog (the session remote has no such
-// method), so it re-declares the shipped whitelist. Reading the host constant out of the
-// source keeps the two copies honest without loading the host entry, whose packages
-// this test process does not install.
-const hostSource = fs.readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
-const hostListSource = /export const DEFAULT_ALLOWED_TOOLS = \[([\s\S]*?)\]/.exec(hostSource)
-// Strip `//` comments first: an apostrophe inside a comment ("the agent's surface")
-// would otherwise pair with a real string quote and skew the extraction.
-const hostListBody = hostListSource[1].replace(/\/\/[^\n]*/g, '')
-const HOST_DEFAULT_ALLOWED_TOOLS = [...hostListBody.matchAll(/'([^']+)'/g)].map((match) => match[1])
+// The bundled panel mirrors the host's shipped whitelist. Import the dependency-free
+// definition without loading the host entry or extracting string literals from its source.
 
 test('the bundled copy of the shipped whitelist matches the host constant', () => {
   assert.deepEqual(plain(T.DEFAULT_ALLOWED_TOOLS), HOST_DEFAULT_ALLOWED_TOOLS)
-  assert.equal(HOST_DEFAULT_ALLOWED_TOOLS.length, 12)
-  // The whitelist names the planning and delegation tools only: no file, search, shell or
-  // web tool may appear here, or the main agent could work on the repo by itself.
+  assert.equal(HOST_DEFAULT_ALLOWED_TOOLS.length, 9)
+  // The whitelist keeps planning, delegation and worktree governance, not general repo or session history tools.
   for (const name of [
     'delegate',
     'orchestrate',
+    'delegate_status',
+    'worktree_manage',
     'send_message',
     'interrupt_agent',
     'todo_write',
@@ -850,7 +905,7 @@ test('an absent or empty catalog keeps the shipped rows', () => {
   assert.equal(T.ALLOW_KEY, 'allowedTools')
 })
 
-test('the default whitelist is the shipped twelve, and nothing else is checked', () => {
+test('the default whitelist is the nine shipped tools, and nothing else is checked', () => {
   const shipped = T.allowedSetOf({})
   assert.equal(shipped.size, HOST_DEFAULT_ALLOWED_TOOLS.length)
   for (const name of HOST_DEFAULT_ALLOWED_TOOLS) assert.equal(shipped.has(name), true, name)
@@ -859,8 +914,9 @@ test('the default whitelist is the shipped twelve, and nothing else is checked',
   assert.equal(shipped.has('mcp__demo__ping'), false)
 
   // A catalog name is not an allowance: only the stored whitelist decides.
-  const withCatalog = T.allowedSetOf({ toolCatalog: ['read', 'mcp__demo__ping'] })
+  const withCatalog = T.allowedSetOf({ toolCatalog: ['read', 'mcp__demo__ping', 'session_event_read'] })
   assert.equal(withCatalog.has('read'), false)
+  assert.equal(withCatalog.has('session_event_read'), false)
   assert.equal(withCatalog.size, HOST_DEFAULT_ALLOWED_TOOLS.length)
 })
 
@@ -878,7 +934,7 @@ test('an explicit whitelist replaces the default, the empty array included', () 
   assert.equal(T.allowedSetOf({ allowedTools: 'not-a-list' }).size, HOST_DEFAULT_ALLOWED_TOOLS.length)
 })
 
-test('checking exactly the shipped twelve stores nothing, so the default applies again', () => {
+test('checking exactly the nine shipped tools stores nothing, so the default applies again', () => {
   // The stored value is only the difference from the shipped whitelist: a full default set
   // is written as `unset`, so a later default change still reaches an untouched profile.
   assert.deepEqual(plain(T.allowOps(HOST_DEFAULT_ALLOWED_TOOLS)), [{ op: 'unset', path: ['allowedTools'] }])
@@ -1017,7 +1073,7 @@ test('the column is headed Allowed Tools and lists one checked row per shipped t
   assert.equal(first.kids[0].type, 'input')
   assert.equal(first.kids[1].type, 'span')
   assert.equal(first.kids[0].props.type, 'checkbox')
-  // A checked box means "allowed for the main agent": the shipped twelve start checked.
+  // A checked box means "allowed for the main agent": the nine shipped tools start checked.
   assert.equal(first.kids[0].props.checked, true)
   assert.equal(first.kids[0].props.disabled, false)
   assert.deepEqual(rows.map((row) => row.props['data-tool']), HOST_DEFAULT_ALLOWED_TOOLS)
@@ -1070,13 +1126,13 @@ test('every row leads with the checkbox so a long name cannot scroll it out of t
 
 test('the search narrows the rows case-insensitively and explains an empty result', () => {
   const panel = mountAllowed(
-    fakeScope({ initial: { toolCatalog: ['read', 'edit', 'ops_read_files', 'read_image', 'acp_read_original_image'] } }),
+    fakeScope({ initial: { toolCatalog: ['proxy_status', 'edit', 'acp_status'] } }),
   )
-  panel.search().props.onChange({ target: { value: 'READ' } })
+  panel.search().props.onChange({ target: { value: 'STATUS' } })
   assert.deepEqual(
     panel.rows().map((row) => row.props['data-tool']),
-    // `session_event_read` is a shipped row, so it comes first; the catalog extras follow sorted.
-    ['session_event_read', 'acp_read_original_image', 'ops_read_files', 'read', 'read_image'],
+    // The shipped `delegate_status` row comes first; the matching catalog extras remain sorted.
+    ['delegate_status', 'acp_status', 'proxy_status'],
   )
   panel.search().props.onChange({ target: { value: 'zzz' } })
   assert.deepEqual(panel.rows(), [])
@@ -1092,7 +1148,7 @@ test('a tool published by another plugin is listed, searchable and unchecked', a
   assert.equal(rows[0].kids[0].props.type, 'checkbox')
   assert.equal(rows[0].kids[0].props.checked, false, 'a new tool starts disabled')
 
-  // Checking it writes the name into the whitelist, on top of the shipped twelve.
+  // Checking it writes the name into the whitelist, on top of the nine shipped tools.
   await rows[0].kids[0].props.onChange({ target: { checked: true } })
   assert.deepEqual(plain(scope.calls[0].ops), [
     { op: 'set', path: ['allowedTools'], value: [...HOST_DEFAULT_ALLOWED_TOOLS, 'mcp__demo__ping'] },
@@ -1135,7 +1191,7 @@ test('a name a profile checked but the catalog does not list is still a row', as
   assert.deepEqual(plain(scope.calls[0].ops), [{ op: 'unset', path: ['allowedTools'] }])
 })
 
-test('reset unsets the whitelist so the shipped twelve apply again', async () => {
+test('reset unsets the whitelist so the nine shipped tools apply again', async () => {
   const scope = fakeScope({ initial: { allowedTools: ['delegate'] } })
   const panel = mountAllowed(scope)
   assert.equal(panel.button().kids[0], 'allowed.reset')
@@ -1190,6 +1246,9 @@ test('the popover is two columns, the original panel then the allowed tools colu
   const switchRow = nodes(left).find((node) => node.type === T.EnableSwitch)
   assert.ok(switchRow)
   assert.equal(switchRow.props.label, 'route.enable')
+  const isolationField = nodes(left).find((node) => node.type === T.WorktreeIsolationField)
+  assert.ok(isolationField)
+  assert.equal(isolationField.props.scope, scopes.orch)
   // Both supervision fields live in the left column, interval first then the count.
   const intervalField = nodes(left).find((node) => node.type === T.SuperviseIntervalField)
   const countField = nodes(left).find((node) => node.type === T.SuperviseCountField)

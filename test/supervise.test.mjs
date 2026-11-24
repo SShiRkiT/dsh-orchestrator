@@ -248,6 +248,22 @@ test('composeNotice keeps every child when only the summaries need shortening', 
   assert.equal(text.includes('最后输出：'), true)
 })
 
+test('composeNotice trims display-only siblings before triggers and audit warnings', () => {
+  const rows = [
+    row({ childId: 'sibling-1', kind: 'sibling', label: 'x'.repeat(300) }),
+    row({ childId: 'trigger', kind: 'running', lastText: 'x'.repeat(300) }),
+    row({ childId: 'audit', kind: 'attention', auditState: 'failed', summary: 'x'.repeat(300) }),
+    row({ childId: 'sibling-2', kind: 'sibling', label: 'x'.repeat(300) }),
+  ]
+  const text = composeNotice(rows, { now: NOW, maxChars: 540 })
+
+  assert.ok(text.length <= 540)
+  assert.match(text, /子代理 trigger/)
+  assert.match(text, /子代理 audit（已结束，审计未通过（failed）；不得验收为通过）/)
+  assert.match(text, /另有 2 个子代理未列出/)
+  assert.doesNotMatch(text, /sibling-[12]/)
+})
+
 test('composeNotice hard-caps even a tiny maxChars', () => {
   const text = composeNotice([row()], { now: NOW, index: 1, max: 3, maxChars: 10 })
   assert.equal(text.length, 10)
@@ -283,8 +299,8 @@ function harness({ config: configOverrides = {} } = {}) {
     isChildAlive: (childId) => aliveChildren.has(childId),
     readEvents: (childId) => events.get(childId) ?? [],
     hasPendingNotice: (parentId) => pending.has(parentId),
-    deliver: async (parentId, text, childIds) => {
-      deliveries.push({ parentId, text, childIds: [...childIds] })
+    deliver: async (parentId, text, childIds, meta) => {
+      deliveries.push({ parentId, text, childIds: [...childIds], meta })
       return 'queued'
     },
     logger: { info() {}, warn: (message) => warnings.push(message) },
@@ -389,6 +405,100 @@ test('several due children of one parent merge into one deliver call', async () 
   assert.equal(h.deliveries[0].text.includes('c1'), true)
   assert.equal(h.deliveries[0].text.includes('c2'), true)
   assert.match(h.deliveries[0].text, /第 1\/3 次/)
+})
+
+test('staggered siblings share the notice and next deadline without spending sibling budget', async () => {
+  const h = harness({ config: { intervalSeconds: 60, maxNoticesPerChild: 1 } })
+  h.setClock(0)
+  h.add('a', 'p1', 'first')
+  h.events.set('a', [call(1, 'read', { path: 'a' })])
+  h.setClock(3_000)
+  h.add('b', 'p1', 'second')
+  h.events.set('b', [call(1, 'grep', { pattern: 'b' }, 3_001)])
+
+  h.setClock(60_000)
+  await h.sup.tick()
+  assert.equal(h.deliveries.length, 1)
+  const first = h.deliveries[0]
+  assert.deepEqual(first.childIds, ['a', 'b'])
+  assert.deepEqual(first.meta.rows.map(({ childId, kind }) => [childId, kind]), [
+    ['a', 'running'], ['b', 'sibling'],
+  ])
+  assert.match(first.text, /子代理 a（仍在运行/)
+  assert.match(first.text, /子代理 b（同行在跑，暂未到下一次巡检点）/)
+
+  h.setClock(65_000)
+  await h.sup.tick()
+  assert.equal(h.deliveries.length, 1)
+
+  h.setClock(120_000)
+  await h.sup.tick()
+  assert.equal(h.deliveries.length, 2)
+  const second = h.deliveries[1]
+  assert.deepEqual(second.childIds, ['b', 'a'])
+  assert.match(second.text, /第 1\/1 次/)
+  assert.match(second.text, /子代理 a（同行在跑，巡检预算已用完）/)
+  assert.equal(second.meta.rows[0].toolCalls, 1, 'the sibling cursor was not advanced by mere display')
+})
+
+test('an active supervision turn delays the whole parent without spending budget', async () => {
+  const h = harness({ config: { intervalSeconds: 60, maxNoticesPerChild: 1 } })
+  let active = true
+  h.opts.hasActiveSupervisionTurn = (parentId) => parentId === 'p1' && active
+  h.add('a', 'p1', 'first', 0)
+  h.add('b', 'p1', 'second', 3_000)
+  h.events.set('a', [call(1, 'read', { path: 'a' })])
+  h.events.set('b', [call(1, 'grep', { pattern: 'b' }, 3_001)])
+
+  await h.sup.tick(60_000)
+  assert.equal(h.deliveries.length, 0)
+  active = false
+  await h.sup.tick(65_000)
+  assert.equal(h.deliveries.length, 0, 'the later sibling must not bypass the deferral')
+
+  await h.sup.tick(120_000)
+  assert.equal(h.deliveries.length, 1)
+  assert.deepEqual(h.deliveries[0].childIds, ['a', 'b'])
+  assert.match(h.deliveries[0].text, /第 1\/1 次/)
+  assert.deepEqual(h.deliveries[0].meta.rows.map(({ kind, toolCalls }) => [kind, toolCalls]), [
+    ['running', 1], ['running', 1],
+  ])
+})
+
+test('a notice includes quiet siblings and ended children with unconfirmed audits', async () => {
+  const h = harness({ config: { intervalSeconds: 60 } })
+  h.add('trigger', 'p1', 'working', 0)
+  h.add('quiet', 'p1', 'waiting', 0)
+  h.events.set('trigger', [call(1, 'read', { path: 'a' })])
+  const items = [
+    { childId: 'audit-pending', label: '等待审计', auditState: 'pending', baselineId: 'baseline-1' },
+    {
+      childId: 'audit-failed', label: '越界任务', dispatchState: 'settled', auditState: 'failed',
+      violations: [{ target: 'outside.txt' }], summary: '发现越界写入 outside.txt',
+    },
+    { childId: 'audit-passed', label: '通过审计', auditState: 'passed' },
+  ]
+  const queried = []
+  h.opts.listAttentionItems = (parentId) => {
+    queried.push(parentId)
+    return items
+  }
+
+  await h.sup.tick(59_000)
+  assert.deepEqual(queried, [], 'attention items alone cannot trigger a notice')
+  await h.sup.tick(60_000)
+  assert.equal(h.deliveries.length, 1)
+  assert.deepEqual(queried, ['p1'])
+  const { text, childIds, meta } = h.deliveries[0]
+  assert.deepEqual(childIds, ['trigger', 'quiet'])
+  assert.match(text, /子代理 quiet（同行在跑，本周期暂无新增工具调用）/)
+  assert.match(text, /audit-pending（已结束，审计仍 pending；不得验收为通过）/)
+  assert.match(text, /audit-failed（已结束，审计未通过（failed）；不得验收为通过）/)
+  assert.match(text, /审计摘要：发现越界写入 outside.txt/)
+  assert.match(text, /「巡检：正常」仅表示运行方向无须干预，不代表审计通过/)
+  assert.doesNotMatch(text, /audit-passed|以上子代理均仍在运行/)
+  assert.deepEqual(meta.rows.filter(({ kind }) => kind === 'attention'), items.slice(0, 2)
+    .map((item) => ({ ...item, kind: 'attention' })))
 })
 
 test('the per-child notice budget stops at three but keeps the child registered', async () => {

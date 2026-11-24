@@ -18,7 +18,10 @@ import {
 test('supervision state binds exact turns and reserves only todo before normal declaration', () => {
   const state = createSupervisionTurnState()
   assert.equal(state.checkTool('main', 1, 'todo_write'), undefined)
+  assert.equal(state.hasActiveParent('main'), false)
   state.bindTurn('main', 1)
+  assert.equal(state.hasActiveParent('main'), true)
+  assert.equal(state.hasActiveParent('other'), false)
   assert.equal(state.isTurnActive('main', 1), true)
   assert.equal(state.isTurnActive('main', 2), false)
   assert.equal(state.checkTool('main', 1, 'todo_write'), SUPERVISION_TODO_DENIAL)
@@ -34,6 +37,7 @@ test('supervision state binds exact turns and reserves only todo before normal d
   state.clearTurn('main', 2)
   assert.equal(state.isTurnActive('main', 1), true)
   state.clearTurn('main', 1)
+  assert.equal(state.hasActiveParent('main'), false)
   assert.equal(state.checkTool('main', 1, 'read'), undefined)
 })
 

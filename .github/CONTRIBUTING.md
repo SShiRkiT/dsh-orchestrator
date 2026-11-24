@@ -4,7 +4,7 @@ Issues and pull requests are welcome in English or Simplified Chinese. 请遵守
 
 ## Project layout / 项目架构
 
-`@sshirkit/dsh-orchestrator` is a DeepSeek Harness plugin that lets the main agent plan work and dispatch it to subagents through delegation or orchestration. The host provides its native `/plan` flow.
+**dsh-orchestrator** (`@sshirkit/dsh-orchestrator` on npm) is a DeepSeek Harness plugin that lets the main agent plan work and dispatch it to subagents through delegation or orchestration. The host provides its native `/plan` flow.
 
 - **Backend / 后端** — The Cordis service patch and backend modules implement the main-agent tool whitelist, `delegate`, `orchestrate`, `writeScope` conflict locks, and supervision that reads the session logs of long-running delegated subagents. See [cordis.patch.yml](../cordis.patch.yml) and [lib/](../lib/).
 - **Client / 客户端** — The Web GUI client injects the Dispatch panel for configuring dispatch mode, agent routing, allowed tools, and supervision. See [lib/client.js](../lib/client.js).

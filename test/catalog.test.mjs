@@ -121,7 +121,7 @@ test('only a real volatile reference is writable', () => {
 function fakeHost({ entry = 'orchestrator', names = ['read', 'delegate'] } = {}) {
   const events = []
   const ctx = {
-    fiber: { entry: { id: entry } },
+    fiber: { entry: { id: `include:${entry}`, options: { id: entry } } },
     emit: (event, ...args) => events.push([event, ...args]),
     logger: { warn: (message) => events.push(['warn', message]) },
   }

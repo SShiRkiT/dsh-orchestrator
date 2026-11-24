@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import fs from 'node:fs'
 import { registerHooks } from 'node:module'
+import os from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
 import { allowGuard } from '../lib/gate.js'
 
@@ -16,12 +20,12 @@ const STUBS = {
   '@deepseek-ai/schemastery': `
     function chain() {
       const node = {}
-      node.default = () => chain()
-      node.volatile = () => chain()
+      node.default = (value) => Object.assign(chain(), { defaultValue: value })
+      node.volatile = () => node
       node.min = () => chain()
       node.max = () => chain()
       node.step = () => chain()
-      node.description = () => chain()
+      node.description = () => node
       node.describe = () => chain()
       return node
     }
@@ -30,7 +34,7 @@ const STUBS = {
       string: () => chain(),
       number: () => chain(),
       array: () => chain(),
-      object: () => chain(),
+      object: (fields) => Object.assign(chain(), { fields }),
     }
     export default z
   `,
@@ -115,7 +119,7 @@ function fakeCtx({
   catalogNames = HOST_TOOLS,
   surface = SURFACE_TOOLS,
 } = {}) {
-  const state = { enabled, allowed }
+  const state = { enabled, allowed, worktreeIsolationEnabled: undefined }
   const tools = []
   const handlers = new Map()
   // The options each subscription was made with: a lifecycle edge of a child is dispatched
@@ -167,6 +171,7 @@ function fakeCtx({
   }
   const config = {
     enabled: { get: () => state.enabled },
+    worktreeIsolationEnabled: { get: () => state.worktreeIsolationEnabled },
     allowedTools: { get: () => state.allowed },
     workerProvider: { get: () => '' },
     workerModel: { get: () => '' },
@@ -336,24 +341,19 @@ test('a main agent is guarded, and the surface carries only the shipped whitelis
   assert.match(guards[0]({ name: 'subagent' }), /"subagent" is not available to the main agent/)
 })
 
-test('the shipped whitelist is twelve planning tools, and every other name is refused', () => {
-  // The main agent keeps the delegation tools, the session read-only tools and `compress`:
-  // the capabilities that make planning and review possible without touching the repo.
+test('the shipped whitelist contains nine planning and acceptance tools, and every other name is refused', () => {
   const shipped = mod.DEFAULT_ALLOWED_TOOLS
-  assert.equal(shipped.length, 12)
+  assert.equal(shipped.length, 9)
   for (const name of [
     'delegate',
+    'delegate_status',
+    'worktree_manage',
     'orchestrate',
     'send_message',
     'interrupt_agent',
     'todo_write',
     'ask_user_question',
     'compress',
-    'session_search',
-    'session_trace',
-    'session_event_search',
-    'session_event_read',
-    'session_event_trace',
   ]) {
     assert.equal(shipped.includes(name), true, name)
     assert.equal(allowGuard(shipped)({ name }), undefined, name)
@@ -374,6 +374,11 @@ test('the shipped whitelist is twelve planning tools, and every other name is re
     'workflow',
     'ralph',
     'decompress',
+    'session_search',
+    'session_trace',
+    'session_event_search',
+    'session_event_read',
+    'session_event_trace',
     'search_context',
     'acp_status',
     'mcp_custom_tool',
@@ -487,7 +492,7 @@ test('the whitelist clause follows the live config without re-registering', () =
 
   state.allowed = ['delegate', 'orchestrate', 'read']
   assert.equal(allowedOf(delegate), 'delegate, orchestrate, read')
-  assert.equal(orchestrate.description.includes('read'), false)
+  assert.equal(orchestrate.description.includes('delegate, orchestrate, read'), false)
 
   // The rule has a second sentence for the case where the panel unchecks everything.
   state.allowed = []
@@ -984,6 +989,219 @@ test('apply listens for the settlement edge globally, so a child-scoped emission
   // A malformed event is ignored rather than thrown into the emitter.
   assert.doesNotThrow(() => listener(undefined))
   assert.doesNotThrow(() => listener({ id: '' }))
+})
+
+function gitFixture(t) {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-phase2-integration-'))
+  t.after(() => fs.rmSync(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
+  const cwd = fs.realpathSync.native(temporary)
+  const git = (...args) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+  git('init', '--initial-branch=main')
+  git('config', 'user.name', 'Phase 2 Test')
+  git('config', 'user.email', 'phase2-test@example.invalid')
+  git('config', 'core.autocrlf', 'false')
+  fs.mkdirSync(path.join(cwd, 'nested'))
+  fs.writeFileSync(path.join(cwd, 'nested', 'result.txt'), 'base\n')
+  git('add', '.')
+  git('commit', '-m', 'Initial')
+  return { cwd, git }
+}
+
+const isolatedClaim = { description: 'write', prompt: 'write result', provider: 'p', model: 'm' }
+
+function phase2Exec(cwd) {
+  const { agent } = fakeAgent({ id: 'root', header: { cwd } })
+  return { agent, signal: new AbortController().signal }
+}
+
+function toolNamed(harness, name) {
+  const tool = harness.tools.find((entry) => entry.name === name)
+  assert.ok(tool, `${name} must be registered`)
+  return tool
+}
+
+function beforeMessage(harness, exec, target) {
+  assert.deepEqual(harness.handlerOptions.get('tools/pre-execute'), { global: true })
+  return harness.handlers.get('tools/pre-execute')({ ...exec, name: 'send_message', arguments: { agent: target } }, async () => ({ kind: 'continue' }))
+}
+
+test('phase 2: the root keeps both governance tools when dispatch is off; descendants cannot manage worktrees', async () => {
+  assert.equal(mod.Config.fields.worktreeIsolationEnabled.defaultValue, true)
+  const harness = start({ enabled: false })
+  const worktreeManage = toolNamed(harness, 'worktree_manage')
+  const root = fakeAgent({ id: 'root' }).agent
+  const child = fakeAgent({ id: 'child', depth: 1 }).agent
+  for (const name of ['worktree_manage', 'delegate_status']) {
+    assert.equal(namesOf(harness.ctx.tools.definitions(root)).includes(name), true)
+    assert.equal(namesOf(harness.ctx.tools.definitions(child)).includes(name), false)
+  }
+  assert.equal((await worktreeManage.execute({ action: 'list' }, { agent: root })).details.total, 0)
+  await assert.rejects(() => worktreeManage.execute({ action: 'list' }, { agent: child }), /仅根代理/)
+})
+
+test('phase 2: a delegate audits its physical checkout and a reclaimed child cannot receive messages', async (t) => {
+  const { cwd, git } = gitFixture(t)
+  const exec = phase2Exec(cwd)
+  const starts = []
+  const harness = start({ subagents: {
+    resolveMaxDepth: () => 1,
+    async startActivation(spec) {
+      starts.push(spec)
+      fs.writeFileSync(path.join(spec.cwd, 'result.txt'), 'isolated\n')
+      return { childId: `isolated-${starts.length}` }
+    },
+    async resolveName(agent, name, signal) {
+      assert.equal(agent, exec.agent)
+      assert.equal(signal, exec.signal)
+      return name === 'worker-name' ? 'isolated-1' : name
+    },
+  } })
+  const delegate = toolNamed(harness, 'delegate')
+  const worktreeManage = toolNamed(harness, 'worktree_manage')
+  const status = toolNamed(harness, 'delegate_status')
+  const args = { ...isolatedClaim, cwd: 'nested', writeScope: [path.join(cwd, 'nested', 'result.txt')] }
+  const first = await delegate.execute(args, exec)
+  const second = await delegate.execute(args, exec)
+  assert.deepEqual(first.worktree, first.details.worktree)
+  assert.notEqual(first.worktree.path, second.worktree.path, 'the same relative scope may run in distinct trees')
+  assert.equal(path.normalize(starts[0].cwd), path.join(first.worktree.path, 'nested'))
+  assert.equal(path.normalize(first.writeScope.scope[0]), path.join(first.worktree.execCwd, 'result.txt'))
+  assert.equal(git('status', '--porcelain'), '', 'the main workspace stays clean')
+  assert.equal((await beforeMessage(harness, exec, 'worker-name')).kind, 'continue')
+
+  harness.handlers.get('subagent/end')({ id: first.subagentId, stopReason: 'completed' })
+  const entry = (await status.execute({ childId: first.subagentId }, exec)).details.items[0]
+  assert.equal(entry.auditState, 'passed')
+  assert.equal(entry.worktree.state, 'ready_for_review')
+  assert.equal(entry.worktree.dirty, true)
+  assert.equal(entry.worktree.commits, 0)
+  const audit = harness.emitted.find(([name, payload]) => name === 'orchestrator/write-audit' && payload.childId === first.subagentId)[1].audit
+  assert.equal(audit.isolationLevel, 'git-worktree')
+  assert.equal(audit.git.worktreeId, first.worktree.id)
+
+  const discarded = await worktreeManage.execute({ action: 'discard', worktreeId: first.worktree.id, force: true }, exec)
+  assert.equal(discarded.details.ok, true)
+  assert.equal(fs.existsSync(first.worktree.path), false)
+  harness.state.enabled = false
+  for (const target of [first.subagentId, 'worker-name']) {
+    const decision = await beforeMessage(harness, exec, target)
+    assert.equal(decision.kind, 'deny')
+    assert.match(decision.reason, /worktree-child-locked/)
+  }
+  for (const { dispose } of harness.effects.toReversed()) dispose?.()
+  assert.equal(fs.existsSync(second.worktree.path), true, 'plugin disposal preserves the pending delivery')
+})
+
+test('phase 2: items reuse their own checkout, retain failed-stage evidence, and lock every reclaimed stage', async (t) => {
+  const { cwd, git } = gitFixture(t)
+  const exec = phase2Exec(cwd)
+  const stageIds = new Map()
+  const harness = start({ subagents: {
+    resolveMaxDepth: () => 1,
+    async startActivation(spec) {
+      const item = /item (\d+)/.exec(spec.label)[1]
+      const stage = /stage (\d+)/.exec(spec.label)[1]
+      const childId = `item-${item}-stage-${stage}`
+      stageIds.set(childId, spec.cwd)
+      fs.writeFileSync(path.join(spec.cwd, item === '2' ? 'unexpected.txt' : 'result.txt'), `stage ${stage}\n`)
+      const failed = item === '2' && stage === '2'
+      return {
+        childId,
+        result: Promise.resolve({ output: [{ type: 'text', text: 'ok' }], stopReason: failed ? 'error' : 'completed' }),
+        dispose: async () => {},
+      }
+    },
+  } })
+  const batch = toolNamed(harness, 'orchestrate')
+  const manage = toolNamed(harness, 'worktree_manage')
+  const result = await batch.execute({
+    cwd: 'nested', writeScope: ['result.txt'], items: [1, 2], maxConcurrency: 2,
+    stages: [{ name: 'first', prompt: 'write' }, { name: 'second', prompt: 'verify' }], provider: 'p', model: 'm',
+  }, exec)
+  assert.equal(result.agentsStarted, 4)
+  assert.equal(result.results[1], null)
+  assert.equal(stageIds.get('item-1-stage-1'), stageIds.get('item-1-stage-2'))
+  assert.equal(stageIds.get('item-2-stage-1'), stageIds.get('item-2-stage-2'))
+  assert.notEqual(stageIds.get('item-1-stage-1'), stageIds.get('item-2-stage-1'))
+  assert.deepEqual(result.details.itemAudits.map(({ audit }) => audit.passed), [true, false])
+  assert.equal(result.details.writeAudit.passed, false)
+  assert.equal(result.details.writeAudit.violations[0].itemIndex, 1)
+  assert.match(batch.output.render({}, result)[0].text, /worktree_manage .*inspect \/ merge \/ discard/)
+  const rows = (await manage.execute({ action: 'list' }, exec)).details.worktrees
+  assert.equal(rows.length, 2)
+  assert.ok(rows.every(({ state }) => state === 'ready_for_review'))
+  assert.equal(git('status', '--porcelain'), '')
+  const discard = await manage.execute({ action: 'discard', worktreeId: result.details.worktrees[0].worktreeId, force: true }, exec)
+  assert.equal(discard.details.ok, true)
+  for (const childId of ['item-1-stage-1', 'item-1-stage-2']) {
+    assert.match((await beforeMessage(harness, exec, childId)).reason, /worktree-child-locked/)
+  }
+  assert.equal((await beforeMessage(harness, exec, 'item-2-stage-1')).kind, 'continue')
+})
+
+test('phase 2: per-call isolation takes precedence over live configuration and rolls back failed launches', async (t) => {
+  const { cwd, git } = gitFixture(t)
+  const exec = phase2Exec(cwd)
+  let launch = 'ok'
+  let sequence = 0
+  const harness = start({ subagents: {
+    resolveMaxDepth: () => 1,
+    async startActivation() {
+      if (launch === 'throw') throw new Error('launch failed')
+      if (launch === 'empty') return {}
+      return {
+        childId: `worker-${++sequence}`,
+        result: Promise.resolve({ stopReason: 'completed', output: [{ type: 'text', text: 'ok' }] }),
+      }
+    },
+  } })
+  const delegate = toolNamed(harness, 'delegate')
+  const batch = toolNamed(harness, 'orchestrate')
+  const args = { ...isolatedClaim, cwd: 'nested', writeScope: ['result.txt'] }
+  const batchArgs = { cwd: 'nested', writeScope: args.writeScope, items: [1], stages: [{ name: 'first', prompt: 'write' }], provider: 'p', model: 'm' }
+  harness.state.worktreeIsolationEnabled = false
+  const shared = await delegate.execute(args, exec)
+  assert.equal(shared.worktree, undefined)
+  harness.handlers.get('subagent/end')({ id: shared.subagentId, stopReason: 'completed' })
+  assert.equal((await batch.execute(batchArgs, exec)).details?.worktrees, undefined)
+  assert.equal(git('worktree', 'list', '--porcelain').split('\n').filter((line) => line.startsWith('worktree ')).length, 1)
+  await assert.rejects(delegate.execute({ ...isolatedClaim, readOnly: true, isolation: 'worktree' }, exec), /只读任务/)
+  await assert.rejects(batch.execute({ ...batchArgs, isolation: 'unsupported' }, exec), /isolation/)
+  launch = 'throw'
+  await assert.rejects(delegate.execute({ ...args, isolation: 'worktree' }, exec), /launch failed/)
+  assert.equal(git('worktree', 'list', '--porcelain').split('\n').filter((line) => line.startsWith('worktree ')).length, 1)
+  launch = 'empty'
+  const failedBatch = await batch.execute({ ...batchArgs, isolation: 'worktree' }, exec)
+  assert.equal(failedBatch.agentsStarted, 0)
+  assert.match(failedBatch.errors[0].message, /did not return a result promise/)
+  assert.deepEqual(failedBatch.details.worktrees, [])
+  assert.equal(git('worktree', 'list', '--porcelain').split('\n').filter((line) => line.startsWith('worktree ')).length, 1)
+  launch = 'ok'
+  harness.state.worktreeIsolationEnabled = true
+  assert.ok((await delegate.execute(args, exec)).worktree)
+})
+
+test('phase 2: a missing checkout blocks both manual delivery and automatic retry', async (t) => {
+  const { cwd, git } = gitFixture(t)
+  const exec = phase2Exec(cwd)
+  const prompts = []
+  const harness = start({ subagents: {
+    resolveMaxDepth: () => 1,
+    startActivation: async () => ({ childId: 'worker-missing' }),
+    async prompt(request) { prompts.push(request) },
+  } })
+  const child = await toolNamed(harness, 'delegate').execute({ ...isolatedClaim, writeScope: ['nested/result.txt'] }, exec)
+  assert.ok(child.worktree)
+  // Simulate an external operator removing the registered worktree while its child is still active.
+  git('worktree', 'remove', '--force', child.worktree.path)
+  assert.equal(fs.existsSync(child.worktree.path), false)
+  const decision = await beforeMessage(harness, exec, child.subagentId)
+  assert.equal(decision.kind, 'deny')
+  assert.match(decision.reason, /执行目录已缺失/)
+  harness.handlers.get('subagent/end')({ id: child.subagentId, stopReason: 'error' })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.deepEqual(prompts, [])
+  assert.ok(harness.logs.warn.some((line) => /retry: cannot wake subagent worker-missing.*worktree-child-locked/.test(line)))
 })
 
 test('a delegate write lease blocks a second writer until the child settles', async () => {

@@ -4,14 +4,15 @@
 
 <div align="center">
 
-# DSH Orchestrator
+# dsh-orchestrator
 
 </div>
 
+#### **主代理模型规划 + 子代理模型隔离执行 —— DeepSeek Harness 的「调度 · 监管 · 协调 · 汇总」主从编排插件**
 
-#### **强模型主脑规划 + 便宜模型统一打工 —— DeepSeek Harness 的「硬隔离调度模式」插件**
+![dsh-orchestrator 像素风封面](docs/images/hero-banner.png)
 
-[![version](https://img.shields.io/badge/version-0.8.8-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
+[![version](https://img.shields.io/badge/version-v1.0.0-4176E6?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
 [![dsh-plugin](https://img.shields.io/badge/DeepSeek%20Harness-dsh--plugin-4176E6?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![platform](https://img.shields.io/badge/platform-Web%20GUI%20%7C%20Desktop-5c6bc0?style=flat-square)](https://github.com/SShiRkiT/dsh-orchestrator)
 [![node](https://img.shields.io/badge/node-%3E%3D22-339933?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
@@ -20,191 +21,237 @@
 [![GitHub stars](https://img.shields.io/github/stars/SShiRkiT/dsh-orchestrator?style=flat-square&logo=github)](https://github.com/SShiRkiT/dsh-orchestrator/stargazers)
 [![npm](https://img.shields.io/npm/v/@sshirkit/dsh-orchestrator?color=cb3837)](https://www.npmjs.com/package/@sshirkit/dsh-orchestrator)
 
-**简体中文** | [English](README.md) · [核心差异](#为什么有了原生-subagent-和-agent-team还需要这个插件) · [核心特性](#核心特性) · [安装](#安装) · [配置说明](#配置说明) · [参与贡献](#参与贡献)
+**简体中文** | [English](README.md) · [插件特点](#插件特点与能力补齐) · [核心优势](#七大核心优势) · [工具速查](#工具速查) · [安装与兼容](#安装与环境要求) · [面板与配置](#调度面板与配置说明) · [参与贡献](#参与贡献)
 
 </div>
 
-
-<div align="center">
-
-## 核心特性
-</div>
-
-
-### 1. 主代理「规划与验收」、子代理「纯粹 Work」的白名单式硬性闸门
-
-不同于靠 Prompt 劝主模型“多用子代理”，本插件在 DSH 的工具声明出口（`tools.definitions`）与执行层（`tools.guard`）安装了双重守卫，且采用**白名单式驱动**：
-
-> ###### _声明层实时裁剪模型可见的工具表，执行层再兜底拒绝任何漏网调用_
-> ###### _两层都按请求/按调用实时读取配置，不产生 `tools.restrict` ，因此不会触发官方工具遮挡的抖动与 Prompt Cache 失效。_
-- #### 主代理被彻底收缴执行工具 ：  
-
-  -
-    <div align="center">
-    
-    > ###### DEFAULT_ALLOWED_TOOLS 默认只放行 12 项规划、委派与会话只读工具
-    > ###### _`delegate`、`orchestrate`、`send_message`、`interrupt_agent`、`todo_write`、`ask_user_question`、`compress` 与 5 项只读会话日志工具。_
-    > 
-    > ###### 所有文件读写、搜索、终端，以及未来新增的任何 MCP / 第三方插件工具，一律自动隐藏并在执行层强制拦截
-    > 
-    > ###### _（`read` / `edit` / `write` / `apply_patch`）、（`grep` / `glob`）、（`bash` / `pwsh`）、 `subagent` / `workflow`_
-    > 
-    > ###### 连 run_code 嵌套偷调也拦。需要额外放行时，在面板右侧 Allowed Tools 勾选即可。
-    
-    </div>
-
-- **子代理独享完整工具链**：被派出的 Worker 不受闸门限制，在各自独立的上下文中读写文件、跑测试、看报错，完工后只把干净的结论交回主代理验收。
-- **一键随时切换**：关闭面板上的「启用调度模式」即可恢复宿主工具，无需重开会话；插件派发工具仍禁用，已绑定巡检回合的硬禁仍优先。
+**dsh-orchestrator** 是面向 DeepSeek Harness（DSH）本地研发会话的主从编排插件：用硬门禁让**主代理**专心负责理解需求、拆分任务、过程把关与最终验收，让**子代理**在隔离环境里并行承担具体施工。
 
 ---
 
-### 2. 强模型当 Main Agent，便宜模型当 Subagent（独立面板、即时生效）
+<div align="center">
 
-在输入框下方的**「调度模式」专属面板**中，主代理与子代理的模型路由完全解耦：
-- **主代理（Main Agent）**：配置为你最强的旗舰模型专门负责需求澄清、任务切分、途中纠偏与最终结果验收。
-  - > 例如 `gpt-astra-6`、`claude-opus-5.5` 等
-- **子代理（Subagent）**：配置为能力稍弱但极其便宜、高吞吐的模型**所有通过 `delegate` 和 `orchestrate` 派出的 Worker 强制共用这条便宜路由**
-  - > 例如 `deepseek-v4.1-flash`、`gpt-luna-6` 等
-- **防烧钱保护**：如果未配置子代理模型，派发时会直接报错拦截
+# 插件特点与能力补齐
 
-## 可以在`prompt` 或 `AGENTS.md`中要求当前工作区域的main agent派发子代理时传输 `provider` / `model` 参数来指定当前`会话` \ `工作区`使用你指定的模型进行
 
-会话级主代理模型可直接使用 DSH 原版模型选择器切换；调整调度面板中的主代理全局默认路由不会覆盖已选定的当前会话模型，两者各司其职。
 
+它与 DSH 原生协作能力和平共存，重点为你补齐高强度研发最容易踩坑的四件事：
+</div>
+
+ **管住主模型，只动脑不打杂**  
+>硬性收起主模型的读写和终端工具，防止强模型聊着聊着亲自下场翻代码、改文件  
+
+ **独立工位隔离施工，验收后再合回**：  
+>写任务默认在各自的 Git 临时目录中并行干活，不碰你当前工作区，不擅自合并到主分支。 
+
+ **过程自动看场子，交工自动查账单**：  
+>后台定时盯住运行中的子代理，卡壳跑偏直接一巴掌扇过去`send_message`纠偏；  
+>交工时核对修改范围与必交文件，软件重启也能对账
+
+ **批量活与多步流水线一键并行跑**：  
+>同类批量或串联多步骤任务无需手写脚本，填好清单和步骤即可按并发上限自动推进，单条报错互不拖累
+
+---
+
+<div align="center">
+
+# 七大核心优势
+
+</div>
+
+### 1. 管住主模型，专心规划不打杂
+
+本插件直接给主模型上双锁——不该它碰的工具既看不见也调不了，只能专注拆解任务、派活、盯进度和把关；  
+
+具体动手的事全交给子代理。关掉总开关就能一键恢复 DSH 原样，不需要重开会话。
+
+  - 默认只放行 9 个管理动作
+   >`delegate`、`orchestrate`、`delegate_status`、`worktree_manage`、`send_message`、`interrupt_agent`、`todo_write`、`ask_user_question`、`compress`
+  - 按开关自动放行原生团队任务板
+  （`team_task_*`）；
+  - 其余读写、检索和终端工具默认收起，随时可在面板右侧勾选增减。
+
+---
+
+### 2. 每个任务单独开隔离目录，满意再合回
+
+多个子代理同时改代码，最怕互相覆盖或弄乱你正在写的工作区。  
+在 Git 仓库中，插件会默认给每个写任务拉出一个独立的临时工作目录。  
+干完活也不会擅自合进主分支，必须等你或主模型看过改动、确认满意，再显式合并或直接丢弃。
+
+> 由 `worktree_manage` 负责查看列表、审阅改动、合并（支持 `merge` / `squash` / `ff-only`）、丢弃与清理；  
+>支持按需切换「自动隔离 / 强制隔离 / 共享目录」。目录清理或丢弃后，关联的旧子代理会被永久锁住，防止后续发消息误写回主目录。
+
+---
+
+### 3. 改前防撞车，交工查账单
+
+在不使用隔离目录的场景下，如果两个子代理想改同一片文件，插件会在启动前直接拦下。每个可以修改的写子代理拥有独立的writescope来圈定修改范围，其他子代理传输writescope时若和前子代理修改范围重合时会自动报错拦截  
+交工时，插件还会自动核对子代理有没有偷改范围外的文件、约定交付的文件齐不齐，只读任务偷写也会告警；所有子代理干到哪一步、验收过没过，随时一目了然。
+
+> 写任务派发时声明修改范围（`writeScope`），也可按需指定防篡改指纹（`expectedFingerprints`）和必交清单（`expectedTargets`）；  
+>随时调用 `delegate_status` 查看全部子代理的运行、审计与待评审状态。
+
+---
+
+### 4. 调度模式面板
+
+在输入栏右侧的「调度模式」面板里，主模型和子代理模型彻底分开配置：  
+  - 默认主模型与子模型都可以指定设置。
+
+> 支持`prompt`或者是`AGENTS.md`传入 `provider / model`及可选 `reasoning_effort`即可单独指定本轮/本工作区所用子代理模型  
+> 工作区主代理模型可以自行在`dsh原生模型选择器`内切换，对整个会话`单独`永久生效
 
 ![调度模式面板](docs/images/dispatch-panel.png)
 
 ---
 
-### 3. 后台事件日志定时巡检与强模型动态纠偏
+### 5. 后台定时巡检
 
-便宜模型充当 Subagent 时，偶尔会在复杂的 shell 转义或报错上打转。插件内置了纯日志驱动的后台巡检器：
-- **巡检读取本身不调用模型**：后台定时器直接读取运行中 Worker 的会话事件日志，按设定的巡检间隔（默认 600 秒）汇总它的运行时长、轮次、新增工具调用与最后输出，合并成一条通知唤醒主代理。读取与汇总环节不发起任何 LLM 请求
-- 但**唤醒主代理后的判断与纠偏仍会消耗主代理的 token**：巡检的价值在于把「持续轮询」压缩成「一条摘要 + 一次决策」，而不是让整个巡检功能零消耗。
-- **强模型一眼把关**：主代理收到巡检摘要后，只需极少 Token 即可做出决策：
-  - **A) 进展正常**：回复一行 `巡检：正常` 结束回合，让子代理继续跑；
-  - **B) 途中纠偏**：调用 `send_message` 直接向运行中的子代理注入修正指令（指明正确写法或跳过卡点）；
-  - **C) 及时止损**：调用 `interrupt_agent` 中断失控的子代理（若后续再用 `send_message` 重新唤醒它，巡检会自动重新接管并重置通知计数）。
+子代理干长活时，偶尔会卡在报错死循环里反复打转，或者跑偏目录，或者疯狂发散。  
+插件会在后台按设定间隔翻看运行中子代理的工作记录，把近况合并成一条简短汇报推给主模型供主模型抉择，跑偏时会主动`send_message`一巴掌扇过去
 
+> 翻看记录和汇总本身不花模型额度，只有在唤醒主模型做判断或纠偏时消耗少量主模型额度；  
+> 通过 `send_message` 纠偏、`interrupt_agent` 止损，巡检间隔、次数上限或「无限巡检」均可在面板实时调整，并支持静默恢复 Todo 列表。
 
 ![巡检通知与纠偏示例](docs/images/patrol-notice.png)
 
-*巡检通知与纠偏实录：便宜的子代理卡在了 shell 引号和反斜杠转义上，巡检机制按间隔唤醒主代理后，主代理通过 `send_message` 直接给出正确写法完成纠偏。*
 
 ---
 
-### 4. 专为调度模式定制的 `delegate` 与 `orchestrate`
+### 6. 热重载不断联，冷重启可对账
 
-- **`delegate`（按需异步单派 / 并行扇出）**：
-  用于派发自包含的独立任务（目标 + 允许修改的文件 + 验收命令 + 失败兜底）。同一回合多次调用即可同时启动多个 Worker 并行施工；插件会为每个子代理统一注入简体中文回复指令，并要求它在收尾时直接输出最终总结、禁止调用 `send_message` 向父代理汇报（收尾消息会自动送达主代理）。
-  **`writeScope`（必填，`string[]`）**：声明本次派发允许修改的文件或目录，支持精确文件（`src/index.js`）、目录（`dir/` 或 `dir/**`）与全局根（`*`）。相对路径按 `cwd` 词法归一化，Windows 下大小写不敏感判重；省略报 `write-scope-missing`，空数组 / 非法路径报 `write-scope-invalid`。
-- **`orchestrate`（声明式批量流水线）**：
-  用于处理「一组条目（`items`，1–64）× 固定多阶段步骤（`stages`，1–8）」的批量任务，通过 `maxConcurrency`（1–16，默认 4）控制并发。支持单阶段并行扇出与多阶段**逐条目无屏障流水线**（先做完阶段 1 的条目立刻进入阶段 2，不用傻等慢条目），支持阶段级 JSON Schema 强校验与单项失败隔离。
-  **`writeScope`（必填，`string[]`）**：整批共用一条顶层声明，按整批**原子持有**写作用域；归一化后的作用域会自动注入每个阶段的 Prompt 作为边界提示。
-- **单写者互斥（派发前拦截）**：`delegate` 按子代理持锁、`orchestrate` 按整批持锁，两者共享同一张进程级租约表并跨工具求交。一旦作用域相交，插件会在**启动任何子代理之前**直接抛出 `write-scope-conflict`（附冲突路径、持有者与到期时间，`agentsStarted: 0`），杜绝多个 Worker 同时覆写同一文件。租约在 `subagent/end`、`agent/disposed`、`orchestrate` 的 `finally`（含异常与 abort）以及插件卸载时幂等释放，另有 30 分钟 TTL 兜底防泄漏。
+遇到插件热更新时，正在跑的子代理不会断联，后台巡检继续无缝衔接。就算彻底退出 DSH 再重开，插件也会先自动核对一遍现场：确认已经停掉的子代理安全释放文件锁，缺少派发前记录的就老老实实标明“审计不完整”。
 
+> 自动利用宿主自带存储记录工作目录、任务和文件锁状态（旧版宿主自动退回内存模式，无额外依赖）；  
+> 彻底重启后不会盲目续跑已中断的旧任务，避免重复执行。
 
 ---
-<div align="center">
 
-### 为什么有了原生 `subagent` 和 `Agent Team`，还需要这个插件？
-</div>
-DSH 客户端自带了 `subagent` / `workflow`，官方也有 `@deepseek-ai/dsh-experimental-agent-team-profile`（Agent Team），但它们在实际高强度开发中仍有三个痛点——而这正是 **DSH Orchestrator** 独有的设计核心：
+### 7. 批量活与多步流水线，填好清单自动跑
 
-| 痛点场景 | 原生 `subagent` / 官方 `Agent Team` | DSH Orchestrator（本插件独有） |
-| --- | --- | --- |
-| **主代理总忍不住自己动手** | **靠自觉（软提示词）**：主代理 / Team Lead 手里依然握有 `read`、`edit`、`bash` 等全套工具，聊几轮就经常脱轨亲自去读文件、跑命令，瞬间撑爆主上下文 | **白名单式驱动（Whitelist-Driven Hard Gate）**：主代理默认仅放行 12 项规划与委派核心工具（`allowedTools`），其余一切宿主读写/终端工具及未来新增的 MCP/第三方插件工具一律自动隐藏并在执行层强制拦截（连 `run_code` 嵌套偷调也拦），**逼迫 Main Agent 100% 只做规划与验收，Subagent 100% 只干苦力活** |
-| **便宜模型干活卡死/跑偏** | **运行期黑盒**：派出后只能干等结束或超时，或者靠 `wait_agent` 阻塞轮询 | **后台事件日志定时巡检 + 强模型动态纠偏**：后台定时器直接读取运行中 Worker 的会话事件日志（读取与汇总本身不调用模型），汇总运行时长、轮次、新增工具调用与最后输出；异常或超时时以一条轻量摘要通知唤醒主代理，由强模型判断后精准纠偏 |
-| **大批量同构任务** | 原生 `workflow` 让模型手写任意 JS 脚本，容易失控且模型路由不统一 | **声明式 `orchestrate` 流水线**：`items × stages` 结构化扇出与多阶段流水线，单项失败隔离、支持 JSON Schema 强校验，子代理默认共用低成本路由 |
+遇到“把 20 个文件逐一检查 → 修改 → 复核”这类批量或多步骤任务，不用一遍遍手动派活。只要给出任务清单和步骤顺序，插件就按并发上限自动推进：哪个条目做完第一步立刻进第二步，不用干等最慢的那条；单条失败不会拖垮整批，还能要求每步严格按格式交卷。
 
+> 由 `orchestrate` 驱动，支持 1–64 个条目 × 1–8 个阶段、1–16 路并发（默认 4），每阶段可选 JSON 格式校验；隔离模式下按条目自动分配并跨阶段复用独立目录，不进入后台巡检。
+
+---
 
 <div align="center">
 
-## 环境要求
+# 工具速查
 
 </div>
 
+本插件只向主代理提供 4 个编排与验收工具（子代理看不到）：
+
+| 工具 | 做什么用 | 常用参数 | 注意事项 |
+| --- | --- | --- | --- |
+| `delegate` | 异步派活，支持同回合同时派多个 | `prompt`、`description`、`writeScope`（写任务必填）、`readOnly`、`isolation`、`expectedFingerprints`、`expectedTargets`、`cwd`、`provider` + `model` | 仅主代理可用；写任务自动开隔离目录或加文件锁；交工时自动附上审计结果，运行中受后台巡检覆盖 |
+| `orchestrate` | 批量 / 多步骤流水线自动并行跑 | `items`（1–64）、`stages`（1–8，可配 `schema`）、`maxConcurrency`（1–16，默认 4）、`writeScope`、`readOnly`、`isolation`、`cwd`、`provider` + `model` | 逐条目推进互不卡顿，单条失败互不拖累；隔离模式按条目复用目录；同步等待完成，不进后台巡检 |
+| `delegate_status` | 一眼查看当前会话所有子代理的验收进度 | `childId`（可选）、`includeCompleted`（默认 `true`）、`limit`（1–64，默认 20） | 只读查询；清晰区分运行状态、审计结果、文件锁与待评审目录，没查到记录不代表已通过 |
+| `worktree_manage` | 查看、审阅、合并、丢弃或清理隔离目录 | `action`（`list`/`inspect`/`merge`/`discard`/`prune`）、`worktreeId` / `childId`、`strategy`（`merge`/`squash`/`ff-only`）、`autoStageDirty`、`deleteAfterMerge`、`force`、`dryRun` | 仅主代理可用；审计通过不等于已合回主分支；合并冲突会保留现场；清理或丢弃后自动锁死旧子代理 |
+
+---
+
+<div align="center">
+
+# 安装与环境要求
+
+</div>
 
 | 项目 | 要求 |
 | --- | --- |
 | **宿主环境** | DeepSeek Harness Desktop / Web GUI |
+| **宿主版本** | `>= 0.2.2-rc.2 < 0.2.3-0`（已实测验证至 **`0.2.2-rc.5`**） |
 | **Node.js** | `>= 22`（内置于 DSH Desktop 运行时） |
 | **插件形态** | Cordis 后端服务补丁（`cordis.patch.yml`）+ Web GUI 客户端扩展（`lib/client.js`） |
 | **界面语言** | 中 / 英双语自适应（`zh-CN` / `en-US`） |
 
 <div align="center">
 
-### 与 DSH 宿主的版本兼容性
+# 版本兼容说明
+</div>  
 
-</div>
-
-
-| 插件版本 | 适配的 DSH 宿主 | 说明 |
-| --- | --- | --- |
-| `@sshirkit/dsh-orchestrator >= 0.8.3`（当前版本 `0.8.8`） | **DSH `>= 0.2.2-rc.2 < 0.2.3-0`** | 已验证 `0.2.2-rc.2` / `0.2.2-rc.3`。宿主自 `0.2.2-rc.2` 起扁平化了 subagent spec、移除了 `Symbol.for('dsh.subagent.deliverPrompt')` 投递入口与 `agents.roots()`，并新增 `wait_agent` 工具；因此**不兼容 `0.2.2-rc.1` 及更早版本**。注意：宿主虽新增了 `wait_agent`，但本插件默认白名单**有意维持 12 项、不予放行 `wait_agent`**——阻塞式轮询等待会让主代理陷入空转与超时误判，巡检机制已用「一条摘要 + 一次决策」替代轮询；确有需要时可在面板 `allowedTools` 中手动勾选放行。 |
-| `dsh-orchestrator 0.8.0 – 0.8.2` | **DSH `<= 0.2.2-rc.1`** | 已实测支持 `0.2.1-rc.3`、`0.2.2-rc.1`。自 `0.8.0` 起引入 `@deepseek-ai/dsh-tools` 依赖。 |
-| `dsh-orchestrator <= 0.7.3` | `0.8.0` 之前的旧版 DSH | 早期独立工具注册架构，未依赖 `@deepseek-ai/dsh-tools`。 |
-
-> 升级前请先确认宿主版本：在 DSH 中查看「关于」或读取安装目录下的 `package.json`。**插件 `0.8.3+` 配 `0.2.2-rc.1` 及更早宿主会在派发时直接报错**；反之，旧插件配 `0.2.2-rc.2+` 宿主同样不可用。若暂时无法升级宿主，请停留在插件 `v0.8.2`。
-
----
+| npm 包 | 插件版本 | 适配的 DSH 宿主 | 说明 |
+| --- | --- | --- | --- |
+| `@sshirkit/dsh-orchestrator` | `v1.0.0` 起 | **DSH `>= 0.2.2-rc.2 < 0.2.3-0`** | 持续维护，已实测验证至 `0.2.2-rc.5`。不兼容 `0.2.2-rc.1` 及更早宿主；`wait_agent` 默认不放行（由事件交付与旁路巡检替代阻塞轮询），确有需要可在面板手动勾选。 |
+| `dsh-orchestrator`（早期无作用域包） | `v0.8.0` – `v0.8.2` | **DSH `<= 0.2.2-rc.1`** | 暂时无法升级宿主时，请停留在 `v0.8.2`。 |
 
 <div align="center">
 
-## 安装
-
+# 安装方式
 </div>
 
-在 DSH 插件页选择「从 GitHub 添加」，下列三种写法都接受，直接填入输入框即可（推荐第一种，最不容易被客户端误判）：
+**方式一：DSH GUI 安装**
+
+在 DSH 插件页选择「**添加插件 → 安装第三方插件**」，填入以下任一有效标识（推荐第一种或 npm 包名）：
 
 ```text
 https://github.com/SShiRkiT/dsh-orchestrator
 github:SShiRkiT/dsh-orchestrator#main
-SShiRkiT/dsh-orchestrator#main
+@sshirkit/dsh-orchestrator
 ```
 
+**方式二：CLI 安装**
+
 ```bash
-# CLI 等价安装
+# 从 GitHub 安装
 dsh plugin --profile desktop add https://github.com/SShiRkiT/dsh-orchestrator
-# npm 安装（npm 发布后可用）
+# 或从 npm 安装
 dsh plugin --profile desktop add @sshirkit/dsh-orchestrator
 ```
 
-> 装完后请**完全退出并重新打开 DSH**（客户端插件在启动时组合，不支持热更新）。升级时请先在插件页**卸载旧版**再重新添加本仓库或 `@sshirkit/dsh-orchestrator`（npm 发布后可用），两份同时存在会争抢同一批工具声明。
+> 首次安装或更新客户端扩展后，如果输入栏右侧未显示「调度模式」面板，请完全退出并重启 DSH 客户端。
 
 ---
 
 <div align="center">
 
-## 配置说明
+# 调度面板与配置说明
 
 </div>
 
-所有配置项均为 volatile（动态热配置），无需重启 DSH：执行门禁每次调用重读，工具面从下一次请求生效，子代理路由从下一次派发生效。
+## 输入栏右侧「调度模式」面板
 
-| 字段 | 默认值 | 说明 |
+面板自动跟随 DSH 语言切换中 / 英文，提供免重启的实时控制项：
+
+- **启用调度模式**：一键开关主代理工具白名单闸门，已打开的会话立即生效；
+- **默认启用 Git Worktree 隔离**：控制 `isolation: "auto"` 在 Git 仓库写任务下的隔离行为；
+- **主代理 / 子代理默认模型与推理强度**：支持关键词搜索选择模型；主代理写入宿主 `agent-default-model`（仅影响新会话），子代理从下一次派发生效；
+- **子代理巡检间隔 / 巡检次数 / 无限巡检**：运行中动态调整后台旁路巡检策略；
+- **右侧 `Allowed Tools` 列表**：按关键字搜索、实时勾选 / 取消勾选主代理可用工具，支持一键重置默认白名单。
+
+## 配置项速查表
+
+以下 13 项用户可配参数均为 `volatile` 动态热配置，修改后无需重启 DSH（执行门禁每次调用重读、工具面下一次请求生效、子代理路由下一次派发生效）：
+
+| 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `enabled` | `true` | 调度模式总开关。关闭时恢复宿主工具，但 `delegate` / `orchestrate` 仍禁用，已绑定巡检回合的 Todo 禁令与正常声明锁仍优先。 |
-| `workerProvider` / `workerModel` | `""` | 子代理默认模型路由（必填，未配置时派发直接报错，绝不静默继承主代理模型）。 |
-| `workerReasoningEffort` | `""` | 子代理思考强度，留空则由所选模型自行决定默认值。 |
-| `allowedTools` | 12 项内置白名单 | 白名单式驱动：主代理仅可使用列表内的工具，其余宿主/MCP/插件工具自动隐藏并禁用；面板右侧 Allowed Tools 可直接勾选放行或取消勾选禁用，下一条消息即刻生效。 |
-| `superviseEnabled` | `true` | 子代理后台巡检总开关；位于宿主插件设置卡片。 |
-| `superviseIntervalSeconds` | `600` | 巡检间隔（秒），范围 10–86400，运行中修改立即生效。 |
-| `superviseMaxNoticesPerChild` | `3` | 每个子代理最多发送几次巡检通知（0–20）。未开无限巡检时，`0` 表示关闭（运行中的子代理仍保留在注册表中，改回 >0 或打开无限巡检后恢复到期判定）。 |
-| `superviseUnlimited` | `false` | 无限次数巡检开关。开启后忽略 `superviseMaxNoticesPerChild` 上限（含 `0`），只要子代理没有停止 / 交付 / 结束，就按间隔持续巡检，通知标题不带分母（`第 N 次`）。 |
-| `superviseNotifyOnNoProgress` | `false` | 子代理日志无新活动时是否仍然发送通知（开启 `superviseUnlimited` 时等效于始终发送）；位于宿主插件设置卡片。 |
-| `restoreTodoOnSupervision` | `true` | 巡检时按有效快照静默补写 `todo/write`，仅恢复 UI 状态，不增加模型历史或消耗模型 Token。与 `superviseEnabled` / `superviseNotifyOnNoProgress` 一致位于宿主插件设置卡片，不在输入栏快捷弹层。 |
+| `enabled` | `true` | 调度模式总开关。关闭后一键恢复宿主原生工具面；`delegate` / `orchestrate` 仍禁用，已绑定巡检回合的硬禁仍优先。 |
+| `worktreeIsolationEnabled` | `true` | 控制 `isolation: "auto"` 下是否为 Git 仓库写任务默认启用独立 Worktree 隔离与 `git diff` / `git log` 审计（非 Git 目录自动降级快照审计）。 |
+| `allowedTools` | 未配置（默认 9 项基础工具；`allowAgentTeam: true` 时自动追加已注册的 4 项原生 Team 工具） | 主代理显式工具白名单。显式数组（包括 `[]`）会**替换**默认名单而非追加；面板右侧 `Allowed Tools` 勾选实时写入此项。 |
+| `allowAgentTeam` | `true` | 是否允许被闸门管控的主代理使用宿主原生 Agent Teams 任务板工具（`team_task_*`）。设为 `false` 时优先级高于白名单。 |
+| `workerProvider` | `""` | 子代理默认路由 Provider（必填；与 `workerModel` 任一为空且无单次覆盖时直接报错，绝不静默回退主模型）。 |
+| `workerModel` | `""` | 子代理默认路由 Model（必填，约束同上）。 |
+| `workerReasoningEffort` | `""` | 子代理默认推理强度；留空则由所选子代理模型自行决定默认值。 |
+| `superviseEnabled` | `true` | 子代理后台旁路巡检总开关（位于宿主插件设置卡片）。 |
+| `superviseIntervalSeconds` | `600` | 旁路巡检间隔（秒），范围 `10–86400`，运行中修改立即生效。 |
+| `superviseMaxNoticesPerChild` | `3` | 每个子代理最多触发的巡检通知次数（`0–20`）。未开启无限巡检时，`0` 表示关闭巡检。 |
+| `superviseUnlimited` | `false` | 无限次数巡检开关。开启后忽略 `superviseMaxNoticesPerChild` 上限（含 `0`），持续按间隔巡检直至子代理停止、交付或结束。 |
+| `superviseNotifyOnNoProgress` | `false` | 子代理日志无新活动时是否仍然发送巡检通知（位于宿主插件设置卡片；开启 `superviseUnlimited` 时等效于始终通知）。 |
+| `restoreTodoOnSupervision` | `true` | 巡检时按有效快照静默补写 `todo/write` 恢复 Todo UI 状态，不增加模型历史、不消耗模型 Token（位于宿主插件设置卡片）。 |
 
-> 注：主代理的默认模型保存在宿主的 `agent-default-model` 中，由同一个「调度模式」面板直接读写，对新创建的会话生效；子代理模型改动从下一次委派起立即生效。
+> 注：配置架构中另含 `toolCatalog` 字段，系插件运行时自动发布的**内部只读工具目录镜像**（用于向 Web 面板同步宿主当前已注册工具清单），无需手动编辑。主代理默认模型存储于宿主的 `agent-default-model`，由同一「调度模式」面板读写。
 
+---
 
 <div align="center">
 
-## 参与贡献
+# 参与贡献
 
 </div>
 
-本项目先维护中文版，再同步英文版。以下文档涵盖项目设计、贡献流程和求助渠道。
+本项目先维护中文版，再同步英文版。以下文档涵盖项目术语、架构决策、贡献流程与社区支持：
 
 - 项目术语表 [`GLOSSARY.md`](docs/GLOSSARY.md)
 - 架构决策记录（ADR）[`docs/adr/`](docs/adr/)
@@ -217,7 +264,7 @@ dsh plugin --profile desktop add @sshirkit/dsh-orchestrator
 
 <div align="center">
 
-## License
+# License
 
 </div>
 

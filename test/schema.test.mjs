@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createDelegateTool } from '../lib/delegate.js'
 import { createOrchestrateTool } from '../lib/orchestrate.js'
+import { createWorktreeManageTool } from '../lib/worktree-manage.js'
 import {
   SchemaError,
   assertObjectSchema,
@@ -77,12 +78,24 @@ function authorProblems(tool) {
   return problems
 }
 
+function assertIsolationParameter(tool) {
+  const isolation = tool.parameters.isolation
+  assert.equal(isolation.type, 'string')
+  assert.deepEqual(isolation.enum, ['auto', 'worktree', 'shared'])
+  assert.match(isolation.description, /auto（默认/)
+  assert.equal('required' in isolation, false)
+}
+
 test('delegate schemas stay inside the host author dialect', () => {
   const tool = createDelegateTool({ defineTool: (d) => d, subagents: {}, config })
   assert.deepEqual(authorProblems(tool), [])
   assert.equal(tool.parameters.description.required, true)
   assert.equal(tool.parameters.prompt.required, true)
-  assert.equal(tool.parameters.writeScope.required, true)
+  assert.equal('required' in tool.parameters.writeScope, false)
+  assert.equal(tool.parameters.readOnly.type, 'boolean')
+  assert.equal(tool.parameters.expectedFingerprints.type, 'object')
+  assert.equal(tool.parameters.expectedTargets.items.type, 'string')
+  assertIsolationParameter(tool)
   assert.equal('required' in tool.parameters.cwd, false)
   assert.equal(JSON.stringify(tool.parameters).includes('"required":['), false)
   assert.equal(JSON.stringify(tool.output.schema).includes('"required":['), false)
@@ -93,10 +106,14 @@ test('orchestrate schemas stay inside the host author dialect and expose the sta
   assert.deepEqual(authorProblems(tool), [])
   assert.deepEqual(Object.keys(tool.parameters).sort(), [
     'cwd',
+    'expectedFingerprints',
+    'expectedTargets',
+    'isolation',
     'items',
     'maxConcurrency',
     'model',
     'provider',
+    'readOnly',
     'reasoning_effort',
     'stages',
     'writeScope',
@@ -104,11 +121,14 @@ test('orchestrate schemas stay inside the host author dialect and expose the sta
   assert.equal(tool.parameters.items.required, true)
   assert.equal(tool.parameters.items.items.type, 'json')
   assert.equal(tool.parameters.stages.required, true)
-  // The batch scope is required, has no default and no minItems — the same conventions
-  // as `delegate`, so a batch without a declaration is refused.
+  // Conditional requiredness is runtime-validated identically by both tools.
   assert.equal(tool.parameters.writeScope.type, 'array')
   assert.equal(tool.parameters.writeScope.items.type, 'string')
-  assert.equal(tool.parameters.writeScope.required, true)
+  assert.equal('required' in tool.parameters.writeScope, false)
+  assert.equal(tool.parameters.readOnly.type, 'boolean')
+  assert.equal(tool.parameters.expectedFingerprints.type, 'object')
+  assert.equal(tool.parameters.expectedTargets.items.type, 'string')
+  assertIsolationParameter(tool)
   assert.equal('default' in tool.parameters.writeScope, false)
   const stage = tool.parameters.stages.items
   assert.equal(stage.type, 'object')
@@ -125,6 +145,15 @@ test('orchestrate schemas stay inside the host author dialect and expose the sta
   assert.equal(stageText.includes('"provider"'), false)
   assert.equal(stageText.includes('"model"'), false)
   assert.equal(tool.isConcurrencySafe(), true)
+})
+
+test('worktree_manage schemas stay inside the host author dialect and expose review operations', () => {
+  const tool = createWorktreeManageTool()
+  assert.deepEqual(authorProblems(tool), [])
+  assert.equal(tool.parameters.action.required, true)
+  assert.deepEqual(tool.parameters.action.enum, ['list', 'inspect', 'merge', 'discard', 'prune'])
+  assert.deepEqual(tool.parameters.strategy.enum, ['merge', 'squash', 'ff-only'])
+  assert.equal(tool.parameters.force.default, false)
 })
 
 test('the raw stage-schema subset accepts object roots with the documented keywords', () => {

@@ -1,5 +1,5 @@
 name: Bug Report / 缺陷报告
-description: Report a bug or unexpected behavior in @sshirkit/dsh-orchestrator
+description: Report a bug or unexpected behavior in dsh-orchestrator
 title: "[Bug]: "
 labels: ["bug"]
 body:
@@ -12,7 +12,7 @@ body:
     id: plugin-version
     attributes:
       label: Plugin version / 插件版本
-      placeholder: "0.8.7"
+      placeholder: "1.0.0"
     validations:
       required: true
   - type: dropdown

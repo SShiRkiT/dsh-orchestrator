@@ -2,7 +2,7 @@
 
 ## Accessibility commitment / 无障碍承诺
 
-We aim to make the `@sshirkit/dsh-orchestrator` Dispatch panel usable in the DeepSeek Harness Web GUI and its Desktop client. We welcome reports about barriers to keyboard navigation, assistive technology, or access to localized controls.
+We aim to make the **dsh-orchestrator** Dispatch panel usable in the DeepSeek Harness Web GUI and its Desktop client. We welcome reports about barriers to keyboard navigation, assistive technology, or access to localized controls.
 
 ## Supported interactions / 支持的交互
 

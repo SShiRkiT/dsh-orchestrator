@@ -2,10 +2,10 @@ blank_issues_enabled: false
 contact_links:
   - name: English Documentation
     url: https://github.com/SShiRkiT/dsh-orchestrator/blob/main/README.md
-    about: Read installation instructions, quick verification steps, and troubleshooting tips.
+    about: Read the dsh-orchestrator installation and compatibility instructions.
   - name: 简体中文文档
     url: https://github.com/SShiRkiT/dsh-orchestrator/blob/main/README.zh.md
-    about: 查阅安装说明、快速验证步骤与故障排查指南。
+    about: 查阅 dsh-orchestrator 的安装方式与版本兼容说明。
   - name: Report a Security Vulnerability
     url: https://github.com/SShiRkiT/dsh-orchestrator/security/advisories/new
     about: Report suspected vulnerabilities privately to the maintainer.
