@@ -31,7 +31,7 @@
 
  https://github.com/user-attachments/assets/f540b545-c697-4bbc-abb2-d55f74041172
 
-> [▶ Watch Bilibili Version](https://www.bilibili.com/video/BV1b7yBznEM9/)
+> [▶ Watch Bilibili Version. Really appreciate if hit a like button, if possible ヽ(・∀・)](https://www.bilibili.com/video/BV1b7yBznEM9/)
 
 ---
 
