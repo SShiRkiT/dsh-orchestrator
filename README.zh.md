@@ -53,6 +53,11 @@
 
 ---
 
+ https://github.com/user-attachments/assets/f540b545-c697-4bbc-abb2-d55f74041172
+
+> [▶ 查看B站版本 (可以的话帮忙点个赞, 谢谢了ヽ(・∀・)](https://www.bilibili.com/video/BV1b7yBznEM9/)
+
+---
 <div align="center">
 
 # 七大核心优势
