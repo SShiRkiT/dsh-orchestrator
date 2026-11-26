@@ -95,8 +95,7 @@ test('delegate schemas stay inside the host author dialect', () => {
   assert.equal('required' in tool.parameters.team_task_id, false)
   assert.equal('required' in tool.parameters.writeScope, false)
   assert.equal(tool.parameters.readOnly.type, 'boolean')
-  assert.equal(tool.parameters.expectedFingerprints.type, 'object')
-  assert.equal(tool.parameters.expectedTargets.items.type, 'string')
+  assert.equal(tool.parameters.allowNewReason.type, 'string')
   assertIsolationParameter(tool)
   assert.equal('required' in tool.parameters.cwd, false)
   assert.equal(JSON.stringify(tool.parameters).includes('"required":['), false)
@@ -108,8 +107,6 @@ test('orchestrate schemas stay inside the host author dialect and expose the sta
   assert.deepEqual(authorProblems(tool), [])
   assert.deepEqual(Object.keys(tool.parameters).sort(), [
     'cwd',
-    'expectedFingerprints',
-    'expectedTargets',
     'isolation',
     'items',
     'maxConcurrency',
@@ -129,8 +126,6 @@ test('orchestrate schemas stay inside the host author dialect and expose the sta
   assert.equal(tool.parameters.writeScope.items.type, 'string')
   assert.equal('required' in tool.parameters.writeScope, false)
   assert.equal(tool.parameters.readOnly.type, 'boolean')
-  assert.equal(tool.parameters.expectedFingerprints.type, 'object')
-  assert.equal(tool.parameters.expectedTargets.items.type, 'string')
   assertIsolationParameter(tool)
   assert.equal('default' in tool.parameters.writeScope, false)
   const stage = tool.parameters.stages.items

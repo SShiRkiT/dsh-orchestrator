@@ -154,12 +154,34 @@ function nodes(tree, out = []) {
   return out
 }
 
-function mountField(scope) {
-  const view = mount(mod.__test.SuperviseIntervalField, { scope, t })
+function mountField(scope, component = T.SuperviseIntervalField) {
+  const picker = mountPicker({ scopes: { main: fakeScope(), worker: fakeScope(), orch: scope } })
+  picker.open()
+  const child = mountPickerChild(picker.view, (node) => node.type === component)
+  const view = {
+    get tree() { return child.tree },
+    unmount() { child.unmount(); picker.view.unmount() },
+  }
   return {
     view,
-    input: () => nodes(view.tree).find((node) => node.type === 'input'),
-    alert: () => nodes(view.tree).find((node) => node.props?.role === 'alert'),
+    input: () => nodes(child.tree).find((node) => node.type === 'input'),
+    toggle: () => nodes(child.tree).find((node) => node.type === T.EnableSwitch),
+    alert: () => nodes(child.tree).find((node) => node.props?.role === 'alert'),
+  }
+}
+
+// Commit only the selected child. Pass fresh parent props before observing its output.
+function mountPickerChild(parent, select) {
+  const current = () => nodes(parent.tree).find(select)
+  let props = current().props
+  const child = mount(current().type, props)
+  return {
+    get tree() {
+      const next = current().props
+      if (next !== props) child.update(props = next)
+      return child.tree
+    },
+    unmount: child.unmount,
   }
 }
 
@@ -202,7 +224,7 @@ const fakeDocument = {
 const pointerDown = (target) => {
   for (const entry of [...fakeDocument.listeners]) entry.fn({ target })
 }
-vm.runInNewContext(src, {
+const clientRuntime = vm.createContext({
   window: fakeWindow,
   document: fakeDocument,
   // The field schedules its transient warning; tests drive the timer by hand.
@@ -213,10 +235,14 @@ vm.runInNewContext(src, {
   },
   clearTimeout: () => {},
 })
+vm.runInContext(src, clientRuntime)
 const T = mod.__test
 const t = (k) => k
 // Values built inside the vm context have another Object.prototype; compare them as plain JSON.
 const plain = (v) => JSON.parse(JSON.stringify(v))
+const fromWire = (value) => vm.runInContext(
+  `JSON.parse(${JSON.stringify(JSON.stringify(value))})`, clientRuntime,
+)
 
 test('route keys round-trip, including ids with slashes, and reject junk', () => {
   const key = T.routeKey('nexus-claude', 'claude/opus:5.5')
@@ -505,7 +531,7 @@ test('a rejected interval write is caught and shown without crashing', async () 
   field.input().props.onChange({ target: { value: '900' } })
   await field.input().props.onBlur()
   assert.equal(scope.calls.length, 1)
-  assert.equal(field.alert().kids[0], 'supervise.saveFailed')
+  assert.equal(field.alert().kids[0], 'settings changed since it was read')
   assert.equal(field.input().props.value, '600')
 })
 
@@ -530,15 +556,7 @@ test('the interval field follows a value changed elsewhere', () => {
 
 // ---- The patrol notice count and the unlimited switch --------------------------------
 
-function mountCountField(scope) {
-  const view = mount(mod.__test.SuperviseCountField, { scope, t })
-  return {
-    view,
-    input: () => nodes(view.tree).find((node) => node.type === 'input'),
-    toggle: () => nodes(view.tree).find((node) => node.type === T.EnableSwitch),
-    alert: () => nodes(view.tree).find((node) => node.props?.role === 'alert'),
-  }
-}
+const mountCountField = (scope) => mountField(scope, T.SuperviseCountField)
 
 test('the patrol count field shows the stored value, or 3 when it is absent or malformed', () => {
   const cases = [
@@ -670,7 +688,7 @@ test('a rejected patrol count write is caught and shown without crashing', async
   field.input().props.onChange({ target: { value: '8' } })
   await field.input().props.onBlur()
   assert.equal(scope.calls.length, 1)
-  assert.equal(field.alert().kids[0], 'supervise.saveFailed')
+  assert.equal(field.alert().kids[0], 'settings changed since it was read')
   assert.equal(field.input().props.value, '3')
 })
 
@@ -740,7 +758,7 @@ test('a rejected unlimited write is reported and leaves the switch off', async (
   const field = mountCountField(scope)
   await field.toggle().props.onChange(true)
   assert.equal(scope.calls.length, 1)
-  assert.equal(field.alert().kids[0], 'supervise.saveFailed')
+  assert.equal(field.alert().kids[0], 'settings changed since it was read')
   assert.equal(field.toggle().props.checked, false)
   assert.equal(field.input().props.disabled, false)
 })
@@ -769,10 +787,14 @@ test('the patrol count hint disappears when its timer fires', async () => {
 // ---- Worktree isolation -------------------------------------------------------------
 
 function mountWorktreeIsolation(scope) {
-  const view = mount(T.WorktreeIsolationField, { scope, t })
-  const toggle = () => nodes(view.tree).find((node) => node.type === T.EnableSwitch)
-  const alert = () => nodes(view.tree).find((node) => node.props?.role === 'alert')
-  return { view, toggle, alert }
+  const panel = mountAllowed(scope)
+  panel.more().props.onClick()
+  const more = mountPickerChild(panel.picker, (node) => node.type === T.MoreSettingsPanel)
+  return {
+    view: { unmount() { more.unmount(); panel.view.unmount() } },
+    toggle: () => nodes(more.tree).find((node) => node.props?.field === 'worktreeIsolationEnabled'),
+    alert: () => nodes(more.tree).find((node) => node.props?.role === 'alert'),
+  }
 }
 
 test('the Worktree switch defaults on and persists boolean changes to the orchestrator scope', async () => {
@@ -809,7 +831,7 @@ test('the Worktree switch honors stored false and never writes in a read-only fo
   assert.equal(field.toggle().props.disabled, true)
   await field.toggle().props.onChange(true)
   assert.equal(scope.calls.length, 0)
-  assert.equal(field.alert().kids[0], 'route.readonly')
+  assert.equal(field.alert(), undefined)
   field.view.unmount()
 })
 
@@ -818,7 +840,7 @@ test('an unpersisted Worktree switch change reports failure without changing the
   const field = mountWorktreeIsolation(scope)
   await field.toggle().props.onChange(false)
   assert.equal(field.toggle().props.checked, true)
-  assert.equal(field.alert().kids[0], 'route.enableFailed')
+  assert.equal(field.alert().kids[0], 'route.saveFailed')
   field.view.unmount()
 })
 
@@ -1063,20 +1085,31 @@ test('the switch draws a focus ring only while focused', () => {
 })
 
 /** Mount the allowed-tools column and expose the nodes the tests reach for. */
-function mountAllowed(scope, props = {}) {
-  const view = mount(T.AllowedToolsPanel, { scope, t, ...props })
+function mountAllowed(scope, props = {}, existingPicker) {
+  const picker = existingPicker ?? mountPicker({
+    sessionId: undefined, ...props,
+    scopes: { main: fakeScope(), worker: fakeScope(), orch: scope },
+  }).view
+  if (!existingPicker) picker.tree.kids[0].props.onClick()
+  const child = mountPickerChild(picker, (node) => node.type === T.AllowedToolsPanel)
+  const view = {
+    get tree() { return child.tree },
+    update: picker.update,
+    unmount() { child.unmount(); picker.unmount() },
+  }
   const rows = () => nodes(view.tree).filter((node) => node.type === 'label' && node.props?.['data-tool'])
   const box = (name) => rows().find((row) => row.props['data-tool'] === name).kids[0]
-  const sessionRow = () => nodes(view.tree).find((node) => node.props?.['data-scope'] === 'session-tools')
+  const sessionRow = () => view.tree.kids[0]
   const session = () => {
     const control = nodes(sessionRow()).find((node) => node.type === T.EnableSwitch)
     return nodes(mountSwitch(control.props).view.tree).find((node) => node.props?.role === 'switch')
   }
-  const alert = () => nodes(view.tree).find((node) => node.props?.role === 'alert')?.kids[0]
+  const alert = () => nodes(picker.tree).concat(nodes(view.tree)).find((node) => node.props?.role === 'alert')?.kids[0]
   const search = () => nodes(view.tree).find((node) => node.props?.['data-search'] === 'allowed-tools')
-  const button = () => nodes(view.tree).find((node) => node.type === 'button')
+  const button = () => view.tree.kids[2].kids[1]
+  const more = () => nodes(sessionRow()).find((node) => node.props?.['data-action'] === 'more-settings')
   const text = () => nodes(view.tree).map((node) => node.kids?.[0]).filter((kid) => typeof kid === 'string')
-  return { view, rows, box, sessionRow, session, alert, search, button, text }
+  return { picker, view, rows, box, sessionRow, session, alert, search, button, more, text }
 }
 
 test('the column is headed Allowed Tools and lists one checked row per shipped tool', () => {
@@ -1239,14 +1272,18 @@ test('a rejected write is reported without dropping the stored state', async () 
   const panel = mountAllowed(scope)
   const row = () => panel.rows().find((entry) => entry.props['data-tool'] === 'delegate')
   await row().kids[0].props.onChange({ target: { checked: false } })
-  const alert = nodes(panel.view.tree).find((node) => node.props?.role === 'alert')
-  assert.match(alert.kids[0], /settings changed/)
+  assert.match(panel.alert(), /settings changed/)
   assert.equal(row().kids[0].props.checked, true)
 })
 
 const settleSessionPanel = () => new Promise((resolve) => setImmediate(resolve))
-const sessionState = (sessionId, enabled, allowedTools = [], revision = 0, storageReady = true) => ({
-  sessionId, enabled, allowedTools, revision, storageReady,
+const sessionDefaults = (allowedTools = []) => ({
+  enabled: true, worktreeIsolationEnabled: true, readOnlyEnabled: false, peerReadOnlyConsultEnabled: false,
+  mainRoute: null, workerRoute: null, superviseIntervalSeconds: 600, superviseMaxNoticesPerChild: 3,
+  superviseUnlimited: false, allowedTools,
+})
+const sessionState = (sessionId, enabled, allowedTools = [], revision = 0, storageReady = true, patch = {}) => ({
+  sessionId, enabled, allowedTools, config: { ...sessionDefaults(allowedTools), ...patch }, revision, storageReady,
 })
 const changeBox = (box, checked) => box.props.onChange({ target: { checked } })
 
@@ -1271,18 +1308,20 @@ test('the slot mounts the strict session Remote before any call and releases it 
         assert.equal(contribution.package, '@sshirkit/dsh-orchestrator')
         const expected = createSessionToolsDescriptors()
         assert.deepEqual(plain(contribution.descriptors), plain(expected))
+        assert.deepEqual(plain(contribution.descriptors.map(({ method }) => method)), ['get', 'set', 'setConfig', 'clear'])
         for (const [i, descriptor] of expected.entries()) {
           const client = contribution.descriptors[i]
           for (const [j, param] of descriptor.parameters.entries()) {
             const parse = client.parameters[j].codec.create().parse
-            const sample = { sessionId: 'S1', allowedTools: ['a', 'a', 'b'], expectedRevision: 1 }[param.name]
-            assert.deepEqual(plain(parse(sample)), plain(param.codec.create().parse(sample)))
+            const sample = { sessionId: 'S1', allowedTools: ['a', 'a', 'b'], config: { allowedTools: ['a', 'b'], readOnlyEnabled: true }, expectedRevision: 1 }[param.name]
+            assert.deepEqual(plain(parse(fromWire(sample))), plain(param.codec.create().parse(sample)))
             assert.throws(() => parse(undefined), { name: 'TypeError' })
           }
           const parse = client.result.create().parse
           const sample = sessionState('S1', false)
-          assert.deepEqual(plain(parse(sample)), descriptor.result.create().parse(sample))
-          assert.throws(() => parse({ ...sample, unexpected: true }), { name: 'TypeError' })
+          assert.deepEqual(plain(parse(fromWire(sample))), descriptor.result.create().parse(sample))
+          assert.throws(() => parse(fromWire({ ...sample, unexpected: true })), { name: 'TypeError' })
+          assert.throws(() => parse(fromWire({ ...sample, allowedTools: ['mismatch'] })), { name: 'TypeError' })
         }
         return mounted.promise
       },
@@ -1385,10 +1424,8 @@ function strictSessionCordis(service, { fiberDisposal = Promise.resolve(), scope
       const t = (key) => dictionaries[locale][key]
       const view = mount(entry.component, { ...props, t })
       nodes(view.tree).find((node) => node.type === 'button').props.onClick()
-      const column = nodes(view.tree).find((node) => node.type === T.AllowedToolsPanel)
-      assert.ok(column)
-      const panel = mountAllowed(scope, column.props)
-      return { ...panel, close() { panel.view.unmount(); view.unmount() } }
+      const panel = mountAllowed(scope, {}, view)
+      return { ...panel, close: panel.view.unmount }
     },
   }
 }
@@ -1402,9 +1439,9 @@ test('the desktop slot waits for the guarded Cordis injection and writes only to
       calls.push(['get', id])
       return { ok: true, value: sessionState(id, false, [], 4) }
     },
-    async set(id, names, revision) {
-      calls.push(['set', id, plain(names), revision])
-      return { ok: true, value: sessionState(id, true, names, 5) }
+    async setConfig(id, config, revision) {
+      calls.push(['setConfig', id, plain(config), revision])
+      return { ok: true, value: sessionState(id, true, config.allowedTools, 5, true, config) }
     },
     async clear(id, revision) {
       calls.push(['clear', id, revision])
@@ -1455,7 +1492,7 @@ test('the desktop slot waits for the guarded Cordis injection and writes only to
   await changeBox(panel.session(), false)
   assert.equal(panel.alert(), undefined)
   assert.equal(panel.session().props.checked, false)
-  assert.deepEqual(calls, [['get', 'S1'], ['set', 'S1', ['delegate'], 4], ['clear', 'S1', 5], ['clear', 'S1', 5]])
+  assert.deepEqual(calls, [['get', 'S1'], ['setConfig', 'S1', sessionDefaults(['delegate']), 4], ['clear', 'S1', 5], ['clear', 'S1', 5]])
   assert.deepEqual(host.scope.calls, [])
 
   host.loseScope()
@@ -1493,7 +1530,7 @@ test('the session capsule uses the same switch and accessible labels in both loc
     const [title, control] = row.kids
     assert.equal(title.type, 'span')
     assert.equal(title.kids[0], label)
-    assert.equal(title.props.style.whiteSpace, 'nowrap')
+    assert.equal(row.props.style.flexWrap, 'wrap')
     assert.equal(title.props.style.fontWeight, 600)
     assert.notEqual(title.props.style.fontStyle, 'italic')
     assert.equal(control.type, T.EnableSwitch)
@@ -1596,48 +1633,94 @@ test('a context without inject can look up the session Remote with get', async (
   await remote.dispose()
 })
 
-test('enabling, editing, resetting and clearing a session never writes global config', async () => {
-  const scope = fakeScope({ initial: { allowedTools: [] } })
-  const calls = []
+test('only for this session snapshots and edits all ten settings without writing global config', async (t) => {
+  const defaults = {
+    enabled: true, worktreeIsolationEnabled: true, readOnlyEnabled: false, peerReadOnlyConsultEnabled: false,
+    mainRoute: { provider: 'global', model: 'main', reasoningEffort: 'low' },
+    workerRoute: { provider: 'global', model: 'worker' },
+    superviseIntervalSeconds: 1200, superviseMaxNoticesPerChild: 3, superviseUnlimited: false,
+    allowedTools: ['delegate'],
+  }
+  const scopes = {
+    main: fakeScope({ initial: { provider: 'global', model: 'main', reasoningEffort: 'low' } }),
+    worker: fakeScope({ initial: { workerProvider: 'global', workerModel: 'worker' } }),
+    orch: fakeScope({ initial: { allowedTools: ['delegate'], superviseIntervalSeconds: 1200 } }),
+  }
   let state = sessionState('A', false, [], 4)
+  const calls = []
   const sessionRemote = { async call(method, ...args) {
     calls.push(plain([method, ...args]))
-    if (method === 'set') state = sessionState('A', true, args[1], state.revision + 1)
-    if (method === 'clear') state = sessionState('A', false, [], state.revision + 1)
+    if (method === 'get') return state
+    if (method === 'clear') return sessionState('A', false, [], state.revision + 1)
+    assert.equal(method, 'setConfig')
+    assert.equal(args[2], state.revision)
+    const config = { ...state.config, ...plain(args[1]) }
+    state = sessionState('A', true, config.allowedTools, state.revision + 1, true, config)
     return state
   } }
-  const panel = mountAllowed(scope, { sessionId: 'A', sessionRemote })
+  const picker = mountPicker({ scopes, sessionId: 'A', sessionRemote })
+  picker.open()
+  const panel = mountAllowed(scopes.orch, {}, picker.view)
+  t.after(panel.view.unmount)
   assert.equal(panel.session().props.disabled, true)
   await settleSessionPanel()
   assert.equal(panel.session().props.disabled, false)
-  assert.equal(panel.session().props.checked, false)
   await changeBox(panel.session(), true)
   assert.equal(panel.session().props.checked, true)
-  assert.equal(panel.box('delegate').props.checked, false)
-  await changeBox(panel.box('delegate'), true)
-  assert.equal(panel.box('delegate').props.checked, true)
-  scope.externalSet({ allowedTools: HOST_DEFAULT_ALLOWED_TOOLS })
-  assert.equal(panel.box('orchestrate').props.checked, false)
+  assert.deepEqual(state.config, defaults)
+
+  const field = (name) => nodes(picker.view.tree).find((node) => node.props?.field === name)
+  const row = (which) => nodes(picker.view.tree).find((node) => node.type === T.RouteRow && node.props.label === 'route.' + which)
+  await field('enabled').props.onChange(false)
+  await row('main').props.onChange({ provider: 'session', model: 'main', effort: 'high' })
+  await row('worker').props.onChange({ provider: 'session', model: 'worker', effort: '' })
+  const interval = mountPickerChild(picker.view, (node) => node.type === T.SuperviseIntervalField)
+  const count = mountPickerChild(picker.view, (node) => node.type === T.SuperviseCountField)
+  t.after(interval.unmount)
+  t.after(count.unmount)
+  for (const [fieldView, value] of [[interval, '1800'], [count, '7']]) {
+    const input = () => nodes(fieldView.tree).find((node) => node.type === 'input')
+    input().props.onChange({ target: { value } })
+    await input().props.onBlur()
+  }
+  await nodes(count.tree).find((node) => node.type === T.EnableSwitch).props.onChange(true)
+  panel.more().props.onClick()
+  const more = mountPickerChild(picker.view, (node) => node.type === T.MoreSettingsPanel)
+  t.after(more.unmount)
+  for (const [key, value] of [['worktreeIsolationEnabled', false], ['readOnlyEnabled', true], ['peerReadOnlyConsultEnabled', true]]) {
+    await nodes(more.tree).find((node) => node.props?.field === key).props.onChange(value)
+    assert.equal(nodes(more.tree).find((node) => node.props?.field === key).props.checked, value)
+  }
+  await changeBox(panel.box('orchestrate'), true)
+
+  const patches = [
+    { enabled: false },
+    { mainRoute: { provider: 'session', model: 'main', reasoningEffort: 'high' } },
+    { workerRoute: { provider: 'session', model: 'worker' } },
+    { superviseIntervalSeconds: 1800 }, { superviseMaxNoticesPerChild: 7 }, { superviseUnlimited: true },
+    { worktreeIsolationEnabled: false }, { readOnlyEnabled: true }, { peerReadOnlyConsultEnabled: true },
+    { allowedTools: ['delegate', 'orchestrate'] },
+  ]
+  assert.deepEqual(calls, [['get', 'A'], ['setConfig', 'A', defaults, 4],
+    ...patches.map((patch, index) => ['setConfig', 'A', patch, index + 5])])
+  assert.deepEqual(state.config, Object.assign({}, defaults, ...patches))
+  scopes.orch.externalSet({ allowedTools: ['compress'], superviseIntervalSeconds: 2400 })
+  scopes.main.externalSet({ model: 'latest' })
+  assert.equal(row('main').props.route.model, 'main')
   await panel.button().props.onClick()
-  assert.equal(panel.session().props.checked, true)
-  assert.equal(panel.box('orchestrate').props.checked, true)
+  assert.deepEqual(calls.at(-1), ['setConfig', 'A', { allowedTools: ['compress'] }, 15])
+  assert.deepEqual(state.config, Object.assign({}, defaults, ...patches, { allowedTools: ['compress'] }))
+  assert.equal(panel.box('compress').props.checked, true)
   await changeBox(panel.session(), false)
+  assert.deepEqual(calls.at(-1), ['clear', 'A', 16])
   assert.equal(panel.session().props.checked, false)
-  assert.equal(panel.box('orchestrate').props.checked, true)
-  assert.deepEqual(calls, [
-    ['get', 'A'],
-    ['set', 'A', [], 4],
-    ['set', 'A', ['delegate'], 5],
-    ['set', 'A', HOST_DEFAULT_ALLOWED_TOOLS, 6],
-    ['clear', 'A', 7],
-  ])
-  assert.deepEqual(scope.calls, [])
-  await changeBox(panel.box('delegate'), false)
-  assert.equal(scope.calls.length, 1)
-  assert.equal(calls.length, 5)
+  assert.equal(row('main').props.route.model, 'latest')
+  assert.equal(row('worker').props.route.provider, 'global')
+  assert.equal(nodes(interval.tree).find((node) => node.type === 'input').props.value, '2400')
+  assert.deepEqual(Object.values(scopes).flatMap((scope) => scope.calls), [])
 })
 
-test('mount failure, invalid ID and failed state loads never fall back to global writes', async () => {
+test('unavailable session storage disables the session switch and preserves explicit global editing', async () => {
   const reject = new Error('session query failed')
   const mountFailure = T.mountSessionRemote({ remote: { $mount: async () => { throw new Error('mount refused') } } })
   for (const [sessionId, sessionRemote, message] of [
@@ -1651,11 +1734,12 @@ test('mount failure, invalid ID and failed state loads never fall back to global
     await settleSessionPanel()
     assert.equal(panel.alert(), message)
     assert.equal(panel.session().props.disabled, true)
-    assert.equal(panel.box('delegate').props.disabled, true)
+    assert.equal(panel.box('delegate').props.disabled, false)
     await changeBox(panel.session(), true)
-    await changeBox(panel.box('delegate'), false)
-    await panel.button().props.onClick()
+    assert.equal(panel.session().props.checked, false)
     assert.deepEqual(scope.calls, [])
+    await changeBox(panel.box('delegate'), false)
+    assert.equal(scope.calls.length, 1)
     panel.view.unmount()
   }
 })
@@ -1687,7 +1771,7 @@ test('late reads and writes cannot overwrite the new session loading, state or e
   const calls = []
   const sessionRemote = { async call(method, id) {
     calls.push([method, id])
-    if (method === 'set' && id === 'B') return slowBWrite.promise
+    if (method === 'setConfig' && id === 'B') return slowBWrite.promise
     if (id === 'A') return slowA.promise
     if (id === 'B') return sessionState(id, true, ['compress'], 2)
     throw new Error('C unavailable')
@@ -1709,45 +1793,69 @@ test('late reads and writes cannot overwrite the new session loading, state or e
   await saving
   assert.equal(panel.alert(), 'C unavailable')
   assert.equal(panel.session().props.disabled, true)
-  assert.deepEqual(calls, [['get', 'A'], ['get', 'B'], ['set', 'B'], ['get', 'C']])
+  assert.deepEqual(calls, [['get', 'A'], ['get', 'B'], ['setConfig', 'B'], ['get', 'C']])
   assert.deepEqual(scope.calls, [])
 })
 
-test('the popover is two columns, the original panel then the allowed tools column', () => {
-  const scopes = { main: fakeScope(), worker: fakeScope(), orch: fakeScope() }
-  const view = mount(T.RoutePicker, {
-    t,
-    scopes,
-    orch: scopes.orch,
-    loadCatalog: async () => ({ ok: true, value: { groups: [] } }),
-  })
-  // The popover only exists while open; the trigger is the only button before that.
-  nodes(view.tree).find((node) => node.type === 'button').props.onClick()
-  const dialog = nodes(view.tree).find((node) => node.props?.role === 'dialog')
-  assert.ok(dialog)
-  assert.equal(dialog.kids.length, 2)
+test('the main body portal keeps dispatch fields left and orders the right column by scope, heading and list', (t) => {
+  const panel = mountAllowed(fakeScope())
+  t.after(panel.view.unmount)
+  const portal = nodes(panel.picker.tree).find((node) => node.type === 'portal')
+  assert.equal(portal.props.target, fakeDocument.body)
+  const dialog = portal.kids[0]
+  assert.equal(dialog.props['data-panel'], 'orchestrator-settings')
   const [left, right] = dialog.kids
-  assert.equal(left.type, 'div')
-  assert.equal(left.props.style.width, '340px')
+  assert.equal(dialog.kids.length, 2)
   assert.match(left.props.style.borderRight, /^1px solid/)
   assert.equal(right.type, T.AllowedToolsPanel)
-  assert.equal(right.props.scope, scopes.orch)
-  // The enable row is label-then-switch, and the switch is the new component.
-  const switchRow = nodes(left).find((node) => node.type === T.EnableSwitch)
-  assert.ok(switchRow)
-  assert.equal(switchRow.props.label, 'route.enable')
-  const isolationField = nodes(left).find((node) => node.type === T.WorktreeIsolationField)
-  assert.ok(isolationField)
-  assert.equal(isolationField.props.scope, scopes.orch)
-  // Both supervision fields live in the left column, interval first then the count.
-  const intervalField = nodes(left).find((node) => node.type === T.SuperviseIntervalField)
-  const countField = nodes(left).find((node) => node.type === T.SuperviseCountField)
-  assert.ok(intervalField)
-  assert.ok(countField)
-  assert.equal(intervalField.props.scope, scopes.orch)
-  assert.equal(countField.props.scope, scopes.orch)
-  assert.ok(nodes(left).indexOf(intervalField) < nodes(left).indexOf(countField))
-  view.unmount()
+  assert.equal(nodes(left).find((node) => node.props?.field === 'enabled').props.label, 'route.enable')
+  const settings = nodes(left).filter((node) => [T.SuperviseIntervalField, T.SuperviseCountField].includes(node.type))
+  assert.deepEqual(settings.map((node) => node.type), [T.SuperviseIntervalField, T.SuperviseCountField])
+  const [session, separator, heading, list] = panel.view.tree.kids
+  assert.equal(session.props['data-scope'], 'session-tools')
+  assert.ok(nodes(session).includes(panel.more()))
+  assert.equal(separator.props.role, 'separator')
+  assert.equal(heading.kids[0].kids[0], 'allowed.title')
+  assert.equal(heading.kids[1].kids[0], 'allowed.reset')
+  assert.equal(list.kids[0], panel.search())
+  assert.equal(list.kids[1].props.role, 'group')
+})
+
+test('more settings has a centered body portal and dismisses independently by Escape and backdrop', (t) => {
+  const panel = mountAllowed(fakeScope())
+  t.after(panel.view.unmount)
+  const main = () => nodes(panel.picker.tree).find((node) => node.props?.['data-panel'] === 'orchestrator-settings')
+  const more = () => nodes(panel.picker.tree).find((node) => node.type === T.MoreSettingsPanel)
+  assert.equal(more(), undefined)
+  panel.more().props.onClick()
+  assert.equal(panel.more().props['aria-expanded'], true)
+  const sub = mount(more().type, more().props)
+  t.after(sub.unmount)
+  const overlay = sub.tree.kids[0]
+  const dialog = overlay.kids[0]
+  assert.equal(sub.tree.props.target, fakeDocument.body)
+  assert.equal(overlay.props.style.placeItems, 'center')
+  assert.equal(dialog.props['data-panel'], 'more-settings')
+  assert.equal(dialog.props['aria-modal'], true)
+  assert.deepEqual(nodes(dialog).flatMap((node) => node.props?.field ?? []), [
+    'worktreeIsolationEnabled', 'readOnlyEnabled', 'peerReadOnlyConsultEnabled',
+  ])
+  const backdrop = {}
+  overlay.props.onClick({ target: {}, currentTarget: backdrop })
+  assert.ok(more())
+  let consumed = 0
+  const keydown = fakeDocument.listeners.filter(({ type }) => type === 'keydown').at(-1)
+  keydown.fn({ key: 'Escape', preventDefault() { consumed++ }, stopPropagation() { consumed++ } })
+  assert.equal(consumed, 2)
+  assert.equal(more(), undefined)
+  assert.ok(main())
+  panel.more().props.onClick()
+  const reopened = mount(more().type, more().props)
+  t.after(reopened.unmount)
+  reopened.tree.kids[0].props.onClick({ target: backdrop, currentTarget: backdrop })
+  assert.equal(more(), undefined)
+  assert.ok(main())
+  assert.equal(panel.more().props['aria-expanded'], false)
 })
 
 
@@ -1981,14 +2089,14 @@ test('the allowed-tools card fills the stretched column without reporting a cont
   const column = T.allowedColumnStyle
   assert.equal(column.contain, 'size')
   assert.equal(column.flexDirection, 'column')
-  assert.equal(column.width, '232px')
+  assert.equal(column.flex, '232 1 0px')
   assert.equal(column.minHeight, 0)
   const card = T.allowedListBoxStyle
   assert.equal(card.contain, 'size')
   // A definite pixel basis, not a percentage: `0%` degrades to `content` while the column's
   // own height is still indefinite, which is exactly the measurement being defended against.
   assert.equal(card.flex, '1 1 0px')
-  assert.equal(card.minHeight, 0)
+  assert.equal(card.minHeight, '84px')
   assert.equal(card.height, undefined)
   assert.equal(card.maxHeight, undefined)
   const list = T.allowedListStyle
@@ -2000,23 +2108,22 @@ test('the allowed-tools card fills the stretched column without reporting a cont
   assert.equal(T.panelStyle.alignItems, 'stretch')
   // A short window still cannot push the popover past the viewport, and the left column then
   // scrolls instead of being clipped.
-  assert.equal(T.panelStyle.maxHeight, 'calc(100vh - 96px)')
+  assert.equal(T.panelStyle.visibility, 'hidden')
   assert.equal(T.panelColumnStyle.display, 'grid')
   assert.equal(T.panelColumnStyle.overflowY, 'auto')
 })
 
-test('the popover height is capped to the room above its trigger, not just the viewport', () => {
-  // `100vh` alone let the top of the panel hang outside the window when the composer sat low:
-  // the panel opens upward, so the measured trigger position is the real ceiling.
-  assert.equal(T.panelStyleOf(null).maxHeight, 'calc(100vh - 96px)')
-  assert.equal(T.panelStyleOf(undefined).maxHeight, 'calc(100vh - 96px)')
-  const measure = T.panelStyleOf(417)
-  assert.equal(measure.maxHeight, '417px')
-  // Everything else stays the popover's own style, and the static one is not mutated.
-  assert.equal(measure.position, 'absolute')
+test('panel styles stay hidden pending measurement and use the measured fixed bounds', () => {
+  assert.equal(T.panelStyleOf(null), T.panelStyle)
+  const measure = T.panelStyleOf({ top: 80, left: 16, maxHeight: 417 })
+  assert.equal(measure.top, 80)
+  assert.equal(measure.left, 16)
+  assert.equal(measure.maxHeight, 417)
+  assert.equal(measure.position, 'fixed')
   assert.equal(measure.display, 'flex')
   assert.equal(measure.alignItems, 'stretch')
-  assert.equal(T.panelStyle.maxHeight, 'calc(100vh - 96px)')
+  assert.equal(measure.visibility, 'visible')
+  assert.equal(T.panelStyle.visibility, 'hidden')
 })
 
 
@@ -2044,8 +2151,10 @@ function directoryForTest(initialGroups = modelGroups('old')) {
   }
 }
 
-function mountPicker({ directory, loadCatalog = async () => ({ ok: true, value: { groups: [] } }) } = {}) {
-  const scopes = { main: fakeScope({ initial: { provider: 'provider', model: 'old' } }), worker: fakeScope(), orch: fakeScope() }
+function mountPicker({ directory, loadCatalog = async () => ({ ok: true, value: { groups: [] } }),
+  scopes = { main: fakeScope({ initial: { provider: 'provider', model: 'old' } }), worker: fakeScope(), orch: fakeScope() },
+  ...props
+} = {}) {
   const view = mount(T.RoutePicker, {
     t,
     scopes,
@@ -2053,6 +2162,7 @@ function mountPicker({ directory, loadCatalog = async () => ({ ok: true, value: 
     sessionId: 'S1',
     modelDirectories: directory,
     loadCatalog,
+    ...props,
   })
   const open = () => nodes(view.tree).find((node) => node.type === 'button').props.onClick()
   return { view, scopes, open }
@@ -2190,22 +2300,48 @@ test('Cordis optional lookup keeps the RPC fallback when the directory service i
   picker.view.unmount()
 })
 
-test('the popover reserves the host top chrome, so its rounded top is never clipped', () => {
-  // A centred composer in an empty session: trigger.top 493 leaves 437px, which puts the panel's
-  // top edge at y = 48 — right under the session header — instead of the 8px that was being
-  // painted over the header's 48px and hiding "Enable dispatch mode" and "Allowed Tools".
-  assert.equal(T.panelRoom(493, 900), 437)
-  // A composer at the bottom of a live session has room for the whole panel, so the left column
-  // never needs to scroll there.
-  assert.equal(T.panelRoom(820, 900), 764)
-  // Floor and viewport guard still apply.
-  assert.equal(T.panelRoom(120, 900), 240)
-  assert.equal(T.panelRoom(4000, 900), 804)
-  assert.equal(T.panelRoom(undefined, 900), null)
+test('the body portal respects the host top inset for centered and near-header triggers', (t) => {
+  const viewportHeight = 900
+  const topSafe = 92
+  const root = {}
+  const saved = { height: fakeWindow.innerHeight, width: fakeWindow.innerWidth, documentElement: fakeDocument.documentElement }
+  fakeWindow.innerHeight = viewportHeight
+  fakeWindow.innerWidth = 1200
+  fakeDocument.documentElement = root
+  fakeWindow.getComputedStyle = (element) => ({ getPropertyValue(name) {
+    assert.equal(element, root)
+    assert.equal(name, '--dsh-frame-overlay-top')
+    return topSafe + 'px'
+  } })
+  t.after(() => {
+    fakeWindow.innerHeight = saved.height
+    fakeWindow.innerWidth = saved.width
+    fakeDocument.documentElement = saved.documentElement
+    delete fakeWindow.getComputedStyle
+  })
+
+  for (const [top, side] of [[493, 'up'], [44, 'down']]) {
+    const picker = mountPicker({ sessionId: undefined })
+    t.after(picker.view.unmount)
+    const trigger = picker.view.tree.kids[0]
+    trigger.props.ref.current = { getBoundingClientRect: () => ({ top, bottom: top + 34, right: 680 }) }
+    picker.open()
+    const portal = nodes(picker.view.tree).find((node) => node.type === 'portal')
+    const dialog = portal.kids[0]
+    assert.equal(portal.props.target, fakeDocument.body)
+    assert.equal(dialog.props['data-side'], side)
+    assert.equal(dialog.props.style.top, topSafe)
+    assert.ok(dialog.props.style.top + dialog.props.style.maxHeight <= viewportHeight - 8)
+    assert.equal(dialog.props.style.visibility, 'visible')
+  }
+  const tiny = T.panelPlacement({ top: 140, bottom: 174, right: 680 }, 240, 1200, topSafe)
+  assert.equal(tiny.side, 'down')
+  assert.equal(tiny.maxHeight, 50)
+  assert.equal(tiny.top + tiny.maxHeight, 232)
+  assert.equal(T.panelRoom(undefined, viewportHeight), null)
   // A vertical scrollbar must never turn into a sideways one in the left column.
   assert.equal(T.panelColumnStyle.gridTemplateColumns, 'minmax(0, 1fr)')
   assert.equal(T.panelColumnStyle.overflowX, 'hidden')
   assert.equal(T.panelColumnStyle.overflowY, 'auto')
   assert.equal(T.panelColumnStyle.gap, '8px')
 })
-

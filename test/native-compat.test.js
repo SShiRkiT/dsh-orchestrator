@@ -77,25 +77,25 @@ test('入口提供基础白名单时，工具面与守卫放行基础工具及�
   for (const name of TEAM.slice(1)) assert.match(guard({ name }), /not available to the main agent/, name)
 })
 
-test('关闭调度后，根代理仍可管理工作树，子代理不声明该工具', () => {
+test('关闭调度后，根代理禁用四个调度与治理工具，子代理也不声明', () => {
   const { root, child, guard, namesOf } = setup(
     { allowed: [], enabled: () => false },
-    [...HOST, 'delegate_status', 'worktree_manage'],
+    [...new Set([...HOST, 'delegate', 'orchestrate', 'delegate_status', 'worktree_manage'])],
   )
-  for (const name of ['delegate_status', 'worktree_manage']) {
-    assert.ok(namesOf(root).includes(name), name)
-    assert.equal(guard({ name, agent: root }), undefined, name)
+  for (const name of ['delegate', 'orchestrate', 'delegate_status', 'worktree_manage']) {
+    assert.ok(!namesOf(root).includes(name), name)
+    assert.match(guard({ name, agent: root }), /disabled while dispatch mode is off/, name)
     assert.ok(!namesOf(child).includes(name), name)
   }
 })
 
-test('调度规则区分 Worktree 审计、显式合回和回收，并禁止复用已回收的 childId', () => {
+test('调度规则区分 Worktree 隔离、显式合回和回收，并禁止复用已回收的 childId', () => {
   const rule = mainAgentRule(surface.DEFAULT_ALLOWED_TOOLS)
-  assert.match(rule, /独立 Git Worktree.*git diff \/ git log.*非 Git 目录自动降级为逻辑写后审计/)
+  assert.match(rule, /独立 Git Worktree.*非 Git 目录使用写租约/)
   assert.match(rule, /isolation: "auto" \| "worktree" \| "shared"/)
-  assert.match(rule, /Worktree 不自动合回；执行结束、写审计通过、主代理合回是三步/)
+  assert.match(rule, /Worktree 不自动合回；子代理交付后由主代理评审并决定是否合回/)
   assert.match(rule, /worktree_manage（list \/ inspect \/ merge \/ discard \/ prune）/)
-  assert.match(rule, /Worktree 已锁定、原上下文严重跑偏或无法继续时才新开 delegate/)
+  assert.match(rule, /Worktree 已锁定或合回.*allowNewReason/)
   assert.match(rule, /租约冲突或工作树已锁定时拒绝投递/)
   assert.doesNotMatch(mainAgentRule([]), /worktree_manage/, '不要求调用白名单之外的工具')
 })

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
-import fs, { mkdtempSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { registerHooks } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { PEER_CONSULT_SOURCE_KIND } from '../lib/read-index.js'
 import { SESSION_TOOLS_DOMAIN, SESSION_TOOLS_NAMESPACE } from '../lib/session-tools.js'
 import { NATIVE_TEAM_TOOLS } from '../lib/tool-surface.js'
 
@@ -29,32 +29,30 @@ const stubHook = registerHooks({
     return nextResolve(specifier, context)
   },
 })
-const { apply, DEFAULT_ALLOWED_TOOLS, INLINE_AUDIT_SOURCE_KIND, SUPERVISE_SOURCE_KIND } = await import('../lib/index.js')
+const { apply, DEFAULT_ALLOWED_TOOLS, SUPERVISE_SOURCE_KIND } = await import('../lib/index.js')
 test.after(() => stubHook.deregister())
 
 const finished = { stopReason: 'completed', output: [{ type: 'text', text: '完成' }] }
 const put = (cwd, name, text = name) => writeFileSync(path.join(cwd, name), text)
-const sha = (text) => createHash('sha256').update(text).digest('hex')
 const drain = () => new Promise((resolve) => setImmediate(resolve))
 const hasConflict = (owner) => (error) => error?.code === 'write-scope-conflict' &&
   error.details.some((row) => row.owner === owner)
 
-function harness(t, { onStart, onAudit, onPrompt, team = NATIVE_TEAM_TOOLS, host = {} } = {}) {
+function harness(t, { onStart, onPrompt, team = NATIVE_TEAM_TOOLS, host = {}, config: overrides = {} } = {}) {
   const cwd = mkdtempSync(path.join(os.tmpdir(), 'dsh-phase1-'))
   const names = [...DEFAULT_ALLOWED_TOOLS, ...team, 'subagent_fork', 'workflow']
   const subscriptions = new Map()
   const toolSpecs = new Map()
   const liveAgents = new Map()
   const notices = []
-  const audits = []
   const prompts = []
   const starts = []
   const disposers = []
-  const config = { superviseIntervalSeconds: 10 }
+  const config = { superviseIntervalSeconds: 10, ...overrides }
   const guards = new Map()
   const removed = []
   const replacements = []
-  const makeRoot = (id) => {
+  const makeRoot = (id, { model, announce = true } = {}) => {
     const nextTurn = []
     const inbox = {
       nextTurn,
@@ -78,12 +76,13 @@ function harness(t, { onStart, onAudit, onPrompt, team = NATIVE_TEAM_TOOLS, host
       id,
       cwd,
       inbox,
+      model,
       session: { id, header: { cwd } },
       followup(message) { notices.push(message); inbox.nextTurn.push(message) },
       ctx: { tools: { guard: (fn) => { guards.set(id, fn) } } },
     }
     liveAgents.set(id, agent)
-    subscriptions.get('agent/created')?.({ agent })
+    if (announce) subscriptions.get('agent/created')?.({ agent })
     return agent
   }
   const parent = makeRoot('root')
@@ -100,17 +99,17 @@ function harness(t, { onStart, onAudit, onPrompt, team = NATIVE_TEAM_TOOLS, host
     sessionProjections: { stateOf: () => ({ 'next-turn': [], 'next-step': [] }) },
     effect: (setup) => disposers.push(setup()),
     on: (event, listener) => subscriptions.set(event, listener),
-    emit(event, payload) {
-      if (event !== 'orchestrator/write-audit') return
-      audits.push(payload)
-      onAudit?.(payload)
-    },
     logger: { info() {}, warn() {} },
     subagents: {
       resolveMaxDepth: () => 2,
       async startActivation(spec) {
         const id = `worker-${starts.length + 1}`
-        const agent = { id, options: { subagentDepth: 1 }, session: { log: [], header: { cwd } } }
+        const parentId = spec.parent.id
+        const agent = {
+          id,
+          options: { subagentDepth: 1 },
+          session: { id, log: [], header: { cwd, parentSession: parentId, delegationDepth: 1 } },
+        }
         starts.push({ spec, agent })
         liveAgents.set(id, agent)
         subscriptions.get('subagent/start')({ id, runId: `${id}-first`, parentSessionId: spec.parent.id })
@@ -132,7 +131,8 @@ function harness(t, { onStart, onAudit, onPrompt, team = NATIVE_TEAM_TOOLS, host
   })
   const route = { provider: 'test', model: 'test' }
   return {
-    cwd, config, ctx, parent, starts, notices, audits, prompts, toolSpecs, makeRoot, removed, replacements,
+    cwd, config, ctx, parent, starts, notices, prompts, toolSpecs, makeRoot, removed, replacements,
+    event: (name, ...args) => subscriptions.get(name)(...args),
     check: (name, agent = parent, args) => guards.get(parent.id)({ name, agent, arguments: args }),
     definitions: (agent = parent) => ctx.tools.definitions(agent).map(({ name }) => name),
     delegate: (options, agent = parent) => toolSpecs.get('delegate').execute({
@@ -146,26 +146,22 @@ function harness(t, { onStart, onAudit, onPrompt, team = NATIVE_TEAM_TOOLS, host
       liveAgents.delete(agent.id)
       subscriptions.get('agent/disposed')({ agent })
     },
-    claim(kind, turn) {
-      const queue = parent.inbox.nextTurn
+    claim(kind, turn, agent = parent) {
+      const queue = agent.inbox.nextTurn
       const index = queue.findIndex((message) => message.source.kind === kind)
       assert.notEqual(index, -1, `no queued ${kind} message`)
       const [message] = queue.splice(index, 1)
-      subscriptions.get('agent/inbox/claimed')({ agent: parent, message, turn })
+      subscriptions.get('agent/inbox/claimed')({ agent, message, turn })
       return message
     },
     preStep(messages, { turn = 1, step = 1, agent = parent, signal, next } = {}) {
       const decision = { kind: 'enter', messages }
       return subscriptions.get('agent/pre-step')({ agent, messages, turn, step, signal }, next ?? (async () => decision))
     },
-    turnEnd(turn) {
-      subscriptions.get('session/event')(parent.session, { type: 'turn/end', data: { turn } })
+    turnEnd(turn, agent = parent) {
+      subscriptions.get('session/event')(agent.session, { type: 'turn/end', data: { turn } })
     },
   }
-}
-
-function codes(audit) {
-  return audit.violations.map(({ code }) => code).sort()
 }
 
 test('phase 1: installed gate and definitions follow native Team catalog and live switches', (t) => {
@@ -195,11 +191,10 @@ test('phase 1: installed gate and definitions follow native Team catalog and liv
   assert.deepEqual(h.definitions(), [])
 })
 
-test('one session override drives declarations, delegate descriptions and direct or PTC guards', async (t) => {
-  let remote
+function sessionStorage(rows = new Map()) {
   const domains = new Set()
-  const rows = new Map()
-  const h = harness(t, { host: {
+  let remote
+  const host = {
     provide(name, service) {
       assert.equal(name, SESSION_TOOLS_NAMESPACE)
       assert.equal(service.typertRemote.service, service)
@@ -207,20 +202,39 @@ test('one session override drives declarations, delegate descriptions and direct
       return () => { remote = undefined }
     },
     typert: { register: () => async () => {} },
-    storageDomain: { async open(spec) {
-      domains.add(spec.name)
-      const table = {
-        entries: () => rows.entries(),
-        async put(key, value) { rows.set(key, value) },
-        async delete(key) { return rows.delete(key) },
-      }
-      return {
-        table: () => spec.name === SESSION_TOOLS_DOMAIN ? table : { entries: () => new Map().entries() },
-        getGlobal: () => spec.global?.initial,
-        async close() {},
-      }
-    } },
-  } })
+    storageDomain: {
+      async open(spec) {
+        domains.add(spec.name)
+        const tables = new Map(Object.keys(spec.tables).map((name) => [name,
+          spec.name === SESSION_TOOLS_DOMAIN ? rows : new Map(),
+        ]))
+        let global = spec.global?.initial
+        return {
+          table(name) {
+            const stored = tables.get(name)
+            return {
+              entries: () => stored.entries(),
+              async put(key, value) { stored.set(key, value) },
+              async delete(key) { return stored.delete(key) },
+              async deleteMany(keys) { for (const key of keys) stored.delete(key) },
+            }
+          },
+          global: {
+            get: () => global,
+            async set(value) { global = value },
+          },
+          async close() {},
+        }
+      },
+    },
+  }
+  return { host, domains, rows, get remote() { return remote } }
+}
+
+test('one session override drives declarations, delegate descriptions and direct or PTC guards', async (t) => {
+  const storage = sessionStorage()
+  const h = harness(t, { host: storage.host })
+  const { remote, domains, rows } = storage
   const a = h.parent
   const b = h.makeRoot('B')
   const worker = { id: 'child', session: { id: 'root', header: { delegationDepth: 1 } } }
@@ -278,92 +292,140 @@ test('one session override drives declarations, delegate descriptions and direct
   assert.equal(rows.size, 0)
 })
 
-test('phase 1: read-only delegate and batch coexist with an active writer and report observed writes', async (t) => {
-  let h
-  h = harness(t, { onStart(spec) {
-    if (spec.delivery === 'caller') put(h.cwd, 'batch-unauthorized.txt')
-  } })
+test('main model routing applies live session overrides and restores persisted routes on cold creation', async (t) => {
+  const storage = sessionStorage()
+  const initial = { provider: 'global', model: 'first' }
+  const updated = { provider: 'global', model: 'second' }
+  const pinned = { provider: 'session', model: 'pinned', reasoningEffort: 'high' }
+  let globalRoute = initial
+  const globalsWritten = []
+  const hostModel = {
+    currentSelection: () => globalRoute,
+    mutate: (route) => globalsWritten.push(route),
+  }
+  const hostModelFor = (root, h) => {
+    const select = t.mock.fn((route) => { root.route = route })
+    return {
+      select,
+      model: { select },
+      routes: () => select.mock.calls.map(({ arguments: [route] }) => route),
+      async preparedRoute(agent) {
+        await h.preStep([], {
+          agent,
+          next: async () => {
+            root.prepared = root.route
+            return { kind: 'enter', messages: [] }
+          },
+        })
+        return root.prepared
+      },
+    }
+  }
+  const h = harness(t, { host: { ...storage.host, agentDefaultModel: hostModel } })
+  const active = hostModelFor({ route: initial }, h)
+  const inherited = hostModelFor({ route: initial }, h)
+  const a = h.makeRoot('active', { model: active.model })
+  const b = h.makeRoot('inherited', { model: inherited.model })
+  const before = await storage.remote.get(a.id)
+  await drain()
+  assert.equal(await active.preparedRoute(a), initial)
+  const changed = await storage.remote.setConfig(a.id, { mainRoute: pinned }, before.revision)
+  assert.deepEqual(changed.config.mainRoute, pinned)
+  assert.deepEqual(await active.preparedRoute(a), pinned)
+  assert.deepEqual(active.routes(), [pinned])
+  assert.deepEqual(inherited.routes(), [])
+  assert.equal(hostModel.currentSelection(), initial)
+
+  globalRoute = updated
+  h.event('settings/document-updated')
+  h.event('settings/document-updated')
+  assert.deepEqual(active.routes(), [pinned])
+  assert.deepEqual(inherited.routes(), [updated])
+  assert.deepEqual(await inherited.preparedRoute(b), updated)
+
+  const coldStorage = sessionStorage(storage.rows)
+  const cold = harness(t, { host: { ...coldStorage.host, agentDefaultModel: hostModel } })
+  await coldStorage.remote.get(cold.parent.id)
+  await drain()
+  const restored = hostModelFor({ route: updated }, cold)
+  const resumed = cold.makeRoot(a.id, { model: restored.model, announce: false })
+  assert.deepEqual(restored.routes(), [])
+  await cold.event('agent/created', { agent: resumed, source: 'resume' })
+  assert.deepEqual(restored.routes(), [pinned])
+  assert.deepEqual(await restored.preparedRoute(resumed), pinned)
+
+  const cleared = await storage.remote.clear(a.id, changed.revision)
+  assert.equal(cleared.enabled, false)
+  assert.deepEqual(cleared.config.mainRoute, updated)
+  assert.deepEqual(active.routes(), [pinned, updated])
+  assert.deepEqual(await active.preparedRoute(a), updated)
+  assert.deepEqual(inherited.routes(), [updated])
+  assert.deepEqual(globalsWritten, [])
+  assert.equal(hostModel.currentSelection(), updated)
+})
+
+test('read-only dispatch is opt-in for the model schema, execution and guidance', async (t) => {
+  const h = harness(t)
+  const declarations = () => h.ctx.tools.definitions(h.parent)
+    .filter(({ name }) => name === 'delegate' || name === 'orchestrate')
+  const assertSchema = (enabled) => {
+    const definitions = declarations()
+    assert.deepEqual(definitions.map(({ name }) => name).sort(), ['delegate', 'orchestrate'])
+    for (const { name, parameters, description } of definitions) {
+      assert.equal(Object.hasOwn(parameters.properties ?? parameters, 'readOnly'), enabled, name)
+      if (name === 'delegate') {
+        const sharedGuidance = /只读调研.*isolation: "shared".*不得修改文件/
+        if (enabled) assert.doesNotMatch(description, sharedGuidance)
+        else assert.match(description, sharedGuidance)
+      } else {
+        assert.match(description, /主代理规则同 delegate/)
+      }
+    }
+  }
+  assertSchema(false)
+  for (const invoke of [h.delegate, h.batch]) {
+    await assert.rejects(invoke({ readOnly: true }), /readOnly 参数当前未启用.*isolation: "shared"/)
+  }
+  assert.equal(h.starts.length, 0)
+
+  h.config.readOnlyEnabled = true
+  assertSchema(true)
+  const delegated = await h.delegate({ readOnly: true })
+  assert.equal(delegated.subagentId, h.starts[0].agent.id)
+  h.end(delegated.subagentId)
+  await h.batch({ readOnly: true })
+  assert.equal(h.starts[1].spec.delivery, 'caller')
+})
+
+test('phase 1: read-only delegate and batch leave the active writer lease untouched', async (t) => {
+  const h = harness(t, { config: { readOnlyEnabled: true } })
   const writer = await h.delegate({ writeScope: ['allowed.txt'] })
   const reader = await h.delegate({ readOnly: true })
   assert.equal(reader.readOnly, true)
-  assert.ok(reader.baselineId)
-  assert.ok(!Object.hasOwn(reader, 'writeScope'))
-  assert.match(h.starts[1].spec.prompt[0].text, /逻辑写后审计并告警/)
+  assert.equal((await statusOf(h, reader.subagentId)).leaseState, 'none')
+  assert.match(h.starts[1].spec.prompt[0].text, /不占写租约/)
   await assert.rejects(h.delegate({ readOnly: true, writeScope: ['allowed.txt'] }), /互斥/)
   await assert.rejects(h.batch({ readOnly: true, writeScope: ['allowed.txt'] }), /互斥/)
   await assert.rejects(h.delegate({ readOnly: 'true' }), /必须是布尔值/)
-  await assert.rejects(h.batch({ readOnly: true, expectedTargets: ['../outside.txt'] }), /相对文件路径/)
-  await assert.rejects(h.delegate({ readOnly: true, expectedFingerprints: { 'allowed.txt': 'bad' } }), /SHA-256/)
-  put(h.cwd, 'delegate-unauthorized.txt')
-  h.end(reader.subagentId)
-  await drain()
-  assert.deepEqual(h.notices, [])
-  assert.equal(h.audits[0].childId, reader.subagentId)
-  assert.deepEqual(codes(h.audits[0].audit), ['out-of-scope-write'])
-  const decision = await h.preStep([settled(reader.subagentId)])
-  assert.match(decision.messages.at(-1).content[0].text, /out-of-scope-write.*delegate-unauthorized\.txt/)
-  const batch = await h.batch({ readOnly: true })
-  assert.deepEqual(codes(batch.audit), ['out-of-scope-write'])
-  assert.equal(batch.audit.isolationLevel, 'logical-post-audit')
-  const [rendered] = h.toolSpecs.get('orchestrate').output.render({}, batch)
-  assert.match(rendered.text, /out-of-scope-write.*batch-unauthorized\.txt/)
+  assert.equal((await h.batch({ readOnly: true })).agentsStarted, 1)
   await assert.rejects(h.delegate({ writeScope: ['allowed.txt'] }), hasConflict(writer.subagentId))
-  const readerWithEmptyScope = await h.delegate({ readOnly: true, writeScope: [] })
-  assert.equal(readerWithEmptyScope.readOnly, true)
+  assert.equal((await h.delegate({ readOnly: true, writeScope: [] })).readOnly, true)
 })
 
-test('phase 1: both writable paths audit before release and preserve structured violations', async (t) => {
-  const checks = []
-  let h
-  h = harness(t, {
-    onStart(spec) {
-      if (spec.delivery === 'caller') put(h.cwd, 'batch-outside.txt')
-    },
-    onAudit({ childId }) {
-      const checked = h.delegate({ writeScope: [childId.startsWith('batch-') ? 'batch.txt' : 'target.txt'] })
-      checks.push(assert.rejects(checked, hasConflict(childId)))
-    },
-  })
-  put(h.cwd, 'target.txt', 'before')
-  const child = await h.delegate({
-    writeScope: ['target.txt'], expectedFingerprints: { 'target.txt': sha('stale') }, expectedTargets: ['target.txt'],
-  })
-  put(h.cwd, 'outside.txt')
-  unlinkSync(path.join(h.cwd, 'target.txt'))
-  h.end(child.subagentId)
-  const batch = await h.batch({ writeScope: ['batch.txt'] })
-  await Promise.all(checks)
-  await drain()
-  assert.equal(checks.length, 2)
-  assert.equal(h.audits[0].audit.baselineId, child.baselineId)
-  assert.deepEqual(codes(h.audits[0].audit), ['fingerprint-mismatch', 'out-of-scope-write', 'target-missing'])
-  assert.deepEqual(codes(batch.audit), ['out-of-scope-write'])
-  assert.deepEqual(h.notices, [])
-  const decision = await h.preStep([settled(child.subagentId)])
-  assert.match(decision.messages.at(-1).content[0].text, /不得验收为通过/)
-  assert.match(decision.messages.at(-1).content[0].text, /target-missing/)
-  assert.equal(typeof (await h.delegate({ writeScope: ['target.txt'] })).writeScope.leaseId, 'string')
-  assert.equal(typeof (await h.delegate({ writeScope: ['batch.txt'] })).writeScope.leaseId, 'string')
-})
-
-test('phase 1: retry reacquires before queueing, refreshes its baseline and ignores stale lifecycle events', async (t) => {
+test('phase 1: retry reacquires before queueing and ignores stale lifecycle events', async (t) => {
   const h = harness(t)
   put(h.cwd, 'target.txt', 'before')
-  const child = await h.delegate({ writeScope: ['target.txt'], expectedFingerprints: { 'target.txt': sha('before') } })
+  const child = await h.delegate({ writeScope: ['target.txt'] })
   put(h.cwd, 'target.txt', 'first attempt')
   put(h.cwd, 'already-present.txt')
   h.end(child.subagentId, 'error')
   await drain()
   assert.equal(h.prompts.length, 1)
   assert.equal(h.prompts[0].childSessionId, child.subagentId)
-  const freshId = /本轮写后审计基线：([^。]+)/.exec(h.prompts[0].content[0].text)?.[1]
-  assert.ok(freshId && freshId !== child.baselineId)
   const retryAttempt = await statusOf(h, child.subagentId)
   assert.equal(retryAttempt.attemptSeq, 2)
   assert.equal(retryAttempt.runId, null)
   assert.equal(retryAttempt.dispatchState, 'running')
-  assert.equal(retryAttempt.auditState, 'pending')
-  assert.equal(retryAttempt.baselineId, freshId)
   assert.equal(retryAttempt.leaseState, 'held')
   assert.notEqual(retryAttempt.leaseId, child.writeScope.leaseId)
   h.start(child.subagentId, 'second-run')
@@ -373,16 +435,11 @@ test('phase 1: retry reacquires before queueing, refreshes its baseline and igno
   await assert.rejects(h.delegate({ writeScope: ['target.txt'] }), hasConflict(child.subagentId))
   put(h.cwd, 'target.txt', 'second attempt')
   h.end(child.subagentId, 'completed', 'second-run')
-  assert.equal(h.audits.length, 2)
-  assert.equal(h.audits[1].audit.baselineId, freshId)
-  assert.deepEqual(h.audits[1].audit.changedFiles.map(({ path: filename }) => filename), ['target.txt'])
-  assert.equal(h.audits[1].audit.passed, true)
   const retryResult = await statusOf(h, child.subagentId)
   assert.equal(retryResult.attemptSeq, 2)
   assert.equal(retryResult.runId, 'second-run')
-  assert.equal(retryResult.auditState, 'passed')
   assert.equal(retryResult.leaseState, 'released')
-  await h.delegate({ writeScope: ['target.txt'] })
+  await h.delegate({ writeScope: ['target.txt'], allowNewReason: '验证结算后同一作用域可重新获取' })
 })
 
 test('phase 1: disposal before settlement allows a new writer, then retry conflict refuses to queue', async (t) => {
@@ -393,34 +450,37 @@ test('phase 1: disposal before settlement allows a new writer, then retry confli
   h.end(old.subagentId, 'error')
   await drain()
   assert.equal(h.prompts.length, 0)
-  assert.deepEqual(h.audits.map(({ childId }) => childId), [old.subagentId])
   const [notice] = h.notices.filter((message) => message.source.kind === 'orchestrator-retry')
-  assert.match(notice.content[0].text, /已拒绝自动续跑（write-lease-conflict）/)
+  assert.match(notice.content[0].text, /无法把重试提示送到它：写作用域冲突/)
   assert.match(notice.content[0].text, /target\.txt/)
   assert.ok(notice.content[0].text.includes(current.subagentId))
-  await assert.rejects(h.delegate({ writeScope: ['target.txt'] }), hasConflict(current.subagentId))
+  await assert.rejects(h.delegate({
+    writeScope: ['target.txt'], allowNewReason: '验证独立新建仍受现有写租约约束',
+  }), hasConflict(current.subagentId))
 })
 
-test('phase 1: host prompt failure clears only the reacquired write lease', async (t) => {
+test('phase 1: unknown retry delivery retains protection and blocks duplicate delivery', async (t) => {
   const h = harness(t, { onPrompt() { throw new Error('host queue rejected') } })
   const original = await h.delegate({ writeScope: ['target.txt'] })
   h.end(original.subagentId, 'error')
   await drain()
   assert.equal(h.prompts.length, 1)
   assert.match(h.notices.find(({ source }) => source.kind === 'orchestrator-retry').content[0].text, /host queue rejected/)
-  await h.delegate({ writeScope: ['target.txt'] })
+  h.end(original.subagentId, 'error')
+  await drain()
+  assert.equal(h.prompts.length, 1)
+  await assert.rejects(h.delegate({ writeScope: ['target.txt'] }), hasConflict(original.subagentId))
 })
 
 test('phase 1: a read-only retry remains lease-free even with a live writer', async (t) => {
-  const h = harness(t)
+  const h = harness(t, { config: { readOnlyEnabled: true } })
   const writer = await h.delegate({ writeScope: ['target.txt'] })
   const reader = await h.delegate({ readOnly: true })
   h.end(reader.subagentId, 'error')
   await drain()
   assert.equal(h.prompts.length, 1)
   assert.equal(h.prompts[0].childSessionId, reader.subagentId)
-  assert.match(h.prompts[0].content[0].text, /不占写租约.*逻辑写后审计/)
-  assert.ok(!h.prompts[0].content[0].text.includes(reader.baselineId))
+  assert.match(h.prompts[0].content[0].text, /不占写租约.*未提供逐子代理物理只读隔离/)
   await assert.rejects(h.delegate({ writeScope: ['target.txt'] }), hasConflict(writer.subagentId))
 })
 
@@ -449,9 +509,8 @@ const rowsFor = (messages, kind) => messages.filter((message) => message.source.
 const supervisionFor = (h) => rowsFor(h.parent.inbox.nextTurn, SUPERVISE_SOURCE_KIND)
 const statusOf = async (h, childId) => (await h.status({ childId })).items[0]
 
-// A real synchronous audit has only a brief ended/pending window: observe it at the start of the disk scan.
-test('phase 1 T1: delegate_status isolates parent sessions and discloses the exact dispatch, audit and lease state', async (t) => {
-  const h = harness(t)
+test('phase 1 T1: delegate_status isolates parent sessions and discloses the exact dispatch and lease state', async (t) => {
+  const h = harness(t, { config: { readOnlyEnabled: true } })
   const other = h.makeRoot('another-root')
   const running = await h.delegate({ description: '根会话写入', writeScope: ['output.txt'] })
   const reader = await h.delegate({ readOnly: true })
@@ -460,213 +519,219 @@ test('phase 1 T1: delegate_status isolates parent sessions and discloses the exa
 
   const active = await statusOf(h, running.subagentId)
   assert.equal(active.dispatchState, 'running')
-  assert.equal(active.auditState, 'pending')
   assert.equal(active.runId, `${child.id}-first`)
   assert.equal(active.leaseState, 'held')
   assert.equal(active.leaseId, running.writeScope.leaseId)
   assert.deepEqual(active.writeScope, ['output.txt'])
   const readOnly = await statusOf(h, reader.subagentId)
-  assert.equal(readOnly.baselineId, reader.baselineId)
   assert.equal(readOnly.leaseState, 'none')
   assert.equal(readOnly.leaseId, null)
 
-  let pending
-  const opendirSync = fs.opendirSync
-  const observeDirectory = t.mock.method(fs, 'opendirSync', (...args) => {
-    if (args[0] === h.cwd) pending ??= h.status({ childId: child.id })
-    return opendirSync(...args)
-  })
-  try {
-    put(h.cwd, 'output.txt')
-    h.end(child.id)
-  } finally {
-    observeDirectory.mock.restore()
-  }
-  assert.ok(pending, 'the real disk snapshot must expose an ended/pending state')
-  const auditInProgress = await pending
-  assert.equal(auditInProgress.counts.endedPendingAudit, 1)
-  assert.equal(auditInProgress.items[0].dispatchState, 'ended')
-  assert.equal(auditInProgress.items[0].auditState, 'pending')
-  const passed = await statusOf(h, child.id)
-  assert.equal(passed.auditState, 'passed')
-  assert.equal(passed.leaseState, 'released')
-  assert.equal(passed.stopReason, 'completed')
-
+  h.end(child.id)
+  const ended = await statusOf(h, child.id)
+  assert.equal(ended.dispatchState, 'ended')
+  assert.equal(ended.leaseState, 'released')
+  assert.equal(ended.stopReason, 'completed')
   h.end(reader.subagentId)
-  const failed = await statusOf(h, reader.subagentId)
-  assert.equal(failed.auditState, 'failed')
-  assert.equal(failed.leaseState, 'none')
-  assert.equal(failed.isolation, 'logical-post-audit')
-  assert.equal(failed.violations[0].path, 'output.txt')
+  assert.equal((await statusOf(h, reader.subagentId)).leaseState, 'none')
 
-  for (const enabled of [true, false]) {
-    h.config.enabled = enabled
-    assert.ok(h.definitions().includes('delegate_status'))
-    assert.equal(h.check('delegate_status'), undefined)
-    assert.ok(!h.definitions(child).includes('delegate_status'))
-    await assert.rejects(h.status({}, child), /仅限根代理调用/)
-    assert.deepEqual((await h.status()).items.map(({ childId }) => childId).sort(), [child.id, reader.subagentId].sort())
-    assert.equal((await h.status({ childId: foreign.subagentId })).total, 0)
-    assert.equal((await h.status({ childId: child.id }, other)).total, 0)
-    const otherStatus = await h.status({}, other)
-    assert.equal(otherStatus.parentId, other.id)
-    assert.deepEqual(otherStatus.items.map(({ childId }) => childId), [foreign.subagentId])
-    await assert.rejects(h.status({ parentId: h.parent.id }, other), /不接受 parentId/)
+  assert.ok(h.definitions().includes('delegate_status'))
+  assert.equal(h.check('delegate_status'), undefined)
+  assert.ok(!h.definitions(child).includes('delegate_status'))
+  await assert.rejects(h.status({}, child), /仅限根代理调用/)
+  assert.deepEqual((await h.status()).items.map(({ childId }) => childId).sort(), [child.id, reader.subagentId].sort())
+  assert.equal((await h.status({ childId: foreign.subagentId })).total, 0)
+  assert.equal((await h.status({ childId: child.id }, other)).total, 0)
+  const otherStatus = await h.status({}, other)
+  assert.equal(otherStatus.parentId, other.id)
+  assert.deepEqual(otherStatus.items.map(({ childId }) => childId), [foreign.subagentId])
+  await assert.rejects(h.status({ parentId: h.parent.id }, other), /不接受 parentId/)
+
+  h.config.enabled = false
+  for (const root of [h.parent, other]) {
+    assert.ok(!h.definitions(root).includes('delegate_status'))
+    assert.ok(h.check('delegate_status', root))
+    await assert.rejects(h.status({}, root), /"delegate_status" is disabled while dispatch mode is off/)
   }
 })
 
-test('phase 1 T2: pre-step attaches one ordered notice for passed and pending settlements without certifying disposal', async (t) => {
-  let h
-  h = harness(t, {
-    onStart(spec, id) {
-      if (spec.label === '接单前已销毁') h.dispose(h.starts.find(({ agent }) => agent.id === id).agent)
-    },
-  })
-  const passed = await h.delegate({ readOnly: true })
-  const pending = await h.delegate({ writeScope: ['pending.txt'], description: '接单前已销毁' })
-  h.end(passed.subagentId)
-  const disposed = await statusOf(h, pending.subagentId)
-  assert.ok(disposed.disposedAt !== null)
-  assert.equal(disposed.dispatchState, 'running')
-  assert.equal(disposed.auditState, 'pending')
-  assert.equal(disposed.leaseState, 'released')
-
-  const nativePassed = settled(passed.subagentId)
-  const nativePending = settled(pending.subagentId)
-  const duplicate = settled(passed.subagentId, 'another-native-passed')
-  const unknown = { ...settled('untracked'), content: nativePassed.content }
-  const untouched = { kind: 'enter', messages: [unknown] }
-  assert.equal(await h.preStep([unknown], { next: async () => untouched }), untouched)
-  const other = h.makeRoot('other')
-  assert.deepEqual((await h.preStep([nativePassed], { agent: other })).messages, [nativePassed])
-
-  const originals = [nativePassed, nativePending, duplicate, unknown]
-  const decision = await h.preStep(originals)
-  assert.equal(decision.kind, 'enter')
-  assert.deepEqual(decision.messages.slice(0, -1), originals)
-  const auditMessage = decision.messages.at(-1)
-  assert.equal(auditMessage.source.kind, INLINE_AUDIT_SOURCE_KIND)
-  assert.equal(auditMessage.role, 'user')
-  const [passText, pendingText, ...extra] = auditMessage.content[0].text.split('\n')
-  assert.deepEqual(extra, [])
-  assert.ok(passText.includes(`【${passed.subagentId}】`))
-  assert.match(passText, /审计已通过/)
-  assert.ok(pendingText.includes(`【${pending.subagentId}】`))
-  assert.match(pendingText, /pending.*不得直接验收通过/)
-  assert.equal((await statusOf(h, passed.subagentId)).auditDeliveredVia, 'inline-pre-step')
-  assert.equal((await statusOf(h, pending.subagentId)).auditDeliveredVia, null)
-  h.end(pending.subagentId)
-  assert.equal((await statusOf(h, pending.subagentId)).auditState, 'passed')
-})
-
-test('phase 1 T3: failed audit publishes evidence and attaches it inline without independently waking the parent', async (t) => {
+test('phase 1: native settlement is not rewritten and does not trigger another turn', async (t) => {
   const h = harness(t)
-  const worker = await h.delegate({ writeScope: ['required.txt'], expectedTargets: ['required.txt'] })
-  put(h.cwd, 'out-of-scope.txt')
-  const native = settled(worker.subagentId)
-  const pending = await h.preStep([native])
-  assert.match(pending.messages.at(-1).content[0].text, /不得直接验收通过/)
-  assert.equal((await statusOf(h, worker.subagentId)).auditDeliveredVia, null)
-  h.end(worker.subagentId)
-  await drain()
-
-  const expectedCodes = ['out-of-scope-write', 'target-missing']
-  assert.deepEqual(h.notices, [], 'the audit must not call parent.followup')
-  assert.deepEqual(h.parent.inbox.nextTurn, [])
-  const [event] = h.audits
-  assert.equal(event.childId, worker.subagentId)
-  assert.equal(event.parentId, h.parent.id)
-  assert.equal(event.audit.passed, false)
-  assert.deepEqual(codes(event.audit), expectedCodes)
-  const failed = await statusOf(h, worker.subagentId)
-  assert.equal(failed.auditState, 'failed')
-  assert.deepEqual(failed.violations, event.audit.violations)
-  assert.equal(failed.auditDeliveredVia, null)
-
-  const rejected = await h.preStep([native], { next: async () => ({ kind: 'reject' }) })
-  assert.equal(rejected.kind, 'reject')
-  assert.equal((await statusOf(h, worker.subagentId)).auditDeliveredVia, null)
-  const controller = new AbortController()
-  const aborted = await h.preStep([native], { signal: controller.signal, next: async () => {
-    controller.abort()
-    return { kind: 'enter', messages: [native] }
-  } })
-  assert.deepEqual(aborted.messages, [native])
-  assert.equal((await statusOf(h, worker.subagentId)).auditDeliveredVia, null)
-
-  const decision = await h.preStep([native], { turn: 2 })
-  assert.equal(decision.messages.length, 2)
-  assert.equal(decision.messages[0], native)
-  const [, inline] = decision.messages
-  assert.equal(inline.source.kind, INLINE_AUDIT_SOURCE_KIND)
-  assert.match(inline.content[0].text, /不得验收为通过/)
-  assert.match(inline.content[0].text, /out-of-scope-write.*out-of-scope\.txt/)
-  assert.match(inline.content[0].text, /target-missing.*required\.txt/)
-  assert.match(inline.content[0].text, /logical-post-audit.*不是物理隔离/)
+  const child = await h.delegate({ writeScope: ['result.txt'] })
+  const native = settled(child.subagentId)
+  h.end(child.subagentId)
+  assert.deepEqual((await h.preStep([native])).messages, [native])
   assert.deepEqual(h.notices, [])
-  assert.deepEqual(h.parent.inbox.nextTurn, [])
-  assert.equal((await statusOf(h, worker.subagentId)).auditDeliveredVia, 'inline-pre-step')
 })
 
-test('phase 1 T4: claimed patrols suppress the next tick and recompiled notices retain live audit attention', async (t) => {
+test('peer consultation follows session scope from tool results through child and root pre-step', async (t) => {
   t.mock.timers.enable({ apis: ['Date', 'setInterval'] })
-  const h = harness(t)
-  const failed = await h.delegate({ readOnly: true, description: '失败待送达' })
-  put(h.cwd, 'unapproved.txt')
-  h.end(failed.subagentId)
+  const storage = sessionStorage()
+  const h = harness(t, { host: storage.host, config: { readOnlyEnabled: true } })
+  const other = h.makeRoot('other-consult-parent')
+  await h.delegate({ readOnly: true, isolation: 'shared' })
+  await h.delegate({ readOnly: true, isolation: 'shared' })
+  await h.delegate({ readOnly: true, isolation: 'shared' }, other)
+  const [reader, peer, foreign] = h.starts.map(({ agent }) => agent)
+  const user = { id: 'user-question', role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '继续检查' }] }
+  const observe = (agent, name, callId, args, value) =>
+    h.event('tools/result', { agent, name, callId, arguments: args }, { value })
+  const readFile = (agent, callId, path) => observe(agent, 'read', callId, { file_path: path, offset: 12 }, {
+    lines: [{ number: 12, text: 'raw file text' }, { number: 13, text: 'more raw text' }],
+  })
+  const relay = (id, sender, text = '请概括已经读过的文件') => ({
+    id,
+    role: 'user',
+    source: { kind: 'agent-message', form: 'relay', senderSessionId: sender.id },
+    content: [{ type: 'text', text: `来自 ${sender.id}` }, { type: 'text', text }],
+  })
+  const recordRelay = (message, sender, target) => observe(sender, 'send_message', `send-${message.id}`, {
+    agent: target.id,
+  }, { messageId: message.id })
+  const setConsult = async (agent, enabled) => {
+    const current = await storage.remote.get(agent.id)
+    const saved = await storage.remote.setConfig(agent.id, { peerReadOnlyConsultEnabled: enabled }, current.revision)
+    assert.equal(saved.config.peerReadOnlyConsultEnabled, enabled)
+  }
+
+  const disabledRelay = relay('disabled-relay', peer)
+  readFile(reader, 'read-while-disabled', 'notes/disabled.txt')
+  recordRelay(disabledRelay, peer, reader)
+  await drain()
+  assert.deepEqual((await h.preStep([disabledRelay], { agent: reader })).messages, [disabledRelay])
+  assert.deepEqual((await h.preStep([user, disabledRelay])).messages, [user, disabledRelay])
+
+  await setConsult(h.parent, true)
+  await setConsult(other, true)
+  assert.deepEqual((await h.preStep([user], { agent: peer })).messages, [user], 'disabled reads were never collected')
+  assert.deepEqual((await h.preStep([user, disabledRelay])).messages, [user, disabledRelay], 'disabled relays were never recorded')
+  readFile(reader, 'read-highlight', 'docs/overview.md')
+  readFile(reader, 'read-highlight', 'docs/duplicate.md')
+  readFile(foreign, 'read-foreign', 'docs/foreign.md')
+  observe(reader, 'glob', 'paths', { pattern: 'docs/*.md' }, { paths: ['docs/guide.md'] })
+  observe(reader, 'grep', 'hits', { pattern: 'section' }, {
+    matches: [{ path: 'docs/index.md', line: 27, text: 'raw grep excerpt' }],
+  })
+  const [original, summary] = (await h.preStep([user], { agent: peer })).messages
+  assert.equal(original, user)
+  assert.equal(summary.source.kind, PEER_CONSULT_SOURCE_KIND)
+  const summaryText = summary.content[0].text
+  assert.match(summaryText, /【平级已读索引】/)
+  assert.ok(summaryText.includes(`ID "${reader.id}"，只读任务`))
+  assert.match(summaryText, /"docs\/overview\.md"（已读第 12–13 行）/)
+  assert.match(summaryText, /"docs\/guide\.md"（路径匹配）/)
+  assert.match(summaryText, /"docs\/index\.md"（第 27 行命中）/)
+  assert.doesNotMatch(summaryText, /duplicate|foreign|disabled|raw file text|raw grep excerpt/)
+  assert.deepEqual((await h.preStep([user], { agent: peer })).messages, [user], 'unchanged summaries are injected once')
+
+  const question = relay('consult-question', peer)
+  recordRelay(question, peer, reader)
+  const [request, reminder] = (await h.preStep([question], { agent: reader })).messages
+  assert.equal(request, question)
+  assert.equal(reminder.source.kind, PEER_CONSULT_SOURCE_KIND)
+  assert.ok(reminder.content[0].text.includes(`用 send_message 向 "${peer.id}" 回复`))
+  assert.match(reminder.content[0].text, /【平级只读咨询答复】/)
+  const answer = relay('consult-answer', reader, '【平级只读咨询答复】已读第 12–13 行')
+  recordRelay(answer, reader, peer)
   await drain()
 
+  peer.session.log.push({ seq: 1, time: Date.now(), type: 'turn/start', data: {} })
+  t.mock.timers.tick(10_001)
+  await drain()
+  const patrol = h.claim(SUPERVISE_SOURCE_KIND, 1)
+  const nativeSettlement = settled('native-child')
+  const normalMessages = [nativeSettlement, patrol, user]
+  const decision = await h.preStep([answer, nativeSettlement, question, patrol, user])
+  assert.equal(decision.kind, 'enter')
+  assert.deepEqual(decision.messages, normalMessages)
+  assert.deepEqual(await h.preStep([answer], { turn: 2 }), { kind: 'reject' })
+  assert.deepEqual((await h.preStep([user, answer], { agent: other })).messages, [user, answer])
+
+  await setConsult(h.parent, false)
+  assert.deepEqual((await h.preStep([user, answer], { turn: 3 })).messages, [user, answer])
+  assert.deepEqual((await h.preStep([question], { agent: reader })).messages, [question])
+})
+
+test('session patrol intervals, limits and unlimited mode update already running workers per parent', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'] })
+  const storage = sessionStorage()
+  const h = harness(t, { host: storage.host, config: { superviseNotifyOnNoProgress: true } })
+  const a = h.parent
+  const b = h.makeRoot('other-patrol-parent')
+  const savePatrol = async (agent, patch) => {
+    const current = await storage.remote.get(agent.id)
+    const saved = await storage.remote.setConfig(agent.id, patch, current.revision)
+    assert.equal(saved.enabled, true)
+    for (const [field, value] of Object.entries(patch)) assert.equal(saved.config[field], value, field)
+  }
+  await savePatrol(a, { superviseIntervalSeconds: 30, superviseMaxNoticesPerChild: 1 })
+  await savePatrol(b, { superviseIntervalSeconds: 20, superviseMaxNoticesPerChild: 0, superviseUnlimited: true })
+  const first = await h.delegate({ isolation: 'shared', writeScope: ['first.txt'] }, a)
+  const second = await h.delegate({ isolation: 'shared', writeScope: ['second.txt'] }, b)
+  await savePatrol(a, { superviseIntervalSeconds: 10 })
+
+  const advance = async (seconds) => {
+    for (let elapsed = 0; elapsed < seconds; elapsed += 5) {
+      t.mock.timers.tick(5_000)
+      await drain()
+    }
+  }
+  const claimPatrol = (agent, turn, childId, expectedCount) => {
+    const notice = h.claim(SUPERVISE_SOURCE_KIND, turn, agent)
+    assert.deepEqual(notice.source.childIds, [childId])
+    assert.ok(notice.content[0].text.startsWith(`【插件巡检｜第 ${expectedCount} 次】`))
+    h.turnEnd(turn, agent)
+  }
+  await advance(5)
+  assert.deepEqual(h.notices, [])
+  await advance(5)
+  claimPatrol(a, 1, first.subagentId, '1/1')
+  assert.equal(h.notices.length, 1)
+  assert.deepEqual(b.inbox.nextTurn, [])
+
+  await advance(10)
+  claimPatrol(b, 1, second.subagentId, '1')
+  await advance(20)
+  claimPatrol(b, 2, second.subagentId, '2')
+  assert.equal(h.notices.length, 3)
+  assert.deepEqual(a.inbox.nextTurn, [], 'the finite budget is exhausted')
+
+  await savePatrol(a, { superviseUnlimited: true })
+  await advance(5)
+  claimPatrol(a, 2, first.subagentId, '2')
+  assert.equal(h.notices.length, 4)
+  assert.deepEqual(b.inbox.nextTurn, [])
+  assert.equal(h.starts.length, 2, 'only the original workers ran')
+})
+
+test('phase 1: claimed patrols suppress the next tick and recompile without settled siblings', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'] })
+  const h = harness(t, { config: { readOnlyEnabled: true } })
   const runner = await h.delegate({ readOnly: true, description: '巡检触发项' })
   const sibling = await h.delegate({ readOnly: true, description: '同父安静项' })
   const tick = async () => { t.mock.timers.tick(10_001); await drain() }
-  h.starts[1].agent.session.log.push({ seq: 1, time: Date.now(), type: 'turn/start', data: {} })
+  h.starts[0].agent.session.log.push({ seq: 1, time: Date.now(), type: 'turn/start', data: {} })
   await tick()
   const [initial] = supervisionFor(h)
-  assert.ok(initial)
-  assert.deepEqual(new Set(initial.source.childIds), new Set([runner.subagentId, sibling.subagentId, failed.subagentId]))
-  const originalText = initial.content[0].text
-  for (const label of ['巡检触发项', '同父安静项', '失败待送达']) assert.ok(originalText.includes(label))
-
+  assert.deepEqual(initial.source.childIds, [runner.subagentId, sibling.subagentId])
   h.end(sibling.subagentId)
   await drain()
   const [updated] = supervisionFor(h)
   assert.equal(updated.id, initial.id)
   assert.deepEqual(h.replacements, [initial.id])
-  assert.deepEqual(updated.source.childIds, [runner.subagentId, failed.subagentId])
-  assert.match(updated.content[0].text, /失败待送达/)
-  assert.doesNotMatch(updated.content[0].text, /同父安静项/)
+  assert.deepEqual(updated.source.childIds, [runner.subagentId])
 
   const claim = h.claim(SUPERVISE_SOURCE_KIND, 20)
   h.config.superviseNotifyOnNoProgress = true
   await tick()
   assert.deepEqual(supervisionFor(h), [], 'the claim protects the gap before pre-step')
-  h.end(runner.subagentId)
   const decision = await h.preStep([claim], { turn: 20 })
   assert.equal(decision.kind, 'enter')
-  const [attentionOnly] = decision.messages
-  assert.equal(attentionOnly.id, initial.id)
-  assert.deepEqual(attentionOnly.source.childIds, [failed.subagentId])
-  assert.match(attentionOnly.content[0].text, /失败待送达/)
-  assert.doesNotMatch(attentionOnly.content[0].text, /巡检触发项/)
-  assert.match(h.check('todo_write'), /当前为定时巡检回合/)
-
-  const nextRunner = await h.delegate({ readOnly: true, description: '下一巡检项' })
+  assert.deepEqual(decision.messages[0].source.childIds, [runner.subagentId])
   await tick()
-  assert.deepEqual(supervisionFor(h), [], 'the active pre-step turn suppresses another patrol after claim transfer')
+  assert.deepEqual(supervisionFor(h), [])
+  h.end(runner.subagentId)
   h.turnEnd(20)
   await tick()
-  const [next] = supervisionFor(h)
-  assert.ok(next)
-  assert.deepEqual(next.source.childIds, [nextRunner.subagentId, failed.subagentId])
-  h.end(nextRunner.subagentId)
-  await drain()
-  assert.deepEqual(supervisionFor(h)[0].source.childIds, [failed.subagentId], 'an unclaimed attention-only notice stays queued')
-
-  const final = await h.preStep([settled(failed.subagentId)], { turn: 21 })
-  assert.equal(final.messages.at(-1).source.kind, INLINE_AUDIT_SOURCE_KIND)
-  await drain()
-  const delivered = await statusOf(h, failed.subagentId)
-  assert.equal(delivered.auditDeliveredVia, 'inline-pre-step')
   assert.deepEqual(supervisionFor(h), [])
-  assert.ok(h.removed.includes(next.id))
 })

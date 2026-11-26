@@ -161,6 +161,7 @@ test('a session override suppresses guidance only for that root and can guide th
 function dispatchers() {
   const launches = []
   const dependencies = {
+    config: { readOnlyEnabled: true },
     defineTool: (spec) => spec,
     subagents: {
       resolveMaxDepth: () => 2,

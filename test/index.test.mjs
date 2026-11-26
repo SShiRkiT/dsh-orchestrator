@@ -100,6 +100,7 @@ const HOST_TOOLS = [
  * that needs the PTC shape adds it explicitly.
  */
 const SURFACE_TOOLS = HOST_TOOLS.filter((name) => name !== 'run_code')
+const DISPATCH_TOOLS = ['delegate', 'orchestrate', 'delegate_status', 'worktree_manage']
 
 /** The names one `definitions()` result carries. */
 const namesOf = (list) => list.map((definition) => definition.name)
@@ -119,7 +120,7 @@ function fakeCtx({
   catalogNames = HOST_TOOLS,
   surface = SURFACE_TOOLS,
 } = {}) {
-  const state = { enabled, allowed, worktreeIsolationEnabled: undefined }
+  const state = { enabled, allowed, worktreeIsolationEnabled: undefined, readOnlyEnabled: false }
   const tools = []
   const handlers = new Map()
   // The options each subscription was made with: a lifecycle edge of a child is dispatched
@@ -172,6 +173,7 @@ function fakeCtx({
   const config = {
     enabled: { get: () => state.enabled },
     worktreeIsolationEnabled: { get: () => state.worktreeIsolationEnabled },
+    readOnlyEnabled: { get: () => state.readOnlyEnabled },
     allowedTools: { get: () => state.allowed },
     workerProvider: { get: () => '' },
     workerModel: { get: () => '' },
@@ -428,18 +430,18 @@ test('the warning fires only for a resume that fell through the depth test', () 
   assert.equal(resumedChild.logs.warn.length, 0)
 })
 
-test('the switch being off still installs the guard and restores host tools without delegate/orchestrate', () => {
+test('the switch being off still installs the guard and restores host tools without dispatch or governance tools', () => {
   // The gate is installed even while dispatch mode is off, so flipping the switch on
   // in an open conversation takes effect without a restart; the info log follows the switch.
   const { created, ctx, state, logs, tools } = start({ enabled: false })
   const { agent, restricted, guards } = fakeAgent()
-  const expectedOff = SURFACE_TOOLS.filter((name) => name !== 'delegate' && name !== 'orchestrate')
+  const expectedOff = SURFACE_TOOLS.filter((name) => !DISPATCH_TOOLS.includes(name))
   const delegate = tools.find((tool) => tool.name === 'delegate')
   const orchestrate = tools.find((tool) => tool.name === 'orchestrate')
   created({ agent, source: 'create' })
   assert.deepEqual(restricted, [])
   assert.equal(guards.length, 1)
-  assert.deepEqual(namesOf(ctx.tools.definitions(agent)), expectedOff, 'off restores host tools and hides dispatch pair')
+  assert.deepEqual(namesOf(ctx.tools.definitions(agent)), expectedOff, 'off restores host tools and hides dispatch and governance tools')
   assert.equal(delegate.description.includes('主代理规则：主代理只负责规划'), false)
   assert.equal(orchestrate.description.includes('主代理规则同 delegate'), false)
   assert.equal(guards[0]({ name: 'edit' }), undefined)
@@ -858,7 +860,7 @@ test('the enable switch flips the surface and rules in the open session through 
   const { created, ctx, handlers, state, tools } = start({
     agents: { get: () => undefined, list: () => [main.agent] },
   })
-  const expectedOff = SURFACE_TOOLS.filter((name) => name !== 'delegate' && name !== 'orchestrate')
+  const expectedOff = SURFACE_TOOLS.filter((name) => !DISPATCH_TOOLS.includes(name))
   const delegate = tools.find((tool) => tool.name === 'delegate')
   const orchestrate = tools.find((tool) => tool.name === 'orchestrate')
   created({ agent: main.agent, source: 'create' })
@@ -870,12 +872,11 @@ test('the enable switch flips the surface and rules in the open session through 
 
   state.enabled = false
   volatile()
-  assert.deepEqual(namesOf(ctx.tools.definitions(main.agent)), expectedOff, 'off restores host tools and hides dispatch pair')
+  assert.deepEqual(namesOf(ctx.tools.definitions(main.agent)), expectedOff, 'off restores host tools and hides dispatch and governance tools')
   assert.equal(delegate.description.includes('主代理规则：主代理只负责规划'), false)
   assert.equal(orchestrate.description.includes('主代理规则同 delegate'), false)
   assert.equal(main.guards[0]({ name: 'edit' }), undefined, 'and lets regular host calls through')
-  assert.match(main.guards[0]({ name: 'delegate' }), /"delegate" is disabled while dispatch mode is off/)
-  assert.match(main.guards[0]({ name: 'orchestrate' }), /"orchestrate" is disabled while dispatch mode is off/)
+  for (const name of DISPATCH_TOOLS) assert.match(main.guards[0]({ name }), /disabled while dispatch mode is off/, name)
 
   state.enabled = true
   volatile()
@@ -1025,21 +1026,23 @@ function beforeMessage(harness, exec, target) {
   return harness.handlers.get('tools/pre-execute')({ ...exec, name: 'send_message', arguments: { agent: target } }, async () => ({ kind: 'continue' }))
 }
 
-test('phase 2: the root keeps both governance tools when dispatch is off; descendants cannot manage worktrees', async () => {
+test('dispatch off hides and blocks all four tools, and descendants cannot govern worktrees', async () => {
   assert.equal(mod.Config.fields.worktreeIsolationEnabled.defaultValue, true)
   const harness = start({ enabled: false })
-  const worktreeManage = toolNamed(harness, 'worktree_manage')
   const root = fakeAgent({ id: 'root' }).agent
   const child = fakeAgent({ id: 'child', depth: 1 }).agent
-  for (const name of ['worktree_manage', 'delegate_status']) {
-    assert.equal(namesOf(harness.ctx.tools.definitions(root)).includes(name), true)
-    assert.equal(namesOf(harness.ctx.tools.definitions(child)).includes(name), false)
+  for (const name of DISPATCH_TOOLS) {
+    assert.equal(namesOf(harness.ctx.tools.definitions(root)).includes(name), false, name)
+    assert.equal(namesOf(harness.ctx.tools.definitions(child)).includes(name), false, name)
+    await assert.rejects(toolNamed(harness, name).execute({}, { agent: root }), /disabled while dispatch mode is off/, name)
   }
-  assert.equal((await worktreeManage.execute({ action: 'list' }, { agent: root })).details.total, 0)
-  await assert.rejects(() => worktreeManage.execute({ action: 'list' }, { agent: child }), /仅根代理/)
+  harness.state.enabled = true
+  const manage = toolNamed(harness, 'worktree_manage')
+  assert.equal((await manage.execute({ action: 'list' }, { agent: root })).details.total, 0)
+  await assert.rejects(manage.execute({ action: 'list' }, { agent: child }), /仅根代理/)
 })
 
-test('phase 2: a delegate audits its physical checkout and a reclaimed child cannot receive messages', async (t) => {
+test('phase 2: a delegate closes its physical checkout for review and a reclaimed child cannot receive messages', async (t) => {
   const { cwd, git } = gitFixture(t)
   const exec = phase2Exec(cwd)
   const starts = []
@@ -1067,17 +1070,17 @@ test('phase 2: a delegate audits its physical checkout and a reclaimed child can
   assert.equal(path.normalize(starts[0].cwd), path.join(first.worktree.path, 'nested'))
   assert.equal(path.normalize(first.writeScope.scope[0]), path.join(first.worktree.execCwd, 'result.txt'))
   assert.equal(git('status', '--porcelain'), '', 'the main workspace stays clean')
-  assert.equal((await beforeMessage(harness, exec, 'worker-name')).kind, 'continue')
+  const unsettled = await beforeMessage(harness, exec, 'worker-name')
+  assert.equal(unsettled.kind, 'deny')
+  assert.match(unsettled.reason, /原运行仍在结算/)
 
   harness.handlers.get('subagent/end')({ id: first.subagentId, stopReason: 'completed' })
   const entry = (await status.execute({ childId: first.subagentId }, exec)).details.items[0]
-  assert.equal(entry.auditState, 'passed')
+  assert.equal(entry.leaseState, 'released')
   assert.equal(entry.worktree.state, 'ready_for_review')
-  assert.equal(entry.worktree.dirty, true)
-  assert.equal(entry.worktree.commits, 0)
-  const audit = harness.emitted.find(([name, payload]) => name === 'orchestrator/write-audit' && payload.childId === first.subagentId)[1].audit
-  assert.equal(audit.isolationLevel, 'git-worktree')
-  assert.equal(audit.git.worktreeId, first.worktree.id)
+  const inspected = await worktreeManage.execute({ action: 'inspect', worktreeId: first.worktree.id }, exec)
+  assert.equal(inspected.details.dirty, true)
+  assert.equal(inspected.details.aheadCount, 0)
 
   const discarded = await worktreeManage.execute({ action: 'discard', worktreeId: first.worktree.id, force: true }, exec)
   assert.equal(discarded.details.ok, true)
@@ -1123,9 +1126,7 @@ test('phase 2: items reuse their own checkout, retain failed-stage evidence, and
   assert.equal(stageIds.get('item-1-stage-1'), stageIds.get('item-1-stage-2'))
   assert.equal(stageIds.get('item-2-stage-1'), stageIds.get('item-2-stage-2'))
   assert.notEqual(stageIds.get('item-1-stage-1'), stageIds.get('item-2-stage-1'))
-  assert.deepEqual(result.details.itemAudits.map(({ audit }) => audit.passed), [true, false])
-  assert.equal(result.details.writeAudit.passed, false)
-  assert.equal(result.details.writeAudit.violations[0].itemIndex, 1)
+  assert.equal(result.errors[0].index, 1)
   assert.match(batch.output.render({}, result)[0].text, /worktree_manage .*inspect \/ merge \/ discard/)
   const rows = (await manage.execute({ action: 'list' }, exec)).details.worktrees
   assert.equal(rows.length, 2)
@@ -1136,7 +1137,9 @@ test('phase 2: items reuse their own checkout, retain failed-stage evidence, and
   for (const childId of ['item-1-stage-1', 'item-1-stage-2']) {
     assert.match((await beforeMessage(harness, exec, childId)).reason, /worktree-child-locked/)
   }
-  assert.equal((await beforeMessage(harness, exec, 'item-2-stage-1')).kind, 'continue')
+  const remaining = await beforeMessage(harness, exec, 'item-2-stage-1')
+  assert.equal(remaining.kind, 'deny')
+  assert.match(remaining.reason, /编排阶段不能单独恢复/)
 })
 
 test('phase 2: per-call isolation takes precedence over live configuration and rolls back failed launches', async (t) => {
@@ -1165,10 +1168,11 @@ test('phase 2: per-call isolation takes precedence over live configuration and r
   harness.handlers.get('subagent/end')({ id: shared.subagentId, stopReason: 'completed' })
   assert.equal((await batch.execute(batchArgs, exec)).details?.worktrees, undefined)
   assert.equal(git('worktree', 'list', '--porcelain').split('\n').filter((line) => line.startsWith('worktree ')).length, 1)
+  harness.state.readOnlyEnabled = true
   await assert.rejects(delegate.execute({ ...isolatedClaim, readOnly: true, isolation: 'worktree' }, exec), /只读任务/)
   await assert.rejects(batch.execute({ ...batchArgs, isolation: 'unsupported' }, exec), /isolation/)
   launch = 'throw'
-  await assert.rejects(delegate.execute({ ...args, isolation: 'worktree' }, exec), /launch failed/)
+  await assert.rejects(delegate.execute({ ...args, isolation: 'worktree', allowNewReason: '验证独立启动回滚' }, exec), /launch failed/)
   assert.equal(git('worktree', 'list', '--porcelain').split('\n').filter((line) => line.startsWith('worktree ')).length, 1)
   launch = 'empty'
   const failedBatch = await batch.execute({ ...batchArgs, isolation: 'worktree' }, exec)
@@ -1178,7 +1182,7 @@ test('phase 2: per-call isolation takes precedence over live configuration and r
   assert.equal(git('worktree', 'list', '--porcelain').split('\n').filter((line) => line.startsWith('worktree ')).length, 1)
   launch = 'ok'
   harness.state.worktreeIsolationEnabled = true
-  assert.ok((await delegate.execute(args, exec)).worktree)
+  assert.ok((await delegate.execute({ ...args, allowNewReason: '验证默认独立模式' }, exec)).worktree)
 })
 
 test('phase 2: a missing checkout blocks both manual delivery and automatic retry', async (t) => {

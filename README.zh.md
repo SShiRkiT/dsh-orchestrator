@@ -49,9 +49,9 @@
  **独立工位隔离施工，验收后再合回**：  
 >写任务默认在各自的 Git 临时目录中并行干活，不碰你当前工作区，不擅自合并到主分支。 
 
- **过程自动看场子，交工自动查账单**：  
->后台定时盯住运行中的子代理，卡壳跑偏直接一巴掌扇过去`send_message`纠偏；  
->交工时核对修改范围与必交文件，软件重启也能对账
+ **过程自动巡检，交工显式评审**：
+> 后台定时查看运行中的子代理。卡壳或跑偏时，主代理可用 `send_message` 纠偏。\
+> 交工后用 `worktree_manage` 查看隔离工作树的改动，再决定合回或丢弃。
 
  **批量活与多步流水线一键并行跑**：  
 >同类批量或串联多步骤任务无需手写脚本，填好清单和步骤即可按并发上限自动推进，单条报错互不拖累
@@ -89,13 +89,11 @@
 
 ---
 
-### 3. 改前防撞车，交工查账单
+### 3. 开工前协调写入范围
 
-在不使用隔离目录的场景下，如果两个子代理想改同一片文件，插件会在启动前直接拦下。每个可以修改的写子代理拥有独立的writescope来圈定修改范围，其他子代理传输writescope时若和前子代理修改范围重合时会自动报错拦截  
-交工时，插件还会自动核对子代理有没有偷改范围外的文件、约定交付的文件齐不齐，只读任务偷写也会告警；所有子代理干到哪一步、验收过没过，随时一目了然。
+在非 Git 工作区或共享模式下，每个写任务通过 `writeScope` 声明修改范围。若实际路径重叠，插件会在启动前拒绝冲突的申请。写租约只协调声明范围，交工后由主代理另行验收。
 
-> 写任务派发时声明修改范围（`writeScope`），也可按需指定防篡改指纹（`expectedFingerprints`）和必交清单（`expectedTargets`）；  
->随时调用 `delegate_status` 查看全部子代理的运行、审计与待评审状态。
+> 随时调用 `delegate_status` 查看直属委派的运行状态、写租约状态及待评审的工作树。
 
 ---
 
@@ -135,10 +133,10 @@
 
 ### 6. 热重载不断联，冷重启可对账
 
-遇到插件热更新时，正在跑的子代理不会断联，后台巡检继续无缝衔接。就算彻底退出 DSH 再重开，插件也会先自动核对一遍现场：确认已经停掉的子代理安全释放文件锁，缺少派发前记录的就老老实实标明“审计不完整”。
+遇到插件热更新时，正在跑的子代理保持连接，后台巡检继续运行。彻底退出 DSH 再打开时，插件根据宿主状态核对工作树、委派和写租约。确认子代理已停止后释放租约，状态不明时保留保护。
 
-> 自动利用宿主自带存储记录工作目录、任务和文件锁状态（旧版宿主自动退回内存模式，无额外依赖）；  
-> 彻底重启后不会盲目续跑已中断的旧任务，避免重复执行。
+> 插件使用宿主存储恢复记录，存储不可用时退回内存模式。\
+> 彻底重启后不会自动续跑已中断的任务。
 
 ---
 
@@ -162,10 +160,14 @@
 
 | 工具 | 做什么用 | 常用参数 | 注意事项 |
 | --- | --- | --- | --- |
-| `delegate` | 异步派活，支持同回合同时派多个 | `prompt`、`description`、`writeScope`（写任务必填）、`readOnly`、`isolation`、`expectedFingerprints`、`expectedTargets`、`cwd`、`provider` + `model`、可选 `team_task_id` | 仅主代理可用；写任务自动开隔离目录或加文件锁；交工时自动附上审计结果，运行中受后台巡检覆盖 |
+| `delegate` | 异步派活，优先复用 | `prompt`、`description`、`writeScope`（写任务必填）、`readOnly`、`isolation`、`allowNewReason`、`cwd`、`provider` + `model`、可选 `team_task_id` | 同一父会话存在可续跑的 `inactive` 子代理时拦截新建，返回 `delegate-reuse-required` 和 `details.candidates`。确需新建时传非空 `allowNewReason`。运行中受后台巡检覆盖。 |
 | `orchestrate` | 批量 / 多步骤流水线自动并行跑 | `items`（1–64）、`stages`（1–8，可配 `schema`）、`maxConcurrency`（1–16，默认 4）、`writeScope`、`readOnly`、`isolation`、`cwd`、可选顶层 `team_task_id`；顶层或单个阶段均可指定 `provider` + `model`，可选 `reasoning_effort` | 路由优先级：阶段覆盖 > 顶层批次覆盖 > 面板默认；各条目独立推进，隔离模式按条目复用目录，同步等待，不进后台巡检 |
-| `delegate_status` | 一眼查看当前会话所有子代理的验收进度 | `childId`（可选）、`includeCompleted`（默认 `true`）、`limit`（1–64，默认 20） | 只读查询；清晰区分运行状态、审计结果、文件锁与待评审目录，没查到记录不代表已通过 |
-| `worktree_manage` | 查看、审阅、合并、丢弃或清理隔离目录 | `action`（`list`/`inspect`/`merge`/`discard`/`prune`）、`worktreeId` / `childId`、`strategy`（`merge`/`squash`/`ff-only`）、`autoStageDirty`、`deleteAfterMerge`、`force`、`dryRun` | 仅主代理可用；审计通过不等于已合回主分支；合并冲突会保留现场；清理或丢弃后自动锁死旧子代理 |
+| `delegate_status` | 查询直属委派，或编辑闲置直属子代理的下一轮配置 | `action`（默认 `query`，或 `edit`）、`childId`（`edit` 必填）、`writeScope` / `readOnly`（`edit` 至少传一项）、`includeCompleted`（查询默认 `true`）、`limit`（1–64，默认 20） | `query` 查看运行、租约和工作树状态。`edit` 保存 `pendingNextTurn`，随后用 `send_message` 应用配置并唤醒同一个子代理。 |
+| `worktree_manage` | 查看、审阅、合并、丢弃或清理隔离目录 | `action`（`list`/`inspect`/`merge`/`discard`/`prune`）、`worktreeId` / `childId`、`strategy`（`merge`/`squash`/`ff-only`）、`autoStageDirty`、`deleteAfterMerge`、`force`、`dryRun` | `inspect` 实时查看差异、提交和脏状态，含未跟踪路径。合并冲突时保留工作树供评审。清理或丢弃后锁定旧子代理。 |
+
+复用闲置子代理时，如需调整写范围或只读设置，先调用 `delegate_status` 并指定 `action: "edit"`，再用 `send_message` 唤醒同一个子代理。插件在投递前用 `replaceOwnerLease` 原子替换写租约。租约冲突会阻止投递，明确拒投时回滚租约替换并恢复待应用配置。投递结果不明时保留新租约保护，并阻止重复唤醒。
+
+`readOnly` 仅在当前会话开启「启用只读参数」时可用。将下一轮配置编辑为只读也受此开关控制。关闭时，做只读调研请传 `isolation: "shared"`，保留必填的 `writeScope` 声明，并在任务说明里明确禁止修改文件。
 
 宿主根会话已开启原生「智能体团队协作」，且调度模式放行当前会话的 `team_task_create` 时，主代理可在派发复杂任务前建立共享目标，将工具返回的 `id` 作为 `team_task_id` 传给子代理（编排时传给每个阶段）。子代理可在 `team_task_get` 可用时读取目标作为参考；任务说明仍须自包含，共享目标不替代派发或写租约。
 
@@ -233,20 +235,33 @@ dsh plugin --profile desktop add @sshirkit/dsh-orchestrator
 
 面板自动跟随 DSH 语言切换中 / 英文，提供免重启的实时控制项：
 
-- **启用调度模式**：一键开关主代理工具白名单闸门，已打开的会话立即生效；
-- **默认启用 Git Worktree 隔离**：控制 `isolation: "auto"` 在 Git 仓库写任务下的隔离行为；
-- **主代理 / 子代理默认模型与推理强度**：支持关键词搜索选择模型；主代理写入宿主 `agent-default-model`（仅影响新会话），子代理从下一次派发生效；
-- **子代理巡检间隔 / 巡检次数 / 无限巡检**：运行中动态调整后台旁路巡检策略；
-- **右侧 `Allowed Tools` 列表**支持按关键字搜索、勾选主代理可用工具和重置默认白名单。打开「仅当前会话」开关（英文界面显示 `Only for this session`）可单独编辑当前会话的白名单，关闭后恢复继承全局设置。
+- **启用调度模式**可切换主代理工具白名单闸门，已打开的会话立即跟随生效。
+- **主代理 / 子代理默认模型与推理强度**均可通过关键词搜索选择。全局模式下，主代理默认路由写入宿主 `agent-default-model`。子代理路由在下一次派发时使用，任务或阶段仍可显式覆盖。
+- **子代理巡检间隔 / 巡检次数 / 无限巡检**可在运行中动态调整。
+- **右侧 `Allowed Tools` 列表**支持按关键字搜索、勾选主代理可用工具和重置白名单。
+
+自 `v1.0.3` 起，右栏顶部的「**仅当前会话**」开关和「**更多**」按钮位于分隔线上方，作用范围覆盖整个面板。开启后会保存当前设置的会话快照，之后的修改也只保存到当前会话。快照涵盖以下 10 项：`enabled`、`worktreeIsolationEnabled`、`readOnlyEnabled`、`peerReadOnlyConsultEnabled`、`mainRoute`、`workerRoute`、`superviseIntervalSeconds`、`superviseMaxNoticesPerChild`、`superviseUnlimited`、`allowedTools`。
+
+会话模式会保留全局配置与宿主 `agent-default-model`。会话级主代理模型从下一个尚未准备的模型调用步骤（step）起生效。关闭「仅当前会话」会清除覆盖，自动恢复当前的全局默认模型及全局设置。若会话存储不可用，开关会禁用，仍可明确选择编辑全局设置。
+
+点击「**更多**」会在会话中央打开独立浮窗，可用关闭按钮、`Esc` 或点击遮罩关闭：
+
+- **默认启用 Git Worktree 隔离**（`worktreeIsolationEnabled`，默认 `true`）控制 `isolation: "auto"` 下 Git 写任务的隔离行为。
+- **启用只读参数**（`readOnlyEnabled`，默认 `false`）控制 `delegate` 和 `orchestrate` 是否显示、接受 `readOnly`。关闭时，模型会被引导使用 `isolation: "shared"` 做无需隔离的只读调研。开启时建议同时打开「允许平级询问」。
+- **允许平级询问**（`peerReadOnlyConsultEnabled`，默认 `false`）让同一会话中同属一个父代理的子代理共享已读文件索引，并用 `send_message` 互相咨询已读上下文。索引仅包含路径和位置信息。主代理会静默过滤已识别的平级咨询转发。
+
+在新会话输入栏居中（Hero 布局）时，调度面板会避开顶部导航栏，按视口内可用空间自动向上或向下展开，减少截断。
 
 ## 配置项速查表
 
-以下 13 项用户可配参数均为 `volatile` 动态热配置，修改后无需重启 DSH（执行门禁每次调用重读、工具面下一次请求生效、子代理路由下一次派发生效）：
+以下 15 项用户可配参数均为 `volatile` 动态热配置，修改后无需重启 DSH（执行门禁每次调用重读、工具面下一次请求生效、子代理路由下一次派发生效）：
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
 | `enabled` | `true` | 调度模式总开关。关闭后一键恢复宿主原生工具面；`delegate` / `orchestrate` 仍禁用，已绑定巡检回合的硬禁仍优先。 |
-| `worktreeIsolationEnabled` | `true` | 控制 `isolation: "auto"` 下是否为 Git 仓库写任务默认启用独立 Worktree 隔离与 `git diff` / `git log` 审计（非 Git 目录自动降级快照审计）。 |
+| `worktreeIsolationEnabled` | `true` | 控制 `isolation: "auto"` 下是否为 Git 写任务创建独立 Worktree。非 Git 工作区使用共享模式，由写租约协调声明范围。 |
+| `readOnlyEnabled` | `false` | 开启后 `delegate` / `orchestrate` 可使用 `readOnly`。关闭时隐藏并拒绝该参数，模型会获得使用共享工作区做只读调研的提示。 |
+| `peerReadOnlyConsultEnabled` | `false` | 开启后同一会话的平级子代理可共享已读文件索引，并通过 `send_message` 咨询。 |
 | `allowedTools` | 未配置（默认 9 项基础工具；`allowAgentTeam: true` 时自动追加已注册的 4 项原生 Team 工具） | 主代理显式工具白名单。显式数组（包括 `[]`）会**替换**默认名单。关闭「仅当前会话」开关时，右侧 `Allowed Tools` 列表的改动实时写入此项。 |
 | `allowAgentTeam` | `true` | 只控制调度模式下主代理能否调用原生 Team 任务板工具（`team_task_*`），不切换宿主「智能体团队协作」模式。设为 `false` 时优先于会话和全局白名单。宿主根会话已开启原生 Team 且会话放行 `team_task_create` 时，主代理可建立共享目标并用可选 `team_task_id` 传给子代理读取。 |
 | `workerProvider` | `""` | 子代理默认路由 Provider。未命中任何显式路由覆盖时，必须同时配置此项和 `workerModel`；不会回退到主模型。 |

@@ -34,8 +34,9 @@ await test('工作树还原全阶段锁墓碑，不调用 Git，也不会被旧�
   const exported = original.exportRecords()
   assert.deepEqual(exported[0].childIds, ['stage-2', 'stage-1', 'stage-3'])
   assert.equal(exported[0].locked, true)
-  exported[0].auditSummary.counts.push(2)
-  assert.deepEqual(original.exportRecords()[0].auditSummary.counts, [1])
+  assert.equal(Object.hasOwn(exported[0], 'auditSummary'), false)
+  exported[0].childIds.push('unbound')
+  assert.deepEqual(original.exportRecords()[0].childIds, ['stage-2', 'stage-1', 'stage-3'])
 
   const restored = createWorktreeManager()
   assert.deepEqual(restored.hydrateRecords(json(original.exportRecords())), { restored: 1, skipped: 0 })
@@ -89,29 +90,57 @@ await test('写租约还原物理路径冲突、过期与重复处理，默认 I
   assert.equal(claim(restored, 'child-b', 'root-b', ['shared/file.js']).ok, true)
 })
 
+await test('原子缩窄和只读切换保留回滚保护，换租冲突不改原租约', () => {
+  const table = createWriteLeases({ now: () => 100 })
+  const owner = { childId: 'owner', parentId: 'root', cwd: 'C:/project' }
+  const other = { childId: 'other', parentId: 'root-b', cwd: owner.cwd }
+  const original = table.acquire({ ...owner, scope: ['one.js', 'two.js'] }).lease
+  table.acquire({ ...other, scope: ['three.js'] })
+  const originalRecords = table.exportLeases()
+  const conflict = table.replaceOwnerLease({ ...owner, scope: ['one.js', 'three.js'] }, { reversible: true })
+  assert.equal(conflict.code, WRITE_LEASE_CODES.conflict)
+  assert.deepEqual(table.exportLeases(), originalRecords)
+
+  const narrow = table.replaceOwnerLease({ ...owner, scope: ['one.js'] }, { reversible: true })
+  assert.equal(narrow.ok, true)
+  assert.equal(narrow.lease.leaseId, original.leaseId)
+  assert.equal(narrow.lease.entries.length, 1)
+  assert.equal(table.acquire({ ...other, scope: ['two.js'] }).code, WRITE_LEASE_CODES.conflict)
+  assert.equal(narrow.rollback(), true)
+  assert.deepEqual(table.exportLeases().find(({ ownerId }) => ownerId === owner.childId),
+    originalRecords.find(({ ownerId }) => ownerId === owner.childId))
+
+  const reader = table.replaceOwnerLease({ ...owner, readOnly: true, scope: [] }, { reversible: true })
+  assert.equal(reader.ok, true)
+  assert.equal(reader.lease, null)
+  assert.equal(table.has(original.leaseId), false)
+  assert.equal(table.acquire({ ...other, scope: ['two.js'] }).code, WRITE_LEASE_CODES.conflict)
+  assert.equal(reader.commit(), true)
+  assert.equal(table.acquire({ ...other, scope: ['two.js'] }).ok, true)
+})
+
 await test('时间线往返并在子级上限优先淘汰普通终态', () => {
   const original = createDispatchTimeline()
   const base = { parentId: 'root', updatedAt: 10, startedAt: 1, endedAt: 8, dispatchState: 'completed' }
   const protectedRows = [
     { ...base, childId: 'active', dispatchState: 'dispatched', endedAt: null, updatedAt: 2 },
-    { ...base, childId: 'pending', auditState: 'pending', updatedAt: 3 },
-    { ...base, childId: 'failed-undelivered', auditState: 'failed', updatedAt: 4 },
-    { ...base, childId: 'review', auditState: 'passed', worktreeId: 'wt-ready', worktreeState: 'ready', updatedAt: 5 },
+    { ...base, childId: 'review', worktreeId: 'wt-ready', worktreeState: 'ready', updatedAt: 5 },
     { ...base, childId: 'cleanup', worktreeId: 'wt-cleanup', worktreeState: 'cleanup-failed', updatedAt: 6 },
   ]
+  const pending = { ...base, childId: 'legacy-pending', auditState: 'pending', updatedAt: 3 }
   const ordinary = { ...base, childId: 'ordinary', auditState: 'passed', attemptSeq: 2, runId: 'run-2',
     stopReason: 'completed', baselineId: 'base', incomplete: true, auditDeliveredVia: 'inline-pre-step',
     leaseId: 'lease-1', leaseState: 'released', label: '交付', cwd: '/repo', readOnly: true, writeScope: ['src/'] }
-  assert.deepEqual(original.hydrateEntries([...protectedRows, ordinary, { childId: '' }]), { restored: 6, skipped: 1 })
+  assert.deepEqual(original.hydrateEntries([...protectedRows, pending, ordinary, { childId: '' }]), { restored: 5, skipped: 1 })
   const row = original.get('root', 'ordinary')
-  for (const key of ['attemptSeq', 'runId', 'stopReason', 'baselineId', 'auditState', 'incomplete',
-    'auditDeliveredVia', 'leaseId', 'leaseState', 'startedAt', 'endedAt', 'updatedAt', 'label', 'cwd', 'readOnly', 'writeScope']) {
+  for (const key of ['attemptSeq', 'runId', 'stopReason', 'leaseId', 'leaseState', 'startedAt', 'endedAt', 'updatedAt', 'label', 'cwd', 'readOnly', 'writeScope']) {
     assert.deepEqual(row[key], ordinary[key], key)
   }
+  for (const key of ['baselineId', 'auditState', 'incomplete', 'auditDeliveredVia']) assert.equal(Object.hasOwn(row, key), false, key)
   assert.equal(row.dispatchState, 'ended')
-  const restored = createDispatchTimeline({ maxPerParent: 6 })
+  const restored = createDispatchTimeline({ maxPerParent: 5 })
   const snap = original.exportEntries()
-  assert.deepEqual(restored.hydrateEntries(json(snap)), { restored: 6, skipped: 0 })
+  assert.deepEqual(restored.hydrateEntries(json(snap)), { restored: 5, skipped: 0 })
   assert.deepEqual(restored.exportEntries(), snap)
   snap.find(({ childId }) => childId === 'ordinary').writeScope.push('foreign')
   assert.deepEqual(original.get('root', 'ordinary').writeScope, ['src/'])
@@ -119,7 +148,8 @@ await test('时间线往返并在子级上限优先淘汰普通终态', () => {
   assert.equal(restored.get('root', 'cleanup').worktree.state, 'cleanup_failed')
   assert.deepEqual(restored.hydrateEntries([{ ...ordinary, updatedAt: 7 }]), { restored: 0, skipped: 1 })
   restored.recordDispatched({ parentId: 'root', childId: 'latest', startedAt: 20 })
-  assert.equal(restored.get('root', 'ordinary'), null)
+  assert.equal(restored.get('root', 'legacy-pending'), null)
+  assert.ok(restored.get('root', 'ordinary'))
   for (const { childId } of protectedRows) assert.ok(restored.get('root', childId), childId)
 })
 

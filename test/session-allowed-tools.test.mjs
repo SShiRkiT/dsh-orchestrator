@@ -12,6 +12,15 @@ import {
 import { NATIVE_TEAM_TOOLS } from '../lib/gate.js'
 import { encodeRecordKey } from '../lib/state-store.js'
 
+function defaultConfig(allowedTools = []) {
+  return {
+    enabled: true, worktreeIsolationEnabled: true, readOnlyEnabled: false,
+    peerReadOnlyConsultEnabled: false, mainRoute: null, workerRoute: null,
+    superviseIntervalSeconds: 600, superviseMaxNoticesPerChild: 3,
+    superviseUnlimited: false, allowedTools,
+  }
+}
+
 function deferred() {
   let resolve, reject
   const promise = new Promise((yes, no) => { resolve = yes; reject = no })
@@ -68,12 +77,12 @@ test('scoped records are durable and preserve explicit empty/default snapshots',
   t.after(() => first.close())
   const a = await first.get('会话:A')
   const b = await first.get('B')
-  assert.deepEqual(a, { sessionId: '会话:A', enabled: false, allowedTools: original, revision: a.revision, storageReady: true })
+  assert.deepEqual(a, { sessionId: '会话:A', enabled: false, allowedTools: original, config: defaultConfig(original), revision: a.revision, storageReady: true })
   const custom = await first.set(a.sessionId, ['delegate', 'read', 'delegate'], a.revision)
   assert.deepEqual(custom.allowedTools, ['delegate', 'read'])
   const key = encodeRecordKey(a.sessionId)
   assert.deepEqual(facility.rows.get(key), {
-    sessionId: a.sessionId, allowedTools: ['delegate', 'read'], revision: a.revision + 1,
+    sessionId: a.sessionId, config: { allowedTools: ['delegate', 'read'] }, revision: a.revision + 1,
     updatedAt: facility.rows.get(key).updatedAt,
   })
   const empty = await first.set(a.sessionId, [], custom.revision)
@@ -90,7 +99,7 @@ test('scoped records are durable and preserve explicit empty/default snapshots',
   globalAllowed = ['glob']
   assert.deepEqual((await reopened.get('B')).allowedTools, original)
   const cleared = await reopened.clear(a.sessionId, empty.revision)
-  assert.deepEqual(cleared, { ...empty, enabled: false, allowedTools: ['glob'], revision: empty.revision + 1 })
+  assert.deepEqual(cleared, { ...empty, enabled: false, allowedTools: ['glob'], config: defaultConfig(['glob']), revision: empty.revision + 1 })
   assert.equal(facility.rows.has(key), false)
   assert.deepEqual(globalAllowed, ['glob'])
   const stale = await reopened.set(a.sessionId, ['read'], empty.revision)
@@ -135,7 +144,7 @@ test('a writing revision commits only after durability and concurrent CAS has on
   assert.deepEqual(await controller.get('A'), initial)
   assert.equal(facility.rows.size, 0)
   durable.resolve()
-  assert.deepEqual(await first, { ...initial, enabled: true, allowedTools: ['first'], revision: initial.revision + 1 })
+  assert.deepEqual(await first, { ...initial, enabled: true, allowedTools: ['first'], config: defaultConfig(['first']), revision: initial.revision + 1 })
   assert.equal((await second).error.code, 'REVISION_CONFLICT')
   assert.equal(puts, 1)
 })
@@ -241,6 +250,10 @@ test('Typert binding exposes strict, top-level session resources and releases bo
   assert.equal(Object.isFrozen(service.typertRemote), true)
   assert.deepEqual(service.typertRemote, { service, serviceKey: SESSION_TOOLS_NAMESPACE, namespace: SESSION_TOOLS_NAMESPACE })
   assert.deepEqual([...registered.keys()], createSessionToolsDescriptors().map(({ id }) => id))
+  assert.deepEqual([...registered.values()].map(({ method, parameters }) => [method, parameters.map(({ name }) => name)]), [
+    ['get', ['sessionId']], ['set', ['sessionId', 'allowedTools', 'expectedRevision']],
+    ['setConfig', ['sessionId', 'config', 'expectedRevision']], ['clear', ['sessionId', 'expectedRevision']],
+  ])
   for (const descriptor of registered.values()) {
     assert.deepEqual(descriptor.invocation, { kind: 'direct' })
     const [session] = descriptor.parameters
@@ -253,7 +266,13 @@ test('Typert binding exposes strict, top-level session resources and releases bo
     assert.throws(() => session.codec.create().parse(undefined), /sessionId/)
     assert.throws(() => session.codec.create().parse(' '), /sessionId/)
   }
-  assert.equal((await service.get('A')).sessionId, 'A')
+  const state = await service.get('A')
+  assert.equal(state.sessionId, 'A')
+  const parse = [...registered.values()].find(({ method }) => method === 'get').result.create().parse
+  assert.deepEqual(parse(state), state)
+  assert.deepEqual(state.config, defaultConfig())
+  assert.throws(() => parse({ ...state, allowedTools: ['read'] }), /must match config.allowedTools exactly/)
+  assert.throws(() => parse({ ...state, config: { ...state.config, extra: true } }), TypeError)
   await remote.dispose()
   await remote.dispose()
   assert.equal(remote.available, false)

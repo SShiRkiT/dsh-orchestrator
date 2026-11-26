@@ -119,7 +119,7 @@ function createMockFacility({ beforeOpen, beforeMutation } = {}) {
 }
 
 const worktree = { id: 'tree/1', childIds: ['child/1', 'stage/2'], state: 'merged', mergeCommit: 'abc', cleaned: true }
-const delegate = { childId: 'child/1', writeScope: ['src/'], dispatchState: 'ended', auditState: 'passed' }
+const delegate = { childId: 'child/1', writeScope: ['src/'], dispatchState: 'ended' }
 const lease = {
   leaseId: 'lease:1', ownerKind: 'delegate', ownerId: 'child/1', expiresAt: 200,
   entries: [{ kind: 'dir', path: '/repo/src', key: '/repo/src' }],
@@ -411,8 +411,6 @@ test('history pruning cannot evict protected trees, delegates, leases, or action
   const protectedDelegates = [
     { childId: 'running', dispatchState: 'running' },
     { childId: 'future', dispatchState: 'unrecognized' },
-    { childId: 'audit', auditState: 'pending' },
-    { childId: 'undelivered', auditState: 'failed', auditDeliveredVia: null },
     { childId: 'attached', worktreeId: 'failed' },
     { childId: 'active-child' },
     { childId: 'ready-stage' },
@@ -428,13 +426,15 @@ test('history pruning cannot evict protected trees, delegates, leases, or action
     store.putDelegate({ childId: 'old-terminal', dispatchState: 'ended', updatedAt: 1 }),
     store.putDelegate({ childId: 'reconciled-terminal', dispatchState: 'completed', updatedAt: 1 }),
     store.putDelegate({ childId: 'reviewed', dispatchState: 'ended', worktreeId: 'merged', updatedAt: 1 }),
-    store.putDelegate({ childId: 'delivered', dispatchState: 'ended', auditState: 'failed', auditDeliveredVia: 'inline' }),
+    store.putDelegate({ childId: 'legacy-pending', dispatchState: 'ended', auditState: 'pending' }),
+    store.putDelegate({ childId: 'legacy-failed', dispatchState: 'ended', auditState: 'failed', auditDeliveredVia: null }),
     store.putLease({ leaseId: 'live', expiresAt: 101 }), store.putLease({ leaseId: 'expired', expiresAt: 100 }),
     store.putLease({ leaseId: 'no-expiry-evidence' }),
     ...leaves.map((phase) => store.putAction({ key: phase, phase, updatedAt: 1 })),
     store.putAction({ key: 'done', phase: 'done', updatedAt: 1 }),
   ])
-  assert.deepEqual(await store.pruneHistory(), { worktrees: 1, delegates: 4, leases: 1, actions: 1 })
+  assert.equal(Object.hasOwn(store.getDelegate('legacy-pending'), 'auditState'), false)
+  assert.deepEqual(await store.pruneHistory(), { worktrees: 1, delegates: 5, leases: 1, actions: 1 })
   assert.deepEqual(store.listWorktrees().map(({ id }) => id), protectedTrees.map(({ id }) => id))
   assert.deepEqual(store.getWorktree('locked').childIds, ['stage:0', 'stage:1'])
   assert.deepEqual(store.listDelegates().map(({ childId }) => childId), protectedDelegates.map(({ childId }) => childId))

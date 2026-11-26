@@ -147,20 +147,19 @@ test('list 将真实管理器的多阶段绑定和关闭墓碑投影为可枚举
   assert.equal(Object.getOwnPropertyDescriptor(original, 'childIds').enumerable, false)
 })
 
-test('inspect 支持 worktreeId 或 childId，回传 diff、提交、脏状态及最近审计', async () => {
-  const auditSummary = { commits: 2, dirty: true, auditPassed: false }
+test('inspect 支持 worktreeId 或 childId，回传 diff、提交及脏状态', async () => {
   const commits = [{ hash: 'commit-a', subject: '交付一' }, { hash: 'commit-b', subject: '交付二' }]
-  const worktree = worktreeSnapshot({ auditSummary })
+  const worktree = worktreeSnapshot()
   const { run, calls } = fixture({ inspect: async () => ({ ok: true, worktree, dirty: true,
     aheadCount: 2, diffPatch: '+new', diffTruncated: true, commits }) })
   const result = await run({ action: 'inspect', childId: 'child-1' })
   assert.equal(result.details.action, 'inspect')
   assert.equal(result.details.ok, true)
+  assert.equal(result.details.dirty, true)
+  assert.equal(result.details.aheadCount, 2)
   assert.equal(result.details.diffPatch, '+new')
   assert.deepEqual(result.details.commits, commits)
-  assert.deepEqual(result.details.worktree.auditSummary, auditSummary)
   assert.deepEqual(result.details.worktree.childIds, STAGE_IDS)
-  assert.match(text(result), /最近审计未通过（2 个提交，有未提交改动）/)
   assert.match(text(result), /wt-1.*分支 isolated\/1.*新增提交 2 个.*未提交改动.*差异已截断/)
   await run({ action: 'inspect', worktreeId: 'wt-1', childId: PRIVATE.childId, maxDiffChars: 64000, maxCommits: 1 })
   assert.deepEqual(calls, [
@@ -183,8 +182,8 @@ test('merge 成功传递策略和变更选项，时间线记录合回提交并�
   assert.deepEqual(result.details.worktree.childIds, STAGE_IDS)
   assert.equal(result.details.worktree.locked, true)
   assert.match(text(result), /已合回（提交 combined）/)
-  const { state, mergeCommit, locked, commits } = timeline.get('root', 'child-1').worktree
-  assert.deepEqual({ state, mergeCommit, locked, commits }, { state: 'merged', mergeCommit: 'combined', locked: true, commits: 2 })
+  const { state, mergeCommit, locked } = timeline.get('root', 'child-1').worktree
+  assert.deepEqual({ state, mergeCommit, locked }, { state: 'merged', mergeCommit: 'combined', locked: true })
 })
 
 test('merge 冲突保留文件清单与现场，工作树不锁定', async () => {

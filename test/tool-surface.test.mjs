@@ -103,7 +103,7 @@ test('a main agent is offered only the live whitelist, own-scope tools included'
   dispose()
 })
 
-test('the nine shipped tools exclude session history and keep audit and worktree management root-only', () => {
+test('the nine shipped tools exclude session history and keep delegate status and worktree management root-only', () => {
   const expected = [
     'delegate',
     'orchestrate',
@@ -157,17 +157,15 @@ test('the whitelist is read per call, so a panel write lands on the next request
   assert.deepEqual(namesOf(service.definitions(mainAgent)), [])
 })
 
-test('switching off keeps host tools and root governance, but hides dispatch tools', () => {
+test('switching off keeps host tools and hides all dispatch and governance tools', () => {
   const { service } = fakeTools()
   let on = false
   installToolSurface({ tools: service, allowed: ALLOWED, enabled: () => on })
-  const expectedOff = HOST_SURFACE.filter((name) => name !== DELEGATE_TOOL && name !== ORCHESTRATE_TOOL)
-  const expectedChildOff = expectedOff.filter((name) => !ROOT_ONLY.includes(name))
+  const expectedOff = HOST_SURFACE.filter((name) => ![DELEGATE_TOOL, ORCHESTRATE_TOOL, ...ROOT_ONLY].includes(name))
   const rootNames = namesOf(service.definitions(mainAgent))
   assert.deepEqual(rootNames, expectedOff)
-  for (const name of ROOT_ONLY) assert.equal(rootNames.includes(name), true, name)
   for (const agent of [childAgent, resumedChild]) {
-    assert.deepEqual(namesOf(service.definitions(agent)), expectedChildOff)
+    assert.deepEqual(namesOf(service.definitions(agent)), expectedOff)
   }
   assert.deepEqual(namesOf(service.definitions()), HOST_SURFACE, 'the global catalog still includes all tools')
 
@@ -328,20 +326,19 @@ test('Cordis hot reload restores all regular tools when dispatch is off and keep
   let on = false
   const toolsB = cordisTools(service)
   const disposeB = installToolSurface({ tools: toolsB, allowed: ['edit'], enabled: () => on })
-  const rootOff = HOST_SURFACE.filter((name) => name !== DELEGATE_TOOL && name !== ORCHESTRATE_TOOL)
-  const childSurface = rootOff.filter((name) => !ROOT_ONLY.includes(name))
+  const rootOff = HOST_SURFACE.filter((name) => ![DELEGATE_TOOL, ORCHESTRATE_TOOL, ...ROOT_ONLY].includes(name))
   assert.deepEqual(namesOf(toolsB.definitions(mainAgent)), rootOff)
   for (const name of ['read', 'write', 'edit', 'bash', 'glob', 'grep']) {
     assert.ok(rootOff.includes(name), `fixture contains the restored tool ${name}`)
   }
   for (const agent of [childAgent, resumedChild]) {
-    assert.deepEqual(namesOf(toolsB.definitions(agent)), childSurface)
+    assert.deepEqual(namesOf(toolsB.definitions(agent)), rootOff)
   }
 
   on = true
   assert.deepEqual(namesOf(toolsB.definitions(mainAgent)), ['edit'])
   for (const agent of [childAgent, resumedChild]) {
-    assert.deepEqual(namesOf(toolsB.definitions(agent)), childSurface)
+    assert.deepEqual(namesOf(toolsB.definitions(agent)), rootOff)
   }
   disposeB()
 })

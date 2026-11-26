@@ -413,7 +413,7 @@ test('热重载先水合保护层、重试和去重账本，再重挂运行中�
   assert.deepEqual([...active.keys()], ['lease-child'])
 })
 
-test('冷重启按证据标注终态，审计诚实 incomplete，确认释放后不重新发送', async () => {
+test('冷重启按证据标注终态，历史审计 pending 不阻止释租或触发重发', async () => {
   const kinds = new Map([
     ['child', 'interrupted'], ['no-end', null], ['done', 'completed'], ['abort', 'aborted'],
     ['broken', 'error'], ['blocked', 'blocked'], ['exhausted', 'max-tokens'],
@@ -441,7 +441,7 @@ test('冷重启按证据标注终态，审计诚实 incomplete，确认释放后
     ['abort', 'aborted', 'aborted'], ['broken', 'failed', 'error'], ['blocked', 'failed', 'blocked'],
     ['exhausted', 'failed', 'max-tokens'],
   ])
-  assert.ok(updated.every((row) => row.auditState === 'incomplete' && row.incomplete === true && row.leaseState === 'released'))
+  assert.ok(updated.every((row) => row.leaseState === 'released' && !Object.hasOwn(row, 'incomplete')))
   assert.ok(delegates.every((row) => row.auditState === 'pending'))
   assert.equal(updated[0].nativeNoticeDetected, true)
   assert.equal(updated[1].nativeNoticeDetected, undefined)
@@ -463,8 +463,7 @@ test('只在明确缺失时记 lost，查询不可用/报错和归属矛盾保�
   assert.equal(updated.length, 1)
   assert.equal(updated[0].childId, 'missing')
   assert.equal(updated[0].dispatchState, 'lost')
-  assert.equal(updated[0].auditState, 'incomplete')
-  assert.equal(updated[0].incomplete, true)
+  assert.equal(updated[0].leaseState, 'released')
   assert.deepEqual([...active.keys()], ['lease-corrupt', 'lease-foreign'])
   assert.deepEqual(calls.filter((call) => call[0] === 'release'), [['release', 'lease-missing']])
 

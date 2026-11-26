@@ -50,9 +50,9 @@ It works smoothly alongside DSH's built-in collaboration tools and fills four pr
 **Isolated workspaces for every write task — merge only after review**
 > Write tasks run in parallel inside separate temporary Git working directories by default, leaving your active checkout untouched and never merging into your main branch without approval.
 
-**Background check-ins during work, delivery checks at handoff**
-> Periodically watches running subagents in the background so stuck or drifting work can be nudged back on track via `send_message`;
-> Verifies changed file scopes and required deliverables at handoff, and still reconciles state after restarts.
+**Background check-ins during work, explicit review at handoff**
+> Periodically watches running subagents in the background so stuck or drifting work can be nudged back on track via `send_message`.
+> At handoff, use `worktree_manage` to review changes before deciding whether to merge or discard an isolated Worktree.
 
 **One-shot parallel batches and multi-step pipelines**
 > Run repetitive batches or multi-step pipelines without writing custom scripts — list the items and stages to advance automatically up to your concurrency cap, with single-item failures isolated.
@@ -89,13 +89,11 @@ Finished work is never merged into your main branch behind your back — you or 
 
 ---
 
-### 3. Prevent Collisions Before Editing, Check Receipts at Handoff
+### 3. Coordinate Write Scopes Before Work Starts
 
-When not using isolated directories, if two subagents try to edit overlapping files, the plugin blocks the conflict before startup. Each writable subagent declares its own `writeScope` to bound what it may change; if another subagent passes an overlapping `writeScope`, it is rejected with an error automatically.
-At handoff, the plugin also checks whether a subagent touched files outside its scope or missed required deliverables, and flags read-only tasks that attempted to write. You can see every subagent's progress and audit status at a glance.
+In non-Git workspaces and shared mode, the plugin coordinates declared write scopes before a task starts. Each writable subagent declares its `writeScope`. The plugin rejects overlapping claims on the same physical paths. A write lease coordinates declared scopes only. Review deliverables separately after the task ends.
 
-> Write tasks declare their allowed scope (`writeScope`), with optional tamper-check fingerprints (`expectedFingerprints`) and required output lists (`expectedTargets`);
-> Call `delegate_status` anytime to inspect running, audited, and pending-review status across all subagents.
+> Use `delegate_status` to see direct delegates' execution and lease states and any Worktrees awaiting review.
 
 ---
 
@@ -135,10 +133,10 @@ The plugin checks running subagents' activity logs in the background at your con
 
 ### 6. Seamless Hot Reloads, Honest Cold-Restart Reconciliation
 
-When the plugin hot-reloads, running subagents stay connected and background check-ins continue seamlessly. Even if you fully quit and reopen DSH, the plugin first reconciles state automatically: confirmed-stopped subagents safely release their file locks, and tasks missing pre-dispatch records are honestly marked as "audit incomplete".
+When the plugin hot-reloads, running subagents stay connected and background check-ins continue. If you fully quit and reopen DSH, the plugin reconciles recorded Worktree, dispatch, and write lease states against the host. It releases leases for workers confirmed to have stopped and keeps protection when their status is uncertain.
 
-> Automatically uses the host's built-in storage to track worktrees, tasks, and file lock states (falling back to in-memory mode on older hosts with zero extra dependencies);
-> After a full restart, interrupted old tasks are never blindly resumed, avoiding duplicate execution.
+> Uses the host's built-in storage for recovery, falling back to in-memory mode when storage is unavailable.
+> After a full restart, the plugin does not automatically resume interrupted tasks.
 
 ---
 
@@ -162,10 +160,14 @@ The plugin exposes 4 orchestration and review tools exclusively to the main agen
 
 | Tool | What It Does | Common Parameters | Good to Know |
 | --- | --- | --- | --- |
-| `delegate` | Async task dispatch; supports parallel fan-out in one turn | `prompt`, `description`, `writeScope` (required for writes), `readOnly`, `isolation`, `expectedFingerprints`, `expectedTargets`, `cwd`, `provider` + `model`, optional `team_task_id` | Main agent only; auto-allocates an isolated directory or file lock for writes; attaches audit results at handoff and includes background check-ins |
+| `delegate` | Async task dispatch with reuse first | `prompt`, `description`, `writeScope` (required for writes), `readOnly`, `isolation`, `allowNewReason`, `cwd`, `provider` + `model`, optional `team_task_id` | A reusable inactive child under the same parent blocks new dispatch with `delegate-reuse-required` and `details.candidates`. If a new child is necessary, supply a nonblank `allowNewReason`. Running delegates receive background check-ins. |
 | `orchestrate` | Parallel batch & multi-stage pipelines | `items` (1–64), `stages` (1–8, optional `schema`), `maxConcurrency` (1–16, default 4), `writeScope`, `readOnly`, `isolation`, `cwd`, optional top-level `team_task_id`; `provider` + `model` with optional `reasoning_effort` at the top level or per stage | Route priority: stage override > batch override > panel default. Items advance independently, reuse their own isolated directory, and run synchronously without background check-ins |
-| `delegate_status` | One-stop acceptance overview for all subagents in this session | `childId` (optional), `includeCompleted` (default `true`), `limit` (1–64, default 20) | Read-only; separates run state, audit status, file locks, and directories awaiting review; missing records never mean "passed" |
-| `worktree_manage` | List, inspect, merge, discard, or prune isolated directories | `action` (`list`/`inspect`/`merge`/`discard`/`prune`), `worktreeId` / `childId`, `strategy` (`merge`/`squash`/`ff-only`), `autoStageDirty`, `deleteAfterMerge`, `force`, `dryRun` | Main agent only; passing audit ≠ merged to your branch; merge conflicts preserve the scene; cleaning up or discarding locks retired workers |
+| `delegate_status` | Query direct delegates or edit the next turn for an inactive direct delegate | `action` (`query` by default or `edit`), `childId` (required for `edit`), `writeScope` / `readOnly` (at least one for `edit`), `includeCompleted` (query default `true`), `limit` (1–64, default 20) | `query` shows execution, lease, and Worktree states. `edit` saves `pendingNextTurn`. Use `send_message` to apply it and wake the same child. |
+| `worktree_manage` | List, inspect, merge, discard, or prune isolated directories | `action` (`list`/`inspect`/`merge`/`discard`/`prune`), `worktreeId` / `childId`, `strategy` (`merge`/`squash`/`ff-only`), `autoStageDirty`, `deleteAfterMerge`, `force`, `dryRun` | `inspect` shows the live diff, commits, and dirty state, including untracked paths. Merge conflicts preserve the Worktree for review. Cleaning up or discarding locks retired workers. |
+
+To reuse an inactive child with a different write scope or read-only setting, first call `delegate_status` with `action: "edit"`, then use `send_message`. Before delivery, the plugin calls `replaceOwnerLease` to atomically replace the lease. A conflict prevents delivery, and a confirmed rejection rolls back the swap and restores the pending settings. If delivery is uncertain, the plugin keeps the new lease protection and blocks duplicate wakeups.
+
+`readOnly` is available when **Enable the read-only parameter** is on for the current session. The same setting applies when editing the next turn to be read-only. With the option off, pass `isolation: "shared"` for read-only research, include the required `writeScope`, and explicitly tell the subagent to leave files untouched.
 
 When native Agent Teams is on for the host's root session and dispatch mode permits `team_task_create` in that session, the main agent can create a shared goal before dispatching complex work. Pass the returned `id` as `team_task_id`; subagents (every stage in `orchestrate`) can read the goal with `team_task_get` when available. Keep the task prompt self-contained: the shared goal is a reference, not a substitute for dispatch or write leases.
 
@@ -233,22 +235,35 @@ dsh plugin --profile desktop add @sshirkit/dsh-orchestrator
 
 ## Right-Side Composer "Dispatch" Panel
 
-The bilingual panel adapts automatically to DSH's locale and provides live controls without restarts:
+The bilingual panel follows DSH's locale and provides live controls without a restart:
 
-- **Enable dispatch mode**: toggles the main-agent whitelist gate immediately for open conversations;
-- **Enable Git Worktree isolation by default**: controls `isolation: "auto"` behavior for Git write tasks;
-- **Main agent / Subagent default model & reasoning effort**: searchable model picker; main writes host `agent-default-model` (new sessions only), subagent applies from the next dispatch;
-- **Subagent check interval / check count / Unlimited checks**: adjusts sidecar supervision live while workers run;
-- **Right-hand `Allowed Tools` checklist**: search, check individual tools, or reset to defaults. Turn on **Only for this session** (shown as **仅当前会话** in Chinese) to edit a separate list for the current conversation. Turn it off to restore inheritance from the global list.
+- **Enable dispatch mode** toggles the main-agent whitelist gate for open conversations.
+- **Main agent / Subagent default model & reasoning effort** offers a searchable model picker for each route. In global mode, the main-agent default is saved to the host's `agent-default-model`. The worker route applies from the next dispatch unless a task or stage overrides it.
+- **Subagent check interval / check count / Unlimited checks** can be adjusted while workers run.
+- The **right-hand `Allowed Tools` checklist** lets you search, select tools for the main agent, and reset the list.
+
+Starting with `v1.0.3`, **Only for this session** and **More** sit above a divider at the top of the right column. The switch applies to the entire panel. Turning it on saves a snapshot of the current settings, and subsequent edits stay in this session. The snapshot covers all ten settings: `enabled`, `worktreeIsolationEnabled`, `readOnlyEnabled`, `peerReadOnlyConsultEnabled`, `mainRoute`, `workerRoute`, `superviseIntervalSeconds`, `superviseMaxNoticesPerChild`, `superviseUnlimited`, and `allowedTools`.
+
+Session mode leaves global settings and the host's `agent-default-model` intact. A session-specific main model takes effect on the next model step that has yet to be prepared. Turning **Only for this session** off clears the override and automatically restores the current global default model and settings. If session storage is unavailable, the switch is disabled and explicit global editing is still available.
+
+**More** opens a separate dialog centered in the conversation. Dismiss it with the close button, `Esc`, or a click on the backdrop.
+
+- **Enable Git Worktree isolation by default** (`worktreeIsolationEnabled`, defaults to `true`) controls isolation for Git write tasks using `isolation: "auto"`.
+- **Enable the read-only parameter** (`readOnlyEnabled`, defaults to `false`) controls whether `delegate` and `orchestrate` expose and accept `readOnly`. With it off, the model is directed to use `isolation: "shared"` for read-only research that needs no isolation. If you enable it, we recommend also enabling **Allow peer consultation**.
+- **Allow peer consultation** (`peerReadOnlyConsultEnabled`, defaults to `false`) lets subagents with the same parent in one session share an index of the files they have read and ask each other about that context via `send_message`. The index contains only paths and locations. The main agent silently filters recognized peer consultation relays.
+
+When the composer is centered on the new-session screen (the Hero layout), the Dispatch panel respects the viewport's safe edges and can open above or below the button to avoid being clipped by the top navigation bar.
 
 ## Configuration Reference
 
-All 13 user-configurable fields below are `volatile` (dynamic hot config, no restart required: execution gates reread per call, tool surfaces update on the next request, and worker routes apply on the next dispatch):
+All 15 user-configurable fields below are `volatile` (dynamic hot config, no restart required: execution gates reread per call, tool surfaces update on the next request, and worker routes apply on the next dispatch):
 
 | Field | Default | Description |
 | --- | --- | --- |
 | `enabled` | `true` | Master switch for dispatch mode. Turning it off restores the native host tool surface; `delegate` / `orchestrate` stay disabled and bound supervision-turn hard locks still take priority. |
-| `worktreeIsolationEnabled` | `true` | Controls whether `isolation: "auto"` creates isolated Git Worktrees with `git diff` / `git log` audits for Git write tasks (non-Git directories fall back to snapshot audits). |
+| `worktreeIsolationEnabled` | `true` | Controls whether `isolation: "auto"` creates isolated Worktrees for Git write tasks. Non-Git workspaces use shared mode with write leases. |
+| `readOnlyEnabled` | `false` | Enables `readOnly` for `delegate` and `orchestrate`. When off, both tools hide and reject the argument, and the model is prompted to use the shared workspace for read-only research. |
+| `peerReadOnlyConsultEnabled` | `false` | Lets sibling subagents in one session share a read-file index and consult each other via `send_message`. |
 | `allowedTools` | Unset (9 base tools; plus 4 registered native Team tools when `allowAgentTeam: true`) | Explicit main-agent tool whitelist. An explicit array (including `[]`) **replaces** the defaults rather than appending. The panel's `Allowed Tools` checklist updates this field when **Only for this session** is off. |
 | `allowAgentTeam` | `true` | Controls only the main agent's access to native task-board tools (`team_task_*`) in dispatch mode; it does not switch host Agent Teams on or off. `false` overrides the session and global whitelists. When the root session has native Agent Teams on and its whitelist permits `team_task_create`, the main agent can create a shared goal and pass its ID as optional `team_task_id` for subagents to read. |
 | `workerProvider` | `""` | Default worker route provider. When no explicit override applies, both this and `workerModel` are required; there is no fallback to the main model. |

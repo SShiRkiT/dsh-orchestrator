@@ -27,7 +27,7 @@ const importHook = registerHooks({
     return nextResolve(specifier, context)
   },
 })
-const { apply, DEFAULT_ALLOWED_TOOLS, INLINE_AUDIT_SOURCE_KIND } = await import('../lib/index.js')
+const { apply, DEFAULT_ALLOWED_TOOLS } = await import('../lib/index.js')
 test.after(() => importHook.deregister())
 
 const sharedFile = 'src/shared.txt'
@@ -78,7 +78,6 @@ function createHost(cwd, { config = {}, runStage } = {}) {
   const tools = new Map()
   const disposers = []
   const starts = []
-  const audits = []
   const prompts = []
   const notices = []
   const parent = {
@@ -98,7 +97,6 @@ function createHost(cwd, { config = {}, runStage } = {}) {
     effect: (setup) => disposers.push(setup()),
     on: (event, handler) => hooks.set(event, handler),
     emit(event, data) {
-      if (event === 'orchestrator/write-audit') audits.push(data)
     },
     tools: {
       register: (spec) => tools.set(spec.name, spec),
@@ -137,7 +135,7 @@ function createHost(cwd, { config = {}, runStage } = {}) {
   apply(ctx, config)
   const execute = (name, args) => tools.get(name).execute(args, exec)
   return {
-    cwd, starts, audits, notices, prompts, start, end,
+    cwd, starts, notices, prompts, start, end,
     delegate: (args = claim) => execute('delegate', { ...route, description: '写入任务', prompt: '按作用域写入', ...args }),
     batch: (args) => execute('orchestrate', { ...route, ...args }),
     manage: (action, args = {}) => execute('worktree_manage', { action, ...args }),
@@ -205,8 +203,8 @@ function assertReclaimed(cwd, { path: worktreePath, branch }) {
   assert.equal(git(cwd, 'branch', '--list', branch), '')
 }
 
-test('phase 2: default delegate audits, reviews and merges a real isolated checkout', () => withHost(async (h) => {
-  const { subagentId, agentName, worktree } = await h.delegate()
+test('phase 2: default delegate settles, reviews and merges a real isolated checkout', () => withHost(async (h) => {
+  const { subagentId, worktree } = await h.delegate()
   const workerCwd = h.starts[0].spec.cwd
   assert.equal(workerCwd, path.join(h.cwd, '.dsh-orchestrator', 'worktrees', worktree.id))
   assert.equal(workerCwd, worktree.execCwd)
@@ -218,21 +216,17 @@ test('phase 2: default delegate audits, reviews and merges a real isolated check
   h.end(subagentId)
   assert.equal(read(h.cwd, sharedFile), initialText)
   assert.equal(status(h.cwd), '')
-  assert.equal(h.audits[0].audit.isolationLevel, 'git-worktree')
-  assert.equal(h.audits[0].audit.passed, true)
-  assert.equal(h.audits[0].audit.git.commits[0].hash, delivered)
   const frame = await h.settleFrame(subagentId)
-  assert.deepEqual(frame.messages.map(({ source }) => source.kind), ['subagent-settled', INLINE_AUDIT_SOURCE_KIND])
-  const notice = frame.messages.at(-1).content[0].text
-  assert.ok(notice.includes(`【${subagentId}】（${agentName}）`))
-  assert.match(notice, /写作用域审计已通过.*git-worktree.*尚未合回主仓.*worktree_manage/)
-  assert.deepEqual(h.notices, [], 'the audit does not queue an extra turn')
+  assert.deepEqual(frame.messages.map(({ source }) => source.kind), ['subagent-settled'])
+  assert.deepEqual(h.notices, [], 'settlement does not queue an extra turn')
+  assert.equal((await entryOf(h, subagentId)).leaseState, 'released')
   assert.equal((await h.status()).counts.worktreePendingReview, 1)
 
   const list = await h.manage('list')
   assert.deepEqual(list.details.worktrees.map(({ id, state }) => [id, state]), [[worktree.id, 'ready_for_review']])
   const review = await h.manage('inspect', { childId: subagentId })
   assert.equal(review.details.ok, true)
+  assert.equal(review.details.commits[0].hash, delivered)
   assert.equal(review.details.commits[0].subject, 'Deliver isolated change')
   assert.match(review.details.diffPatch, /\+isolated delivery/)
   const result = await h.manage('merge', { worktreeId: worktree.id })
@@ -334,8 +328,6 @@ test('phase 2: orchestrate isolates items, reuses each checkout across stages an
     })
     assert.equal(result.agentsStarted, 4)
     assert.deepEqual(result.errors, [])
-    assert.equal(result.audit.isolationLevel, 'git-worktree')
-    assert.equal(result.audit.passed, true)
     const [item0, item1] = result.details.worktrees
     assert.deepEqual([item0.itemIndex, item1.itemIndex], [0, 1])
     assert.notEqual(item0.path, item1.path)
@@ -343,16 +335,21 @@ test('phase 2: orchestrate isolates items, reuses each checkout across stages an
     assert.equal(item0.path, stages.get('1/2').cwd)
     assert.equal(item1.path, stages.get('2/1').cwd)
     assert.equal(item1.path, stages.get('2/2').cwd)
-    assert.equal(h.audits.length, 2)
     for (const item of [item0, item1]) {
-      assert.equal(item.audit.git.commits.length, 2)
+      const inspection = await h.manage('inspect', { worktreeId: item.worktreeId })
+      assert.equal(inspection.details.aheadCount, 2)
+      assert.equal(inspection.details.dirty, false)
       assert.equal((await rowOf(h, item.worktreeId)).state, 'ready_for_review')
     }
     const dropped = await h.manage('discard', { worktreeId: item0.worktreeId, force: true })
     assert.equal(dropped.details.ok, true, lineOf(dropped))
     assertReclaimed(h.cwd, item0)
     for (const key of ['1/1', '1/2']) await assertLocked(h, stages.get(key).id)
-    for (const key of ['2/1', '2/2']) assert.equal((await h.preMessage(stages.get(key).id)).kind, 'continue')
+    for (const key of ['2/1', '2/2']) {
+      const decision = await h.preMessage(stages.get(key).id)
+      assert.equal(decision.kind, 'deny')
+      assert.match(decision.reason, /编排阶段不能单独恢复/)
+    }
     assert.equal((await rowOf(h, item1.worktreeId)).state, 'ready_for_review')
     assert.equal(status(h.cwd), '')
   }, { runStage })
@@ -363,8 +360,7 @@ test('phase 2: auto fallback, forced mode, read-only dispatch and plugin disposa
     const shared = await h.delegate()
     h.end(shared.subagentId)
     assert.equal(shared.worktree, undefined)
-    assert.equal(h.audits[0].audit.isolationLevel, 'logical-post-audit')
-    await assert.rejects(h.delegate({ ...claim, isolation: 'worktree' }), { code: 'not-git-repo' })
+    await assert.rejects(h.delegate({ ...claim, isolation: 'worktree', allowNewReason: '测试强制隔离' }), { code: 'not-git-repo' })
     assert.equal(h.starts.length, 1)
     assert.equal(fs.existsSync(path.join(h.cwd, '.dsh-orchestrator')), false)
   }, { repository: false })
@@ -373,7 +369,6 @@ test('phase 2: auto fallback, forced mode, read-only dispatch and plugin disposa
     const shared = await h.delegate()
     h.end(shared.subagentId)
     assert.equal(shared.worktree, undefined)
-    assert.equal(h.audits[0].audit.isolationLevel, 'logical-post-audit')
     assert.equal(fs.existsSync(path.join(h.cwd, '.dsh-orchestrator')), false)
   }, { config: { worktreeIsolationEnabled: false } })
 
@@ -381,12 +376,10 @@ test('phase 2: auto fallback, forced mode, read-only dispatch and plugin disposa
     const reader = await h.delegate({ readOnly: true })
     h.end(reader.subagentId)
     assert.equal(reader.worktree, undefined)
-    assert.equal(h.audits[0].audit.isolationLevel, 'logical-post-audit')
-    assert.equal(h.audits[0].audit.readOnly, true)
-    await assert.rejects(h.delegate({ readOnly: true, isolation: 'worktree' }), /只读任务.*Worktree/)
+    await assert.rejects(h.delegate({ readOnly: true, isolation: 'worktree', allowNewReason: '测试只读隔离校验' }), /只读任务.*Worktree/)
     assert.equal(h.starts.length, 1)
     assert.equal(fs.existsSync(path.join(h.cwd, '.dsh-orchestrator')), false)
-    const writable = await h.delegate()
+    const writable = await h.delegate({ ...claim, allowNewReason: '验证写工作树留存' })
     put(writable.worktree.path, sharedFile, 'retained after disposal\n')
     h.end(writable.subagentId)
     assert.equal((await rowOf(h, writable.worktree.id)).state, 'ready_for_review')
@@ -394,11 +387,11 @@ test('phase 2: auto fallback, forced mode, read-only dispatch and plugin disposa
     assert.equal(read(writable.worktree.path, sharedFile), 'retained after disposal\n')
     assert.equal(read(h.cwd, sharedFile), initialText)
     assert.equal(status(h.cwd), '')
-  })
+  }, { config: { readOnlyEnabled: true } })
 })
 
 for (const mode of ['manual rework', 'automatic retry']) {
-  test(`phase 2: ${mode} updates the audit summary in review and timeline`, () => withHost(async (h) => {
+  test(`phase 2: ${mode} reopens the same Worktree and inspect reports live changes`, () => withHost(async (h) => {
     const { subagentId, agentName, worktree } = await h.delegate()
     assert.equal(agentName, h.starts[0].name)
     assert.equal((await entryOf(h, subagentId)).agentName, agentName)
@@ -409,7 +402,9 @@ for (const mode of ['manual rework', 'automatic retry']) {
     h.end(subagentId, `${subagentId}/first`, mode === 'automatic retry' ? 'error' : 'completed')
     await drain()
     assert.equal((await rowOf(h, worktree.id)).state, 'ready_for_review')
-    assert.deepEqual((await rowOf(h, worktree.id)).auditSummary, { commits: 1, dirty: true, auditPassed: false })
+    const before = await h.manage('inspect', { worktreeId: worktree.id })
+    assert.equal(before.details.aheadCount, 1)
+    assert.equal(before.details.dirty, true)
     const secondRun = `${subagentId}/second`
     if (mode === 'automatic retry') {
       assert.equal(h.prompts.length, 1)
@@ -436,21 +431,13 @@ for (const mode of ['manual rework', 'automatic retry']) {
     const list = await h.manage('list')
     const inspect = await h.manage('inspect', { worktreeId: worktree.id })
     const current = await entryOf(h, subagentId)
-    const expected = { commits: 2, dirty: false, auditPassed: true }
-    assert.deepEqual(list.details.worktrees[0].auditSummary, expected)
-    assert.deepEqual(inspect.details.worktree.auditSummary, expected)
-    assert.match(lineOf(list), /最近审计通过（2 个提交）/)
-    assert.match(lineOf(inspect), /最近审计通过（2 个提交）/)
+    assert.equal(list.details.worktrees[0].state, 'ready_for_review')
     assert.equal(inspect.details.aheadCount, 2)
+    assert.equal(inspect.details.dirty, false)
+    assert.equal(current.leaseState, 'released')
     assert.equal(current.attemptSeq, 2)
     assert.equal(current.runId, secondRun)
-    assert.equal(current.auditState, 'passed')
     assert.equal(current.worktree.state, 'ready_for_review')
-    assert.equal(current.worktree.commits, 2)
-    assert.equal(current.worktree.dirty, false)
-    assert.deepEqual(h.audits.map(({ audit }) => audit.passed), [false, true])
-    assert.notEqual(h.audits[0].audit.baselineId, h.audits[1].audit.baselineId)
-    assert.equal(current.baselineId, h.audits[1].audit.baselineId)
   }))
 }
 

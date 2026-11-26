@@ -117,12 +117,12 @@ function host(t, cwd, { storageDomain, queryMode = 'available', config = {} } = 
   const known = new Map()
   const starts = []
   const prompts = []
-  const audits = []
   const notices = []
   const warnings = []
   const observations = []
   const released = []
   let onLaunch
+  let beforeActivation
   let onPrompt
   const remove = (list, value) => list.splice(list.indexOf(value), 1)
   const publish = (event, data) => Promise.all((handlers.get(event) ?? []).map((handler) => handler(data)))
@@ -152,6 +152,7 @@ function host(t, cwd, { storageDomain, queryMode = 'available', config = {} } = 
       starts.push(row)
       known.set(id, row.session)
       agents.set(id, makeChild(row))
+      if (beforeActivation) await beforeActivation(row)
       await publish('subagent/start', childInfo(row))
       const result = spec.delivery === 'caller' ? onLaunch?.(row, spec) ?? Promise.resolve(done) : deferred().promise
       return { childId: id, name, runId: row.runId, result, dispose: async () => {} }
@@ -192,7 +193,6 @@ function host(t, cwd, { storageDomain, queryMode = 'available', config = {} } = 
         installedHandlers.set(event, handler)
         return () => remove(handlers.get(event), handler)
       },
-      emit(event, value) { if (event === 'orchestrator/write-audit') audits.push(value) },
       tools: {
         register(spec) { tools.set(spec.name, spec); return () => tools.delete(spec.name) },
         definitions: () => DEFAULT_ALLOWED_TOOLS.map((name) => ({ name })),
@@ -215,6 +215,9 @@ function host(t, cwd, { storageDomain, queryMode = 'available', config = {} } = 
       batch: (args = {}, agent) => execute('orchestrate', { ...defaults, ...plan, ...args }, agent),
       async manage(args) { return (await execute('worktree_manage', args)).details },
       async status(childId) { return (await execute('delegate_status', childId ? { childId } : {})).details },
+      async edit(childId, changes, agent) {
+        return (await execute('delegate_status', { ...changes, action: 'edit', childId }, agent)).details
+      },
       sendMessage(targetId, deliver) {
         return installedHandlers.get('tools/execute')(
           { ...exec(parent), name: 'send_message', arguments: { agent: targetId, message: '继续处理' } }, deliver,
@@ -227,9 +230,11 @@ function host(t, cwd, { storageDomain, queryMode = 'available', config = {} } = 
     }
   }
   return {
-    mount, start: (index = 0) => starts[index], starts, prompts, audits, warnings, notices, observations, released, root,
+    mount, start: (index = 0) => starts[index], starts, prompts, warnings, notices, observations, released, root,
     setQuery(mode) { queryMode = mode },
     onLaunch(fn) { onLaunch = fn },
+    beforeActivation(fn) { beforeActivation = fn },
+    activate(row) { agents.get(row.id).status = 'running' },
     onPrompt(fn) { onPrompt = fn },
     coldStop(row, reason) {
       agents.delete(row.id)
@@ -310,17 +315,14 @@ test('热重载等待旧域关闭，延续巡检，并且只结算同一在跑�
   await runtime.end(row)
   const settled = await statusRow(current, row.id)
   assert.equal(settled.leaseState, 'released')
-  assert.equal(settled.auditState, 'passed')
-  assert.equal(settled.baselineId, active.baselineId)
   assert.equal(settled.worktree.state, 'ready_for_review')
-  assert.equal(runtime.audits.length, 1)
   assert.equal(facility.rows('leases').length, 0)
   assert.equal(only(facility.rows('actions')).phase, 'done')
   assert.deepEqual(only(facility.rows('delegates')).retry.seenRuns, [row.runId])
   assert.equal(runtime.starts.length, 1)
 })
 
-test('打开新域前到达的真实 end 事件在恢复完成后仍可结算 Git 基线', async (t) => {
+test('打开新域前到达的真实 end 事件在恢复完成后仍可推进工作树审阅并释租', async (t) => {
   const cwd = repository(t)
   const facility = persistentFacility()
   const runtime = host(t, cwd, { storageDomain: facility, queryMode: 'missing' })
@@ -332,9 +334,10 @@ test('打开新域前到达的真实 end 事件在恢复完成后仍可结算 Gi
   const end = runtime.end(runtime.start())
   allowClose()
   await Promise.all([closing, end])
-  assert.equal((await statusRow(current, active.subagentId)).auditState, 'passed')
+  const settled = await statusRow(current, active.subagentId)
+  assert.equal(settled.worktree.state, 'ready_for_review')
+  assert.equal(settled.leaseState, 'released')
   assert.equal(facility.rows('leases').length, 0)
-  assert.equal(runtime.audits.length, 1)
 })
 
 test('两阶段编排合回后，重启即刻拒绝全部历史阶段的 send_message', async (t) => {
@@ -369,7 +372,7 @@ test('两阶段编排合回后，重启即刻拒绝全部历史阶段的 send_me
   assert.equal(runtime.prompts.length, 0)
 })
 
-test('跨根共享路径互斥在重挂后立即生效；失去逻辑基线不冒充审计通过', async (t) => {
+test('跨根共享路径互斥在重挂后立即生效，结算后允许另一根会话取得租约', async (t) => {
   const cwd = repository(t)
   const facility = persistentFacility()
   const runtime = host(t, cwd, { storageDomain: facility })
@@ -382,9 +385,8 @@ test('跨根共享路径互斥在重挂后立即生效；失去逻辑基线不�
   assert.equal(runtime.starts.length, 1)
   await runtime.end(runtime.start())
   const settled = await statusRow(plugin, active.subagentId)
-  assert.equal(settled.incomplete, true)
-  assert.equal(settled.auditState, 'failed')
-  assert.equal(only(settled.violations).code, 'audit-incomplete')
+  assert.equal(settled.dispatchState, 'ended')
+  assert.equal(settled.leaseState, 'released')
   await plugin.delegate({ isolation: 'shared' }, rootB)
   assert.equal(runtime.starts.length, 2)
 })
@@ -416,7 +418,7 @@ test('共享编排活跃阶段接回原批次租约，旧实例不得自动续�
   await batch
   assert.equal(runtime.starts.length, 1)
   assert.equal(facility.rows('leases').length, 0)
-  assert.equal((await statusRow(current, row.id)).incomplete, true)
+  assert.equal((await statusRow(current, row.id)).leaseState, 'released')
 })
 
 test('冷重启确认 interrupted 后封口并释放租约，观察句柄成对释放且不唤醒', async (t) => {
@@ -431,8 +433,6 @@ test('冷重启确认 interrupted 后封口并释放租约，观察句柄成对�
   const record = await statusRow(current, active.subagentId)
   assert.equal(record.dispatchState, 'ended')
   assert.equal(record.stopReason, 'interrupted')
-  assert.equal(record.auditState, 'incomplete')
-  assert.equal(record.incomplete, true)
   assert.equal(record.leaseState, 'released')
   assert.equal(facility.rows('leases').length, 0)
   assert.deepEqual(runtime.observations, [active.subagentId, 'root-a'])
@@ -455,7 +455,6 @@ test('未知或矛盾归属保留活跃态及租约，不把查询失败当成�
     const current = runtime.mount()
     const row = await statusRow(current, active.subagentId)
     assert.equal(row.dispatchState, 'running', mode)
-    assert.equal(row.auditState, 'pending', mode)
     assert.equal(row.leaseState, 'held', mode)
     await assert.rejects(current.delegate({ isolation: 'shared' }, rootB), { code: 'write-scope-conflict' })
     await current.dispose()
@@ -501,7 +500,7 @@ test('原生恢复保持单一运行代次；不确定投递重挂后拒绝盲�
 })
 
 for (const persistent of [false, true]) {
-  test(`手工续跑在投递前重建共享写租约和基线（持久化 ${persistent}）`, async (t) => {
+  test(`手工续跑在投递前重建共享写租约（持久化 ${persistent}）`, async (t) => {
     const cwd = repository(t)
     const facility = persistent ? persistentFacility() : undefined
     const runtime = host(t, cwd, { storageDomain: facility })
@@ -515,18 +514,16 @@ for (const persistent of [false, true]) {
     assert.equal(settled.agentName, row.name)
     assert.equal(settled.leaseState, 'released')
 
-    const overlapping = await current.delegate({ isolation: 'shared' })
+    const overlapping = await current.delegate({ isolation: 'shared' }, runtime.root('root-b'))
     const mustNotDeliver = async () => assert.fail('冲突时不应进入原生工具')
     assert.equal((await current.preMessage(row.name)).kind, 'continue')
-    await assert.rejects(current.sendMessage(row.name, mustNotDeliver), /write-lease-conflict/)
-    assert.equal((await statusRow(current, row.id)).baselineId, first.baselineId)
+    await assert.rejects(current.sendMessage(row.name, mustNotDeliver), { code: 'write-scope-conflict' })
     assert.notEqual(overlapping.subagentId, row.id)
     await runtime.end(runtime.start(1))
 
     const deliveryError = { isError: true, error: { message: '宿主明确拒绝投递' } }
     assert.equal(await current.sendMessage(row.id, async () => deliveryError), deliveryError)
     const rolledBack = await statusRow(current, row.id)
-    assert.equal(rolledBack.baselineId, first.baselineId)
     assert.equal(rolledBack.leaseState, 'released')
     assert.equal(rolledBack.attemptSeq, 1)
     if (facility) {
@@ -537,11 +534,10 @@ for (const persistent of [false, true]) {
     let resumed
     await current.sendMessage(row.name, async () => {
       const currentAttempt = await statusRow(current, row.id)
-      assert.notEqual(currentAttempt.baselineId, first.baselineId)
       assert.equal(currentAttempt.leaseState, 'held')
       assert.equal(currentAttempt.attemptSeq, 2)
       await assert.rejects(current.sendMessage(row.id, mustNotDeliver), /in-flight/)
-      await assert.rejects(current.delegate({ isolation: 'shared' }), { code: 'write-scope-conflict' })
+      await assert.rejects(current.delegate({ isolation: 'shared' }, runtime.root('root-c')), { code: 'write-scope-conflict' })
       resumed = await runtime.resume(row)
       fs.writeFileSync(path.join(cwd, target), '第二轮改动\n')
       return { isError: false, value: { messageId: 'manual-message' } }
@@ -549,9 +545,6 @@ for (const persistent of [false, true]) {
     await runtime.end(resumed)
     const finished = await statusRow(current, row.id)
     assert.equal(finished.leaseState, 'released')
-    assert.equal(finished.auditState, 'passed')
-    assert.notEqual(finished.baselineId, first.baselineId)
-    assert.equal(runtime.audits.filter((audit) => audit.childId === row.id).length, 2)
     if (facility) {
       assert.equal(facility.rows('leases').length, 0)
       await current.dispose()
@@ -568,7 +561,226 @@ test('无 storageDomain 和 sessionQuery 时兼容纯内存启动、结算和卸
   assert.deepEqual(inject, ['sessionProjections', 'tools', 'subagents', 'agents', 'sessions'])
   const active = await current.delegate({ isolation: 'shared' })
   await runtime.end(runtime.start())
-  assert.equal((await statusRow(current, active.subagentId)).auditState, 'passed')
-  assert.equal(runtime.audits.length, 1)
-  assert.doesNotReject(current.dispose())
+  const settled = await statusRow(current, active.subagentId)
+  assert.equal(settled.dispatchState, 'ended')
+  assert.equal(settled.leaseState, 'released')
+  await assert.doesNotReject(current.dispose())
+})
+
+test('复用门禁阻止闲置子代理被绕过，例外理由进入状态与持久化记录', async (t) => {
+  const cwd = repository(t)
+  const facility = persistentFacility()
+  const runtime = host(t, cwd, { storageDomain: facility })
+  const current = runtime.mount()
+  const active = await current.delegate({ isolation: 'worktree' })
+  const row = runtime.start()
+  await runtime.end(row)
+  const worktrees = facility.rows('worktrees')
+  const delegates = facility.rows('delegates')
+  const refs = git(cwd, 'worktree', 'list', '--porcelain')
+  assert.deepEqual(facility.rows('leases'), [])
+  await assert.rejects(current.delegate({ isolation: 'worktree' }), (error) => {
+    assert.equal(error.code, 'delegate-reuse-required')
+    const candidate = only(error.details.candidates)
+    assert.equal(candidate.childId, row.id)
+    assert.equal(candidate.agentName, row.name)
+    assert.equal(candidate.readOnly, false)
+    assert.deepEqual(candidate.writeScope, [target])
+    assert.equal(candidate.worktree.id, active.worktree.id)
+    assert.equal(candidate.worktree.state, 'ready_for_review')
+    return true
+  })
+  await assert.rejects(current.delegate({ isolation: 'worktree', allowNewReason: '  ' }), {
+    code: 'delegate-invalid-new-reason',
+  })
+  assert.deepEqual(facility.rows('worktrees'), worktrees)
+  assert.deepEqual(facility.rows('delegates'), delegates)
+  assert.deepEqual(facility.rows('leases'), [])
+  assert.equal(git(cwd, 'worktree', 'list', '--porcelain'), refs)
+  assert.equal(runtime.starts.length, 1)
+
+  const reason = '需要独立的审阅交付'
+  const second = await current.delegate({ isolation: 'worktree', allowNewReason: reason })
+  assert.equal(runtime.starts.length, 2)
+  assert.notEqual(second.subagentId, active.subagentId)
+  assert.equal(facility.rows('delegates').find(({ childId }) => childId === second.subagentId).allowNewReason, reason)
+  assert.equal((await statusRow(current, second.subagentId)).allowNewReason, reason)
+})
+
+test('尚未收到激活回执的并发派发不会被当成可复用的闲置代理', async (t) => {
+  const cwd = repository(t)
+  const runtime = host(t, cwd)
+  const current = runtime.mount()
+  const entered = deferred()
+  const release = deferred()
+  runtime.beforeActivation(async (row) => {
+    if (row.id === 'child-1') {
+      entered.resolve()
+      await release.promise
+    }
+  })
+  const first = current.delegate({ isolation: 'shared' })
+  try {
+    await entered.promise
+    const second = await current.delegate({ isolation: 'shared', writeScope: ['other.txt'] })
+    assert.equal(second.subagentId, 'child-2')
+  } finally {
+    release.resolve()
+    assert.equal((await first).subagentId, 'child-1')
+  }
+  assert.equal(runtime.starts.length, 2)
+})
+
+test('编辑拒绝跨根、运行中、宿主仍活跃、只读禁用、冲突及已回收工作树', async (t) => {
+  const cwd = repository(t)
+  const facility = persistentFacility()
+  const runtime = host(t, cwd, { storageDomain: facility })
+  const rootB = runtime.root('root-b')
+  const current = runtime.mount()
+  const first = await current.delegate({ isolation: 'shared' })
+  const row = runtime.start()
+  const next = { writeScope: ['other.txt'] }
+  const original = only(facility.rows('leases'))
+  await assert.rejects(current.edit(row.id, next, rootB), /只能编辑当前根会话直接委派/)
+  await assert.rejects(current.edit(row.id, next), /尚未结算或正在唤醒/)
+  assert.deepEqual(facility.rows('leases'), [original])
+  await runtime.end(row)
+  runtime.activate(row)
+  await assert.rejects(current.edit(row.id, next), /不处于可编辑的闲置状态/)
+  runtime.pause(row)
+  await assert.rejects(current.edit(row.id, { readOnly: true }), /当前会话未启用 readOnly/)
+  const blocker = await current.delegate({ isolation: 'shared', ...next }, rootB)
+  await assert.rejects(current.edit(row.id, next), { code: 'write-scope-conflict' })
+  assert.equal((await statusRow(current, first.subagentId)).pendingNextTurn ?? null, null)
+  assert.equal(only(facility.rows('leases')).ownerId, blocker.subagentId)
+
+  const isolated = await current.delegate({ isolation: 'worktree', allowNewReason: '验证回收后的编辑门禁' })
+  const treeWorker = runtime.start(2)
+  fs.writeFileSync(path.join(treeWorker.cwd, target), '交付\n')
+  git(treeWorker.cwd, 'add', '--', target)
+  git(treeWorker.cwd, 'commit', '-m', 'Delivery')
+  await runtime.end(treeWorker)
+  assert.equal((await current.manage({ action: 'merge', worktreeId: isolated.worktree.id, strategy: 'ff-only' })).ok, true)
+  await assert.rejects(current.edit(treeWorker.id, next), /worktree-child-locked/)
+})
+
+for (const scenario of [
+  { name: '缩窄写域', first: [target, 'extra.txt'], next: [target] },
+  { name: '扩充写域', first: [target], next: [target, 'extra.txt'] },
+  { name: '写切只读', first: [target], next: [] },
+  { name: '只读切写', first: [], next: [target] },
+]) {
+  test(`编辑与手工续跑事务：${scenario.name}`, async (t) => {
+    const cwd = repository(t)
+    const facility = persistentFacility()
+    const runtime = host(t, cwd, { storageDomain: facility, config: { readOnlyEnabled: true } })
+    const current = runtime.mount()
+    const initialMode = { readOnly: scenario.first.length === 0, writeScope: scenario.first }
+    const nextMode = { readOnly: scenario.next.length === 0, writeScope: scenario.next }
+    await current.delegate({ isolation: 'shared', ...initialMode })
+    const row = runtime.start()
+    await runtime.end(row)
+    const original = await statusRow(current, row.id)
+    assert.deepEqual(await current.edit(row.id, nextMode), {
+      action: 'edit', childId: row.id, parentId: 'root-a', pendingNextTurn: nextMode,
+    })
+    const staged = await statusRow(current, row.id)
+    assert.deepEqual(staged.pendingNextTurn, nextMode)
+    assert.deepEqual(staged.writeScope, initialMode.writeScope)
+    assert.equal(staged.readOnly, initialMode.readOnly)
+    assert.equal(staged.leaseId, original.leaseId)
+    assert.deepEqual(facility.rows('leases'), [])
+    assert.deepEqual(only(facility.rows('delegates')).pendingNextTurn, nextMode)
+
+    let resumed
+    await current.sendMessage(row.name, async () => {
+      const delivering = await statusRow(current, row.id)
+      assert.deepEqual(delivering.writeScope, nextMode.writeScope)
+      assert.equal(delivering.readOnly, nextMode.readOnly)
+      assert.equal(delivering.pendingNextTurn ?? null, null)
+      assert.equal(delivering.leaseState, nextMode.readOnly ? 'none' : 'held')
+      if (nextMode.readOnly) {
+        assert.deepEqual(facility.rows('leases'), [])
+      } else {
+        const entries = only(facility.rows('leases')).entries.map(({ path: entry }) => path.basename(entry))
+        assert.deepEqual(entries.toSorted(), nextMode.writeScope.toSorted())
+      }
+      await assert.rejects(current.edit(row.id, nextMode), /尚未结算或正在唤醒/)
+      resumed = await runtime.resume(row)
+      return { isError: false, value: { messageId: 'edited-resume' } }
+    })
+    await runtime.end(resumed)
+    assert.deepEqual(facility.rows('leases'), [])
+    assert.equal((await statusRow(current, row.id)).attemptSeq, 2)
+  })
+}
+
+test('冷恢复沿用待编辑配置；换租冲突及明确拒投保留配置，未知投递保留新租约', async (t) => {
+  const cwd = repository(t)
+  const facility = persistentFacility()
+  const runtime = host(t, cwd, { storageDomain: facility })
+  const first = runtime.mount()
+  await first.delegate({ isolation: 'shared' })
+  const row = runtime.start()
+  await runtime.end(row)
+  const nextMode = { readOnly: false, writeScope: ['extra.txt'] }
+  await first.edit(row.id, nextMode)
+  await first.dispose()
+  runtime.coldStop(row, 'completed')
+  const current = runtime.mount()
+  assert.deepEqual((await statusRow(current, row.id)).pendingNextTurn, nextMode)
+  const other = runtime.root('root-b')
+  await current.delegate({ isolation: 'shared', writeScope: nextMode.writeScope }, other)
+  const blockerLease = only(facility.rows('leases'))
+  const mustNotDeliver = async () => assert.fail('冲突或未知回执不能进入宿主投递')
+  await assert.rejects(current.sendMessage(row.name, mustNotDeliver), { code: 'write-scope-conflict' })
+  assert.deepEqual(facility.rows('leases'), [blockerLease])
+  assert.deepEqual((await statusRow(current, row.id)).pendingNextTurn, nextMode)
+  await runtime.end(runtime.start(1))
+
+  const error = { isError: true, error: { message: '宿主明确拒投' } }
+  assert.equal(await current.sendMessage(row.name, async () => error), error)
+  const rolledBack = await statusRow(current, row.id)
+  assert.equal(rolledBack.leaseState, 'released')
+  assert.deepEqual(rolledBack.writeScope, [target])
+  assert.deepEqual(rolledBack.pendingNextTurn, nextMode)
+  assert.deepEqual(facility.rows('leases'), [])
+  assert.equal(facility.rows('actions').some(({ kind }) => kind === 'resume'), false)
+
+  await assert.rejects(current.sendMessage(row.name, async () => { throw new Error('宿主未返回投递回执') }), /宿主未返回/)
+  assert.equal(only(facility.rows('actions').filter(({ kind }) => kind === 'resume')).phase, 'unknown')
+  assert.equal(path.basename(only(only(facility.rows('leases')).entries).path), 'extra.txt')
+  assert.equal((await statusRow(current, row.id)).pendingNextTurn ?? null, null)
+  await assert.rejects(current.sendMessage(row.name, mustNotDeliver), /in-flight|unknown/)
+})
+
+test('冷重挂后自动重试沿用手工续跑已生效的写域', async (t) => {
+  const cwd = repository(t)
+  const facility = persistentFacility()
+  const runtime = host(t, cwd, { storageDomain: facility })
+  const first = runtime.mount()
+  await first.delegate({ isolation: 'shared' })
+  const row = runtime.start()
+  await runtime.end(row)
+  await first.edit(row.id, { writeScope: ['edited.txt'] })
+  let resumed
+  await first.sendMessage(row.name, async () => {
+    resumed = await runtime.resume(row)
+    return { isError: false, value: { messageId: 'manual-edit' } }
+  })
+  await first.dispose()
+  const current = runtime.mount()
+  assert.deepEqual((await statusRow(current, row.id)).writeScope, ['edited.txt'])
+  runtime.onPrompt(() => {
+    const lease = only(facility.rows('leases'))
+    assert.equal(lease.ownerId, row.id)
+    assert.equal(path.basename(only(lease.entries).path), 'edited.txt')
+    return { messageId: 'retry-edited' }
+  })
+  await runtime.end(resumed, 'error')
+  assert.equal(only(runtime.prompts).childSessionId, row.id)
+  const retried = await statusRow(current, row.id)
+  assert.deepEqual(retried.writeScope, ['edited.txt'])
+  assert.equal(retried.attemptSeq, 3)
+  assert.equal(retried.leaseState, 'held')
 })

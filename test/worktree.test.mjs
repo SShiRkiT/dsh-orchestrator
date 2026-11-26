@@ -96,7 +96,7 @@ test('create registers a clean, independently checked-out worktree and maps the 
     label: 'unit', parentId: 'parent', childId: 'old', batchId: 'batch', itemIndex: 0,
     repoRoot: dir, sourceCwd, subPath: 'nested', execCwd: path.join(expected, 'nested'),
     baseCommit, baseBranch: 'main', state: 'active', createdAt: 101, updatedAt: 101,
-    settledAt: null, closedAt: null, auditSummary: null, mergeCommit: null, conflictFiles: [], error: null,
+    settledAt: null, closedAt: null, mergeCommit: null, conflictFiles: [], error: null,
   })
   assert.ok(Object.isFrozen(WORKTREE_STATES))
   assert.equal(git(expected, 'branch', '--show-current'), created.branch)
@@ -170,37 +170,36 @@ test('inspect includes commits and dirty categories, limits the patch, and toler
   assert.equal(removed.dirty, false)
 })
 
-test('settlement replaces the latest audit evidence and cannot reopen closed worktrees', (t) => {
+test('settlement timestamps are refreshed and cannot reopen closed worktrees', (t) => {
   const { dir } = repo(t)
   let now = 100
   const manager = createWorktreeManager({ now: () => now })
   const wt = create(manager, dir)
-  const firstSummary = { commits: 0, dirty: true, auditPassed: false }
-  const latestSummary = { commits: 1, dirty: false, auditPassed: true }
   now = 200
-  const first = manager.markReadyForReview(wt.id, firstSummary)
+  const first = manager.markReadyForReview(wt.id)
   assert.equal(first.state, 'ready_for_review')
-  assert.deepEqual(first.auditSummary, firstSummary)
+  assert.equal(first.settledAt, 200)
   write(wt.worktreePath, 'reviewed.txt', 'ready\n')
   commit(wt.worktreePath, 'Reviewed delivery')
   now = 300
-  const latest = manager.markReadyForReview(wt.id, latestSummary)
+  const latest = manager.markReadyForReview(wt.id)
   assert.equal(latest.state, 'ready_for_review')
   assert.equal(latest.settledAt, 300)
   assert.equal(latest.updatedAt, 300)
-  assert.deepEqual(manager.list()[0].auditSummary, latestSummary)
-  assert.deepEqual(manager.inspect(wt.id).worktree.auditSummary, latestSummary)
-  assert.deepEqual(first.auditSummary, firstSummary)
+  const inspected = manager.inspect(wt.id)
+  assert.equal(inspected.aheadCount, 1)
+  assert.equal(inspected.dirty, false)
+  assert.equal(first.settledAt, 200)
 
   const merged = manager.merge(wt.id)
   assert.equal(merged.worktree.state, 'merged')
   now = 400
-  assert.equal(manager.markReadyForReview(wt.id, firstSummary), merged.worktree)
+  assert.equal(manager.markReadyForReview(wt.id), merged.worktree)
   assert.equal(manager.reopenForRetry(wt.id), merged.worktree)
   const discarded = manager.discard(wt.id, { force: true })
   assert.equal(discarded.worktree.state, 'discarded')
   now = 500
-  assert.equal(manager.markReadyForReview(wt.id, firstSummary), discarded.worktree)
+  assert.equal(manager.markReadyForReview(wt.id), discarded.worktree)
   assert.equal(manager.reopenForRetry(wt.id), discarded.worktree)
 })
 

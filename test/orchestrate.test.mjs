@@ -91,8 +91,6 @@ test('the tool is named orchestrate, takes optional route overrides and defaults
   assert.equal(definition.isConcurrencySafe(), true)
   assert.deepEqual(Object.keys(definition.parameters).sort(), [
     'cwd',
-    'expectedFingerprints',
-    'expectedTargets',
     'isolation',
     'items',
     'maxConcurrency',
@@ -947,8 +945,6 @@ test('the description has no worker variant and does not follow the live whiteli
   assert.equal(bare.parameters.items.required, true)
   assert.deepEqual(Object.keys(bare.parameters).sort(), [
     'cwd',
-    'expectedFingerprints',
-    'expectedTargets',
     'isolation',
     'items',
     'maxConcurrency',
@@ -1099,6 +1095,40 @@ test('an aborted batch still releases its lease', async () => {
   controller.abort(new Error('user cancelled'))
   await assert.rejects(() => running, /user cancelled/)
   assert.equal(leases.size, 0, 'abort must not leak the batch lease')
+})
+
+test('an aborted batch retains its lease until every late activation receipt is disposed', async () => {
+  const leases = createWriteLeases()
+  const controller = new AbortController()
+  const waiting = []
+  const disposing = []
+  const subagents = {
+    resolveMaxDepth: () => 3,
+    startActivation() {
+      return new Promise((resolve) => waiting.push(resolve))
+    },
+  }
+  const running = tool(cfg(), subagents, leases).execute(
+    { cwd: 'C:/repo', writeScope: ['src/a.js'], items: [1, 2], maxConcurrency: 2, stages: [{ name: 's', prompt: 'p' }] },
+    exec(controller.signal),
+  )
+  await waitUntil(() => waiting.length === 2)
+  controller.abort(new Error('cancel late workers'))
+  await assert.rejects(running, /cancel late workers/)
+  assert.equal(leases.size, 1)
+  for (const [index, receipt] of waiting.entries()) {
+    receipt({
+      childId: `late-${index}`,
+      result: Promise.resolve(textResult('ignored')),
+      dispose: () => new Promise((resolve) => disposing.push(resolve)),
+    })
+  }
+  await waitUntil(() => disposing.length === 2)
+  disposing[0]()
+  await delay(0)
+  assert.equal(leases.size, 1)
+  disposing[1]()
+  await waitUntil(() => leases.size === 0)
 })
 
 test('the declared scope reaches the worker prompt but never the result payload', async () => {
