@@ -4,8 +4,9 @@
 
 <div align="center">
 
-# dsh-orchestrator
+# DSH-Orchestrator  
 
+## English | [简体中文](README.zh.md)
 </div>
 
 #### **Main-agent model plans, subagent models execute in isolation — the Dispatch · Supervise · Coordinate · Aggregate orchestrator plugin for DeepSeek Harness**
@@ -21,7 +22,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/SShiRkiT/dsh-orchestrator?style=flat-square&logo=github)](https://github.com/SShiRkiT/dsh-orchestrator/stargazers)
 [![npm](https://img.shields.io/npm/v/@sshirkit/dsh-orchestrator?color=cb3837)](https://www.npmjs.com/package/@sshirkit/dsh-orchestrator)
 
-**English** | [简体中文](README.zh.md) · [What It Adds](#what-it-adds) · [Core Advantages](#seven-core-advantages) · [Tool Reference](#tool-reference) · [Installation & Compatibility](#installation--requirements) · [Panel & Configuration](#dispatch-panel--configuration) · [Contributing](#contributing--community)
+ [What It Adds](#what-it-adds) · [Core Advantages](#seven-core-advantages) · [Tool Reference](#tool-reference) · [Installation & Compatibility](#installation--requirements) · [Panel & Configuration](#dispatch-panel--configuration) · [Contributing](#contributing--community)
 
 </div>
 

@@ -4,7 +4,9 @@
 
 <div align="center">
 
-# dsh-orchestrator
+# dsh-orchestrator  
+
+## 简体中文 | [English](README.md)
 
 </div>
 
@@ -21,7 +23,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/SShiRkiT/dsh-orchestrator?style=flat-square&logo=github)](https://github.com/SShiRkiT/dsh-orchestrator/stargazers)
 [![npm](https://img.shields.io/npm/v/@sshirkit/dsh-orchestrator?color=cb3837)](https://www.npmjs.com/package/@sshirkit/dsh-orchestrator)
 
-**简体中文** | [English](README.md) · [插件特点](#插件特点与能力补齐) · [核心优势](#七大核心优势) · [工具速查](#工具速查) · [安装与兼容](#安装与环境要求) · [面板与配置](#调度面板与配置说明) · [参与贡献](#参与贡献)
+[插件特点](#插件特点与能力补齐) · [核心优势](#七大核心优势) · [工具速查](#工具速查) · [安装与兼容](#安装与环境要求) · [面板与配置](#调度面板与配置说明) · [参与贡献](#参与贡献)
 
 </div>
 
