@@ -59,7 +59,7 @@ function repository(t) {
   return cwd
 }
 
-function persistentFacility() {
+function persistentFacility({ beforePut } = {}) {
   const documents = new Map()
   const calls = []
   let closingGate
@@ -89,7 +89,7 @@ function persistentFacility() {
           const parse = spec.tables[name].valueSchema.parse
           return {
             entries: () => [...table.entries()].map(([key, value]) => [key, parse(structuredClone(value))]),
-            async put(key, value) { checkOpen(); table.set(key, structuredClone(value)) },
+            async put(key, value) { checkOpen(); beforePut?.(name, value); table.set(key, structuredClone(value)) },
             async delete(key) { checkOpen(); table.delete(key) },
             async deleteMany(keys) { for (const key of keys) { checkOpen(); table.delete(key) } },
           }
@@ -215,6 +215,7 @@ function host(t, cwd, { storageDomain, queryMode = 'available', config = {} } = 
       batch: (args = {}, agent) => execute('orchestrate', { ...defaults, ...plan, ...args }, agent),
       async manage(args) { return (await execute('worktree_manage', args)).details },
       async status(childId) { return (await execute('delegate_status', childId ? { childId } : {})).details },
+      async summary(args = {}, agent) { return (await execute('delegate_status', { action: 'summary', ...args }, agent)).details },
       async edit(childId, changes, agent) {
         return (await execute('delegate_status', { ...changes, action: 'edit', childId }, agent)).details
       },
@@ -260,6 +261,68 @@ function host(t, cwd, { storageDomain, queryMode = 'available', config = {} } = 
 const only = (rows) => { assert.equal(rows.length, 1); return rows[0] }
 const statusRow = async (plugin, childId) => only((await plugin.status(childId)).items)
 
+
+for (const cut of ['delegates', 'actions']) {
+  test(`结算中断在 ${cut} 写入前，冷恢复验证同一运行后补齐 done`, async (t) => {
+    let armed = false
+    const facility = persistentFacility({ beforePut(table, row) {
+      if (armed && table === cut && (row.dispatchState === 'ended' || row.phase === 'done')) {
+        armed = false
+        throw new Error('simulated write interruption')
+      }
+    } })
+    const runtime = host(t, repository(t), { storageDomain: facility })
+    const old = runtime.mount()
+    await old.delegate({ isolation: 'shared' })
+    const first = runtime.start()
+    armed = true
+    await runtime.end(first)
+    assert.equal(only(facility.rows('actions')).phase, 'prepared')
+    await old.dispose()
+    runtime.coldStop(first, 'completed')
+    const current = runtime.mount()
+    assert.equal((await statusRow(current, first.id)).dispatchState, 'ended')
+    assert.equal((await statusRow(current, first.id)).leaseState, 'released')
+    assert.equal(facility.rows('leases').length, 0)
+    assert.equal(only(facility.rows('actions')).phase, 'done')
+    assert.equal(runtime.prompts.length, 0)
+  })
+}
+
+test('65 个活动委派保持可查，最早委派结算与冷恢复使用同一组证据', async (t) => {
+  const cwd = repository(t)
+  const facility = persistentFacility()
+  const runtime = host(t, cwd, { storageDomain: facility })
+  const old = runtime.mount()
+  for (let i = 0; i < 65; i++) await old.delegate({ isolation: 'shared', writeScope: [`file-${i}`] })
+  const first = runtime.start()
+  const report = await old.status()
+  assert.equal(report.items.length, 20)
+  assert.equal(report.total, 65)
+  assert.equal(report.counts.running, 65)
+  assert.equal((await statusRow(old, first.id)).runId, first.runId)
+  const summary = await old.summary({ limit: 1 })
+  assert.equal(summary.counts.running, 65)
+  assert.equal(summary.items.length, 1)
+  assert.equal((await old.summary({ childId: first.id }, runtime.root('foreign-root'))).total, 0)
+  await runtime.end(first)
+  await runtime.end(first)
+  const row = facility.rows('delegates').find(row => row.childId === first.id)
+  assert.equal(row.dispatchState, 'ended')
+  assert.equal(row.leaseState, 'released')
+  assert.equal(facility.rows('leases').length, 64)
+  assert.ok(!facility.rows('leases').some(lease => lease.leaseId === row.leaseId))
+  const action = only(facility.rows('actions'))
+  assert.deepEqual([action.kind, action.phase, action.runId], ['settle', 'done', first.runId])
+  await old.dispose()
+  runtime.coldStop(first)
+  const current = runtime.mount()
+  assert.equal((await current.status()).counts.running, 64)
+  assert.equal((await statusRow(current, first.id)).leaseState, 'released')
+  assert.equal((await current.summary({ childId: first.id })).items[0].state, 'ended')
+  assert.equal(runtime.starts.length, 65)
+  assert.deepEqual(facility.rows('actions'), [action])
+})
 
 test('热重载等待旧域关闭，延续巡检，并且只结算同一在跑委派一次', async (t) => {
   const cwd = repository(t)
@@ -354,7 +417,11 @@ test('两阶段编排合回后，重启即刻拒绝全部历史阶段的 send_me
   const batch = await old.batch({ isolation: 'worktree' })
   assert.equal(batch.agentsStarted, 2)
   const { worktreeId } = only(batch.details.worktrees)
+  assert.equal((await old.summary()).counts.pendingReview, 2)
   assert.equal((await old.manage({ action: 'merge', worktreeId, strategy: 'ff-only' })).ok, true)
+  const integrated = await old.summary()
+  assert.equal(integrated.counts.merged, 2)
+  assert.ok(integrated.items.every(item => item.evidence.mergeCommit === git(cwd, 'rev-parse', 'HEAD')))
   assert.equal(fs.readFileSync(path.join(cwd, target), 'utf8'), 'child-2\n')
   const tree = only(facility.rows('worktrees'))
   assert.equal(tree.locked, true)
@@ -363,6 +430,7 @@ test('两阶段编排合回后，重启即刻拒绝全部历史阶段的 send_me
   await old.dispose()
   for (const row of runtime.starts) runtime.coldStop(row, 'completed')
   const current = runtime.mount()
+  assert.equal((await current.summary()).counts.merged, 2)
   const results = await Promise.all(runtime.starts.map((row) => current.preMessage(row.id)))
   for (const refusal of results) {
     assert.equal(refusal.kind, 'deny')
@@ -493,6 +561,10 @@ test('原生恢复保持单一运行代次；不确定投递重挂后拒绝盲�
   await first.dispose()
   runtime.coldStop(row)
   const current = runtime.mount()
+  const evidence = only((await current.summary()).items)
+  assert.equal(evidence.state, 'deliveryUnknown')
+  assert.equal(evidence.evidence.actionKey, unknown.key)
+  assert.equal(evidence.evidence.requestId, unknown.requestId)
   const refusal = await current.preMessage(active.subagentId)
   assert.equal(refusal.kind, 'deny')
   await current.handler('subagent/end')({ id: row.id, parentSessionId: row.parent.id, runId: resumed.runId, stopReason: 'error' })

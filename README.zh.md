@@ -164,8 +164,10 @@
 | --- | --- | --- | --- |
 | `delegate` | 异步派活，优先复用 | `prompt`、`description`、`writeScope`（写任务必填）、`readOnly`、`isolation`、`allowNewReason`、`cwd`、`provider` + `model`、可选 `team_task_id` | 同一父会话存在可续跑的 `inactive` 子代理时拦截新建，返回 `delegate-reuse-required` 和 `details.candidates`。确需新建时传非空 `allowNewReason`。运行中受后台巡检覆盖。 |
 | `orchestrate` | 批量 / 多步骤流水线自动并行跑 | `items`（1–64）、`stages`（1–8，可配 `schema`）、`maxConcurrency`（1–16，默认 4）、`writeScope`、`readOnly`、`isolation`、`cwd`、可选顶层 `team_task_id`；顶层或单个阶段均可指定 `provider` + `model`，可选 `reasoning_effort` | 路由优先级：阶段覆盖 > 顶层批次覆盖 > 面板默认；各条目独立推进，隔离模式按条目复用目录，同步等待，不进后台巡检 |
-| `delegate_status` | 查询直属委派，或编辑闲置直属子代理的下一轮配置 | `action`（默认 `query`，或 `edit`）、`childId`（`edit` 必填）、`writeScope` / `readOnly`（`edit` 至少传一项）、`includeCompleted`（查询默认 `true`）、`limit`（1–64，默认 20） | `query` 查看运行、租约和工作树状态。`edit` 保存 `pendingNextTurn`，随后用 `send_message` 应用配置并唤醒同一个子代理。 |
+| `delegate_status` | 查询直属委派，或编辑闲置直属子代理的下一轮配置 | `action`（默认 `query`，可选 `summary` 或 `edit`）、`childId`（`edit` 必填）、`writeScope` / `readOnly`（`edit` 至少传一项）、`includeCompleted`（查询默认 `true`）、`limit`（1–64，默认 20） | `query` 查看运行、租约和工作树状态。`edit` 保存 `pendingNextTurn`，随后用 `send_message` 应用配置并唤醒同一个子代理。 |
 | `worktree_manage` | 查看、审阅、合并、丢弃或清理隔离目录 | `action`（`list`/`inspect`/`merge`/`discard`/`prune`）、`worktreeId` / `childId`、`strategy`（`merge`/`squash`/`ff-only`）、`autoStageDirty`、`deleteAfterMerge`、`force`、`dryRun` | `inspect` 实时查看差异、提交和脏状态，含未跟踪路径。合并冲突时保留工作树供评审。清理或丢弃后锁定旧子代理。 |
+
+从 v1.0.4 起，用 `delegate_status` 传入 `{"action":"summary","limit":5}` 即可查看只读交付摘要。总数统计当前根会话仍保留的全部委派，每个编排阶段计一条，`limit` 只限制明细。即使后来又派发了 64 条，也能用 `childId` 精确查询。待评审项给出工作树 ID，已合回项给出记录的合回提交，投递结果未知项给出可核对的动作键。宿主已接收唤醒但尚待运行确认的委派单独列出。
 
 复用闲置子代理时，如需调整写范围或只读设置，先调用 `delegate_status` 并指定 `action: "edit"`，再用 `send_message` 唤醒同一个子代理。插件在投递前用 `replaceOwnerLease` 原子替换写租约。租约冲突会阻止投递，明确拒投时回滚租约替换并恢复待应用配置。投递结果不明时保留新租约保护，并阻止重复唤醒。
 

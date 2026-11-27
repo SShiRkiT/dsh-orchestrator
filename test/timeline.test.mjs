@@ -111,18 +111,19 @@ test('父会话内优先淘汰已结束且没有保护条件的最旧记录', ()
   assert.deepEqual(itemIds(timeline.queryParent('root')), ['new-active', 'older-active', 'pending'])
 
   dispatch(timeline, 'newer-active')
-  assert.equal(timeline.get('root', 'older-active'), null, '没有可淘汰的结算记录时仍保持有界')
-  assert.equal(timeline.recordDisposed({ childId: 'older-active' }), false)
+  assert.equal(timeline.queryParent('root').counts.running, 3)
+  assert.equal(timeline.get('root', 'older-active').dispatchState, 'running')
+  assert.equal(timeline.recordDisposed({ childId: 'older-active' }), true)
 })
 
-test('父会话数量有界，淘汰最少近期更新的父会话', () => {
+test('父桶超限时仍保留每个活动父会话', () => {
   const timeline = makeTimeline({ maxParents: 2 })
   dispatch(timeline, 'first', { parentId: 'one' })
   dispatch(timeline, 'second', { parentId: 'two' })
   timeline.recordRunStarted({ parentId: 'one', childId: 'first', runId: 'run' })
   dispatch(timeline, 'third', { parentId: 'three' })
-  assert.equal(timeline.get('two', 'second'), null)
-  assert.equal(timeline.recordDisposed({ childId: 'second' }), false)
+  assert.equal(timeline.get('two', 'second').dispatchState, 'running')
+  assert.equal(timeline.recordDisposed({ childId: 'second' }), true)
   assert.equal(timeline.get('one', 'first').runId, 'run')
   assert.equal(timeline.queryParent('three').total, 1)
 })
@@ -148,6 +149,28 @@ test('查询按优先级和更新时间排序，分页前统计', () => {
   assert.deepEqual(itemIds(report), ['running', 'unmanaged'])
   assert.deepEqual(itemIds(timeline.queryParent('root', { includeCompleted: false })), ['running'])
   assert.deepEqual(itemIds(timeline.queryParent('root', { childId: 'passed' })), ['passed'])
+})
+
+test('旧写入确认只能释放自身版本，即使两个事件同毫秒到达', () => {
+  const rows = new Map()
+  const timeline = makeTimeline({ now: () => 42, backing: {
+    get: (id) => rows.get(id), list: () => [...rows.values()],
+  } })
+  dispatch(timeline, 'worker')
+  const running = timeline.get('root', 'worker')
+  const firstAck = timeline.checkpoint('root', 'worker')
+  timeline.recordEnded({ parentId: 'root', childId: 'worker', runId: 'one' })
+  const ended = timeline.get('root', 'worker')
+  const lastAck = timeline.checkpoint('root', 'worker')
+  rows.set('worker', running)
+  firstAck()
+  assert.equal(timeline.queryParent('root').counts.ended, 1)
+  assert.equal(timeline.get('root', 'worker').runId, 'one')
+  rows.set('worker', ended)
+  lastAck()
+  assert.equal(timeline.exportEntries().length, 0)
+  assert.equal(timeline.queryParent('root').counts.ended, 1)
+  assert.equal(timeline.get('other', 'worker'), null)
 })
 
 const WORKTREE = {
