@@ -3,6 +3,7 @@ import test from 'node:test'
 import { createDispatchTimeline } from '../lib/timeline.js'
 import { createWorktreeManager } from '../lib/worktree.js'
 import { createWorktreeManageTool } from '../lib/worktree-manage.js'
+import { createPersistentWorktreeTool } from '../lib/worktree-tool.js'
 import { createWriteLeases } from '../lib/write-lease.js'
 import { normalizeScope, overlaps } from '../lib/write-scope.js'
 import { ISOLATION_MODES, formatWorktreeError, leaseFailure, parseIsolation } from '../lib/write-scope-tool.js'
@@ -57,7 +58,7 @@ function worktreeSnapshot(fields = {}) {
   return manager.get(TREE.id)
 }
 
-function fixture(overrides = {}) {
+function fixture(overrides = {}, createTool = createWorktreeManageTool) {
   const calls = []
   const timeline = createDispatchTimeline()
   timeline.recordDispatched({ parentId: TREE.parentId, childId: TREE.childId, worktree: TREE })
@@ -77,7 +78,7 @@ function fixture(overrides = {}) {
     calls.push([method, ...args])
     return handler(...args)
   }]))
-  const tool = createWorktreeManageTool({ worktrees, timeline, isRootAgent: (exec) => exec === ROOT })
+  const tool = createTool({ worktrees, timeline, isRootAgent: (exec) => exec === ROOT })
   return { tool, calls, timeline, async run(args) {
     const result = await tool.execute(args, ROOT)
     assertLosslessJson(result)
@@ -264,6 +265,78 @@ test('prune 只取调用会话 cwd，支持预览及执行', async () => {
   assert.deepEqual(calls, [
     ['prune', { repoRoot: '/repo', dryRun: true }], ['prune', { repoRoot: '/repo', dryRun: false }],
   ])
+})
+
+for (const [mode, options, dryRun] of [
+  ['dryRun: true', { dryRun: true }, true],
+  ['dryRun: false', { dryRun: false }, false],
+  ['省略 dryRun', {}, false],
+]) {
+  test(`持久化入口 prune 返回结构化回执（${mode}）`, async () => {
+    const events = []
+    const { run, calls } = fixture({
+      exportRecords() {
+        events.push('exportRecords')
+        return []
+      },
+      prune({ repoRoot, dryRun }) {
+        events.push('prune')
+        return {
+          ok: true, repoRoot, dryRun, orphans: ['old'], errors: [],
+          prunedWorktrees: dryRun ? [] : ['old'],
+          prunedBranches: dryRun ? [] : ['branch-old'],
+        }
+      },
+    }, (dependencies) => createPersistentWorktreeTool({
+      ...dependencies,
+      assertActive: () => events.push('assertActive'),
+      isWakePending: () => assert.fail('prune 无单棵工作树目标'),
+      stateStore: {
+        putWorktree: () => assert.fail('登记记录没有变化'),
+        async flush() { events.push('flush') },
+      },
+      persist: (write) => write,
+    }))
+    const result = await run({ action: 'prune', cwd: '/another-repo', ...options })
+    assert.deepEqual(result.details, {
+      action: 'prune', ok: true, repoRoot: '/repo', dryRun, orphans: ['old'], errors: [],
+      prunedWorktrees: dryRun ? [] : ['old'],
+      prunedBranches: dryRun ? [] : ['branch-old'],
+    })
+    assert.match(text(result), dryRun ? /清理预览.*未执行删除/ : /清理完成/)
+    assert.deepEqual(calls.filter(([method]) => method !== 'exportRecords'), [
+      ['prune', { repoRoot: '/repo', dryRun }],
+    ])
+    assert.deepEqual(events, dryRun
+      ? ['prune']
+      : ['assertActive', 'exportRecords', 'prune', 'exportRecords', 'flush'])
+  })
+}
+
+test('持久化入口 merge 和 discard 仍阻止恢复中的子代理工作树变更', async () => {
+  const record = worktreeSnapshot()
+  const events = []
+  const { run, calls } = fixture({
+    getByWorktreeOrChild: () => record,
+  }, (dependencies) => createPersistentWorktreeTool({
+    ...dependencies,
+    assertActive: () => events.push('assertActive'),
+    isWakePending(childId) {
+      events.push(childId)
+      return childId === STAGE_IDS[1]
+    },
+  }))
+  for (const action of ['merge', 'discard']) {
+    const { details } = await run({ action, childId: TREE.childId })
+    assert.deepEqual(details, {
+      action, ok: false, code: 'worktree-active', message: '子代理正在恢复，待本轮结算后再操作工作树。',
+    })
+  }
+  assert.deepEqual(calls, [
+    ['getByWorktreeOrChild', TREE.childId], ['getByWorktreeOrChild', TREE.id],
+    ['getByWorktreeOrChild', TREE.childId], ['getByWorktreeOrChild', TREE.id],
+  ])
+  assert.deepEqual(events, ['assertActive', ...STAGE_IDS, 'assertActive', ...STAGE_IDS])
 })
 
 test('空列表和检查、合回、丢弃、清理的业务错误均有合法 JSON 回执', async () => {
