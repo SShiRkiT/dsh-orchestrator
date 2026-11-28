@@ -303,10 +303,10 @@ test('a main agent gets the full rule and no scoped registration', () => {
   assert.deepEqual(registered, [], 'the global pair is enough for a main agent')
   const delegate = tools.find((tool) => tool.name === 'delegate')
   const orchestrate = tools.find((tool) => tool.name === 'orchestrate')
-  assert.match(delegate.description, /主代理规则：主代理只负责规划/)
+  assert.match(delegate.description, /主代理仅规划/)
   // The rule is rendered once: the batch brief only points back at it.
   assert.match(orchestrate.description, /^主代理规则同 delegate/)
-  assert.equal(orchestrate.description.includes('主代理可用工具'), false)
+  assert.equal(orchestrate.description.includes('主代理白名单:'), false)
   assert.equal(orchestrate.description.includes('子代理无收尾中断'), false)
 })
 
@@ -442,7 +442,7 @@ test('the switch being off still installs the guard and restores host tools with
   assert.deepEqual(restricted, [])
   assert.equal(guards.length, 1)
   assert.deepEqual(namesOf(ctx.tools.definitions(agent)), expectedOff, 'off restores host tools and hides dispatch and governance tools')
-  assert.equal(delegate.description.includes('主代理规则：主代理只负责规划'), false)
+  assert.equal(delegate.description.includes('主代理仅规划'), false)
   assert.equal(orchestrate.description.includes('主代理规则同 delegate'), false)
   assert.equal(guards[0]({ name: 'edit' }), undefined)
   assert.match(guards[0]({ name: 'delegate' }), /"delegate" is disabled while dispatch mode is off/)
@@ -452,7 +452,7 @@ test('the switch being off still installs the guard and restores host tools with
   // Turning it on filters the next request even though nothing was re-installed.
   state.enabled = true
   assert.deepEqual(namesOf(ctx.tools.definitions(agent)), mod.DEFAULT_ALLOWED_TOOLS)
-  assert.match(delegate.description, /^主代理规则：主代理只负责规划/)
+  assert.match(delegate.description, /^主代理仅规划/)
   assert.match(orchestrate.description, /^主代理规则同 delegate/)
   assert.deepEqual(restricted, [], 'still no restriction')
 })
@@ -488,7 +488,7 @@ test('the whitelist clause follows the live config without re-registering', () =
   const delegate = tools.find((tool) => tool.name === 'delegate')
   const orchestrate = tools.find((tool) => tool.name === 'orchestrate')
   const allowedOf = (tool) =>
-    /主代理可用工具（白名单驱动，其余全部禁用）: ([^。]+)。/.exec(tool.description)?.[1]
+    /主代理白名单: ([^。]+)。/.exec(tool.description)?.[1]
   assert.equal(allowedOf(delegate), mod.DEFAULT_ALLOWED_TOOLS.join(', '))
   assert.equal(allowedOf(orchestrate), undefined)
 
@@ -867,13 +867,13 @@ test('the enable switch flips the surface and rules in the open session through 
   const volatile = handlers.get('loader/volatile-update')
   assert.equal(typeof volatile, 'function', 'apply must subscribe to loader/volatile-update')
   assert.deepEqual(namesOf(ctx.tools.definitions(main.agent)), mod.DEFAULT_ALLOWED_TOOLS)
-  assert.match(delegate.description, /^主代理规则：主代理只负责规划/)
+  assert.match(delegate.description, /^主代理仅规划/)
   assert.match(orchestrate.description, /^主代理规则同 delegate/)
 
   state.enabled = false
   volatile()
   assert.deepEqual(namesOf(ctx.tools.definitions(main.agent)), expectedOff, 'off restores host tools and hides dispatch and governance tools')
-  assert.equal(delegate.description.includes('主代理规则：主代理只负责规划'), false)
+  assert.equal(delegate.description.includes('主代理仅规划'), false)
   assert.equal(orchestrate.description.includes('主代理规则同 delegate'), false)
   assert.equal(main.guards[0]({ name: 'edit' }), undefined, 'and lets regular host calls through')
   for (const name of DISPATCH_TOOLS) assert.match(main.guards[0]({ name }), /disabled while dispatch mode is off/, name)
@@ -881,7 +881,7 @@ test('the enable switch flips the surface and rules in the open session through 
   state.enabled = true
   volatile()
   assert.deepEqual(namesOf(ctx.tools.definitions(main.agent)), mod.DEFAULT_ALLOWED_TOOLS)
-  assert.match(delegate.description, /^主代理规则：主代理只负责规划/)
+  assert.match(delegate.description, /^主代理仅规划/)
   assert.match(orchestrate.description, /^主代理规则同 delegate/)
   assert.match(main.guards[0]({ name: 'edit' }), /not available to the main agent/)
   assert.equal(main.guards[0]({ name: 'delegate' }), undefined)

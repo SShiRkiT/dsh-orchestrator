@@ -1527,10 +1527,15 @@ test('the session capsule uses the same switch and accessible labels in both loc
     assert.equal(row.props.style.alignItems, 'center')
     assert.equal(row.props.style.justifyContent, 'space-between')
     assert.ok(row.props.style.gap)
-    const [title, control] = row.kids
+    const [title, control, more] = row.kids
     assert.equal(title.type, 'span')
     assert.equal(title.kids[0], label)
-    assert.equal(row.props.style.flexWrap, 'wrap')
+    assert.notEqual(row.props.style.flexWrap, 'wrap', 'the More button stays on the first line')
+    assert.equal(title.props.style.overflowWrap, 'anywhere')
+    assert.equal(more.type, 'button')
+    assert.equal(more.kids[0], locale === 'en' ? 'More' : '更多')
+    assert.equal(more.props.style.marginInlineStart, 'auto')
+    assert.equal(more.props.style.alignSelf, 'flex-start')
     assert.equal(title.props.style.fontWeight, 600)
     assert.notEqual(title.props.style.fontStyle, 'italic')
     assert.equal(control.type, T.EnableSwitch)
@@ -1718,6 +1723,38 @@ test('only for this session snapshots and edits all ten settings without writing
   assert.equal(row('worker').props.route.provider, 'global')
   assert.equal(nodes(interval.tree).find((node) => node.type === 'input').props.value, '2400')
   assert.deepEqual(Object.values(scopes).flatMap((scope) => scope.calls), [])
+})
+
+test('the Dispatch switch displays the last confirmed session value while writes are pending', async (t) => {
+  const snapshot = deferredSessionResult()
+  const field = deferredSessionResult()
+  const global = fakeScope()
+  const calls = []
+  const panel = mountAllowed(global, { sessionId: 'blank-A', sessionRemote: {
+    async call(method, id, patch, revision) {
+      if (method === 'get') return sessionState(id, false, [], 1)
+      calls.push({ method, id, patch: plain(patch), revision })
+      return calls.length === 1 ? snapshot.promise : field.promise
+    },
+  } })
+  t.after(panel.view.unmount)
+  const dispatch = () => nodes(panel.picker.tree).find((node) => node.props?.field === 'enabled').props
+  await settleSessionPanel()
+  const enabling = changeBox(panel.session(), true)
+  assert.equal(panel.session().props.checked, false)
+  assert.equal(dispatch().disabled, true)
+  snapshot.resolve(sessionState('blank-A', true, [], 2, true, calls[0].patch))
+  await enabling
+  assert.equal(panel.session().props.checked, true)
+  const disabling = dispatch().onChange(false)
+  assert.equal(dispatch().checked, true)
+  assert.equal(dispatch().disabled, true)
+  assert.deepEqual(calls[1], { method: 'setConfig', id: 'blank-A', patch: { enabled: false }, revision: 2 })
+  field.resolve(sessionState('blank-A', true, [], 3, true, { ...calls[0].patch, enabled: false }))
+  await disabling
+  assert.equal(dispatch().checked, false)
+  assert.equal(dispatch().disabled, false)
+  assert.deepEqual(global.calls, [])
 })
 
 test('unavailable session storage disables the session switch and preserves explicit global editing', async () => {

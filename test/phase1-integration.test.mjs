@@ -292,6 +292,75 @@ test('one session override drives declarations, delegate descriptions and direct
   assert.equal(rows.size, 0)
 })
 
+test('a confirmed local Dispatch switch controls native and PTC read guards for that root only', async (t) => {
+  const storage = sessionStorage()
+  const h = harness(t, { host: storage.host, team: ['working_directory'],
+    config: { enabled: true, allowedTools: ['delegate'], superviseEnabled: false } })
+  const remote = storage.remote
+  const session = h.parent.session
+  const other = h.makeRoot('other')
+  const global = await remote.get(session.id)
+  const snapshot = await remote.setConfig(session.id, global.config, global.revision)
+  const local = await remote.setConfig(session.id, { enabled: false }, snapshot.revision)
+  assert.equal(local.enabled, true, 'Only for this session is active')
+  assert.equal(local.config.enabled, false, 'Dispatch is off')
+  const checkScope = (agent, dispatch) => {
+    const names = h.definitions(agent)
+    assert.equal(names.includes('delegate'), dispatch)
+    assert.equal(names.includes('working_directory'), !dispatch)
+    const outer = h.check('run_code', agent, { code: 'return await tools.working_directory({})' })
+    assert.equal(outer, undefined)
+    const nested = h.check('working_directory', agent, {})
+    if (dispatch) assert.match(nested, /main agent only plans/)
+    else assert.equal(nested, undefined)
+  }
+  checkScope(h.parent, false)
+  assert.equal((await remote.get(session.id)).config.enabled, false)
+  assert.equal((await remote.get(other.session.id)).config.enabled, true)
+  checkScope(other, true)
+  await remote.clear(session.id, local.revision)
+  checkScope(h.parent, true)
+})
+
+test('Team-off dispatch accepts the same optional fields with global and session settings', async (t) => {
+  const storage = sessionStorage()
+  const h = harness(t, { host: { ...storage.host, agentTeams: { isEnabled: () => false } },
+    config: { enabled: true, readOnlyEnabled: true, superviseEnabled: false, workerProvider: 'test', workerModel: 'panel' } })
+  const remote = storage.remote
+  const root = h.parent.session.id
+  const initial = await remote.get(root)
+  const specs = () => h.ctx.tools.definitions(h.parent).filter(({ name }) => ['delegate', 'orchestrate'].includes(name))
+  const baseline = specs().map(({ parameters }) => parameters)
+  for (const local of [false, true]) {
+    if (local) await remote.setConfig(root, initial.config, initial.revision)
+    const state = await remote.get(root)
+    assert.equal(state.enabled, local)
+    assert.equal(state.config.enabled, true)
+    const projected = specs()
+    assert.deepEqual(projected.map(({ name }) => name).sort(), ['delegate', 'orchestrate'])
+    assert.deepEqual(projected.map(({ parameters }) => parameters), baseline)
+    for (const { name, parameters, description } of projected) {
+      assert.equal(parameters.team_task_id.type, 'string')
+      assert.notEqual(parameters.team_task_id.required, true)
+      const required = Object.keys(parameters).filter((key) => parameters[key].required === true).sort()
+      assert.deepEqual(required, name === 'delegate' ? ['description', 'prompt'] : ['items', 'stages'])
+      assert.doesNotMatch(description, /先用 team_task_create 建立共享目标/)
+    }
+    for (const options of [{}, { team_task_id: '' }]) {
+      const args = { readOnly: true, provider: '', model: '', reasoning_effort: '', ...options }
+      const start = h.starts.length
+      await h.delegate(args)
+      await h.batch(args)
+      const launched = h.starts.slice(start)
+      assert.equal(launched.length, 2)
+      for (const { spec } of launched) {
+        assert.deepEqual(spec.agentOptions, { provider: 'test', model: 'panel' })
+        assert.doesNotMatch(spec.prompt[0].text, /team_task_id|team_task_get/)
+      }
+    }
+  }
+})
+
 test('main model routing applies live session overrides and restores persisted routes on cold creation', async (t) => {
   const storage = sessionStorage()
   const initial = { provider: 'global', model: 'first' }

@@ -89,14 +89,13 @@ test('关闭调度后，根代理禁用四个调度与治理工具，子代理�
   }
 })
 
-test('调度规则区分 Worktree 隔离、显式合回和回收，并禁止复用已回收的 childId', () => {
+test('调度规则说明写租约、默认独立树和显式评审，并按白名单提示管理工具', () => {
   const rule = mainAgentRule(surface.DEFAULT_ALLOWED_TOOLS)
-  assert.match(rule, /独立 Git Worktree.*非 Git 目录使用写租约/)
-  assert.match(rule, /isolation: "auto" \| "worktree" \| "shared"/)
-  assert.match(rule, /Worktree 不自动合回；子代理交付后由主代理评审并决定是否合回/)
-  assert.match(rule, /worktree_manage（list \/ inspect \/ merge \/ discard \/ prune）/)
-  assert.match(rule, /Worktree 已锁定或合回.*allowNewReason/)
-  assert.match(rule, /租约冲突或工作树已锁定时拒绝投递/)
+  assert.match(rule, /写任务默认在独立 Git Worktree 中执行，Worktree 不自动合回/)
+  assert.match(rule, /须用 worktree_manage 评审后显式合回或丢弃/)
+  assert.match(rule, /确需新建填 allowNewReason/)
+  assert.match(rule, /写任务每轮重取租约，冲突或锁树时停止，结束后释放租约/)
+  assert.match(mainAgentRule([]), /须评审后显式合回或丢弃/)
   assert.doesNotMatch(mainAgentRule([]), /worktree_manage/, '不要求调用白名单之外的工具')
 })
 

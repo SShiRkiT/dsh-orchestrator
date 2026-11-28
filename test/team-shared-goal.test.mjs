@@ -115,6 +115,24 @@ test('the root Team mode controls shared-goal guidance live without changing nat
   assert.deepEqual(writes, [])
 })
 
+test('each scoped brief follows the worktree tool, read-only option and Team guide', (t) => {
+  const { root, config, description } = declarations(t, { agentTeams: { isEnabled: () => true } })
+  for (const worktree of [false, true]) {
+    config.allowedTools = worktree ? [...toolsWithTeam, 'worktree_manage'] : [...toolsWithTeam]
+    for (const readOnly of [false, true]) {
+      config.readOnlyEnabled = readOnly
+      const single = description('delegate', root)
+      const batch = description('orchestrate', root)
+      assert.equal(single.includes('须用 worktree_manage 评审'), worktree)
+      assert.equal(batch.includes('由 worktree_manage 评审'), worktree)
+      assert.equal(single.includes('只读调研或检索'), !readOnly)
+      assert.match(single, /本轮工具表限定主代理可调用范围，监管限制优先/)
+      assert.match(single, GUIDE)
+      assert.doesNotMatch(batch, GUIDE)
+    }
+  }
+})
+
 test('an absent Team service or unavailable live Team root never breaks declarations', (t) => {
   const missing = declarations(t)
   assert.doesNotMatch(missing.description('delegate', missing.root), GUIDE)
@@ -226,10 +244,20 @@ test('orchestrate appends the Team goal to every stage without replacing input o
 })
 
 for (const name of ['delegate', 'orchestrate']) {
-  test(`${name} rejects empty or non-string Team IDs without launching workers`, async () => {
+  test(`${name} treats blank Team IDs as omitted for every worker`, async () => {
     const { launches, [name]: dispatch } = dispatchers()
-    const error = new RegExp(`${name}: "team_task_id" must be a non-empty string when provided`)
-    for (const value of ['', ' \n\t', 23, null, {}]) {
+    await dispatch({})
+    const expected = launches.splice(0).map(({ prompt }) => prompt)
+    for (const value of ['', ' \n\t']) {
+      await dispatch({ team_task_id: value })
+      assert.deepEqual(launches.splice(0).map(({ prompt }) => prompt), expected)
+    }
+  })
+
+  test(`${name} rejects non-string Team IDs without launching workers`, async () => {
+    const { launches, [name]: dispatch } = dispatchers()
+    const error = new RegExp(`${name}: "team_task_id" must be a string when provided`)
+    for (const value of [23, false, null, [], {}]) {
       await assert.rejects(dispatch({ team_task_id: value }), error)
     }
     assert.deepEqual(launches, [])

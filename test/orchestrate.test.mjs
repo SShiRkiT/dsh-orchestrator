@@ -105,24 +105,23 @@ test('the tool is named orchestrate, takes optional route overrides and defaults
   for (const key of ['provider', 'model', 'reasoning_effort']) {
     assert.equal('required' in definition.parameters[key], false)
   }
-  for (const key of ['provider', 'model']) {
-    assert.match(definition.parameters[key].description, /仅当用户显式点名/)
-  }
+  assert.match(definition.parameters.provider.description, /仅当用户显式点名.*与 model 同传/)
+  assert.match(definition.parameters.model.description, /与 provider 同传/)
   assert.match(definition.parameters.reasoning_effort.description, /仅当用户点名时才设置/)
   const stageParams = definition.parameters.stages.items.properties
   for (const key of ['provider', 'model', 'reasoning_effort']) {
     assert.equal(stageParams[key].type, 'string')
     assert.equal('required' in stageParams[key], false)
   }
-  assert.match(stageParams.provider.description, /仅当用户显式点名.*与 model 同传.*优先于顶层批次/)
-  assert.match(stageParams.model.description, /仅当用户显式点名.*与 provider 同传.*优先于顶层批次/)
-  assert.match(stageParams.reasoning_effort.description, /仅当用户点名时才设置.*与阶段 provider\/model 同传/)
+  assert.match(stageParams.provider.description, /仅当用户显式点名.*与 model 同传.*优先于批次/)
+  assert.match(stageParams.model.description, /与阶段 provider 同传.*优先于批次/)
+  assert.match(stageParams.reasoning_effort.description, /仅点名时随阶段 provider\/model 同传；不继承后备路由/)
   assert.equal('required' in definition.parameters.writeScope, false)
   assert.equal('default' in definition.parameters.writeScope, false)
   assert.equal(definition.parameters.writeScope.type, 'array')
   assert.equal(definition.parameters.writeScope.items.type, 'string')
   assert.equal(definition.parameters.readOnly.default, false)
-  assert.match(definition.parameters.writeScope.description, /^非只读任务必填/)
+  assert.match(definition.parameters.writeScope.description, /^写任务必填/)
   assert.match(definition.parameters.writeScope.description, /write-scope-conflict/)
   assert.deepEqual(
     parseOrchestrateArgs({ items: [1], stages: [{ name: 's', prompt: 'p' }], writeScope: ['src/a.js'] }),
@@ -907,25 +906,23 @@ test('the description is a compact pipeline brief and does not repeat the main-a
     config: cfg(),
     allowedTools: ['delegate', 'orchestrate', 'todo_write'],
   })
-  assert.equal(definition.description.includes('主代理规则：主代理只负责规划'), false)
-  assert.equal(definition.description.includes('主代理可用工具'), false)
+  assert.equal(definition.description.includes('主代理仅规划'), false)
+  assert.equal(definition.description.includes('主代理白名单:'), false)
   assert.match(definition.description, /^主代理规则同 delegate/)
-  assert.match(definition.description, /按 item 派发子代理/)
-  assert.match(definition.description, /单 stage 即批量扇出/)
+  assert.match(definition.description, /每个 item 独立顺序执行 stages/)
+  assert.match(definition.parameters.stages.description, /单阶段即扇出/)
   assert.match(definition.description, /无全局屏障/)
-  assert.match(definition.description, /每阶段自动附带指令、原始 item 与上阶段输出/)
+  assert.match(definition.description, /阶段自动附带指令、原始 item 与上阶段输出/)
   assert.match(definition.description, /声明 schema 的阶段输出校验过的 JSON，否则为文本/)
-  assert.match(definition.description, /单 item 失败置为 null 并记入 errors/)
-  assert.match(definition.description, /maxConcurrency 限制并发数/)
-  assert.match(definition.description, /调用必填 writeScope/)
-  assert.match(definition.description, /按 item 分配独立 Worktree，同 item 多 stage 复用一树/)
-  assert.match(definition.description, /共享模式整批共享一个写租约，冲突时整批失败不排队/)
-  assert.match(definition.description, /无关批次可并发调用；单任务请用 delegate/)
-  // The route parameters carry the same one-line condition, where a model would be typed.
+  assert.match(definition.description, /失败项为 null，见 errors/)
+  assert.match(definition.parameters.maxConcurrency.description, /并发子代理上限/)
+  assert.match(definition.parameters.writeScope.description, /写任务必填/)
+  assert.match(definition.description, /Git 写任务每 item 一树，同 item 各阶段复用/)
+  assert.match(definition.description, /shared 模式整批一租约，冲突立即失败/)
+  assert.match(definition.description, /单任务用 delegate/)
+  assert.match(definition.parameters.provider.description, /仅当用户显式点名/)
   for (const param of ['provider', 'model']) {
     const description = definition.parameters[param].description
-    assert.match(description, /仅当用户显式点名/, param)
-    assert.match(description, /AGENTS\.md/, param)
     assert.match(description, /省略走 worker 路由/, param)
   }
   assert.match(definition.parameters.reasoning_effort.description, /仅当用户点名时才设置/)
@@ -941,7 +938,7 @@ test('the description has no worker variant and does not follow the live whiteli
     allowedTools: ['delegate', 'orchestrate'],
   })
   assert.equal(bare.description, listed.description)
-  assert.match(bare.description, /按 item 派发子代理/)
+  assert.match(bare.description, /每个 item 独立顺序执行 stages/)
   assert.equal(bare.parameters.items.required, true)
   assert.deepEqual(Object.keys(bare.parameters).sort(), [
     'cwd',
@@ -1189,7 +1186,7 @@ test('when dispatch mode is off, orchestrate drops the main-agent rule lead and 
   })
 
   assert.equal(definition.description.includes('主代理规则同 delegate'), false)
-  assert.match(definition.description, /^按 item 派发子代理/)
+  assert.match(definition.description, /^每个 item 独立顺序执行 stages/)
 
   await assert.rejects(
     () =>

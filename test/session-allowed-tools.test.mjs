@@ -149,6 +149,86 @@ test('a writing revision commits only after durability and concurrent CAS has on
   assert.equal(puts, 1)
 })
 
+// Simulate only the public idle-maintenance contract. A real driver also opens
+// the turn and resolves its tool set when the queued wake is released.
+function blankRoot(id) {
+  let activity, abort
+  return {
+    id, session: { id },
+    runMaintenance(job) {
+      if (activity) throw new Error('already has active work')
+      abort = new AbortController()
+      activity = job(abort.signal).finally(() => { activity = undefined })
+      return activity
+    },
+    cancel() { abort.abort() },
+    async firstStep(read) { await activity; return read() },
+  }
+}
+
+for (const succeeds of [true, false]) {
+  test(`a blank root waits for its own ${succeeds ? 'confirmed' : 'failed'} Dispatch write before its first step`, async (t) => {
+    const stored = deferred()
+    const a = blankRoot('A'), b = blankRoot('B')
+    const agents = new Map([[a.id, a], [b.id, b]])
+    agents.turnBoundaryOf = () => ({ lastTurn: 0, openTurnStartSeq: null })
+    const controller = createSessionTools({ ctx: { agents }, facility: memoryFacility({ hooks: { put: () => stored.promise } }) })
+    t.after(() => { stored.resolve(false); return controller.close() })
+    const before = await controller.get('A')
+    const saving = controller.setConfig('A', { enabled: false }, before.revision)
+    let started = false
+    const prompt = a.firstStep(() => { started = true; return controller.resolveSessionConfig(a).enabled })
+    assert.equal(await b.firstStep(() => controller.resolveSessionConfig(b).enabled), true)
+    assert.equal(started, false, 'the same-root wake must wait before tool-set resolution')
+    assert.equal(controller.resolveSessionConfig(a).enabled, true)
+    stored.resolve(succeeds)
+    const result = await saving
+    assert.equal(succeeds ? result.config.enabled : result.error.code, succeeds ? false : 'STORAGE_WRITE_FAILED')
+    assert.equal(await prompt, !succeeds)
+  })
+}
+
+test('the reservation follows the last queued Dispatch write, including a clear', async (t) => {
+  const deleting = deferred(), entered = deferred()
+  const a = blankRoot('A')
+  const agents = { get: () => a, turnBoundaryOf: () => ({ lastTurn: 0, openTurnStartSeq: null }) }
+  const controller = createSessionTools({ ctx: { agents }, facility: memoryFacility({ hooks: {
+    async delete() { entered.resolve(); return deleting.promise },
+  } }) })
+  t.after(() => { deleting.resolve(true); return controller.close() })
+  const before = await controller.get('A')
+  const first = controller.setConfig('A', { enabled: false }, before.revision)
+  const second = controller.clear('A', before.revision + 1)
+  let started = false
+  const prompt = a.firstStep(() => { started = true; return controller.resolveSessionConfig(a).enabled })
+  await entered.promise
+  assert.equal((await first).config.enabled, false)
+  assert.equal(started, false)
+  deleting.resolve(true)
+  assert.equal((await second).enabled, false)
+  assert.equal(await prompt, true)
+})
+
+for (const release of ['cancel', 'deadline', 'already started', 'busy', 'unrelated setting']) {
+  test(`a session write keeps the last confirmed policy on ${release}`, async (t) => {
+    const stored = deferred()
+    const a = blankRoot('A')
+    const agents = { get: () => a, turnBoundaryOf: () => ({ lastTurn: release === 'already started' ? 1 : 0, openTurnStartSeq: null }) }
+    if (release === 'busy') a.runMaintenance = () => { throw Error('already has active work') }
+    const controller = createSessionTools({ ctx: { agents }, facility: memoryFacility({ hooks: { put: () => stored.promise } }) })
+    t.after(() => { stored.resolve(false); return controller.close() })
+    if (release === 'deadline') t.mock.timers.enable({ apis: ['setTimeout'] })
+    const before = await controller.get('A')
+    const patch = release === 'unrelated setting' ? { allowedTools: [] } : { enabled: false }
+    const saving = controller.setConfig('A', patch, before.revision)
+    if (release === 'cancel') a.cancel()
+    if (release === 'deadline') t.mock.timers.tick(5000)
+    assert.equal(await a.firstStep(() => controller.resolveSessionConfig(a).enabled), true)
+    stored.resolve(true)
+    assert.deepEqual((await saving).config, { ...before.config, ...patch })
+  })
+}
+
 test('failed, corrupt or missing storage never acknowledges a volatile session write', async (t) => {
   const hooks = { put: async () => false }
   const controller = createSessionTools({ facility: memoryFacility({ hooks }) })

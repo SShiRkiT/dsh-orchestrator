@@ -78,11 +78,43 @@ function authorProblems(tool) {
   return problems
 }
 
+// e0b80bf input contract. Strip annotations on schema nodes, never the input named `description`.
+function parameterShapes(properties) {
+  return Object.fromEntries(Object.entries(properties).map(([key, node]) => [key, shape(node)]))
+  function shape({ description, properties, items, ...rest }) {
+    if (properties) rest.properties = parameterShapes(properties)
+    if (items) rest.items = shape(items)
+    return rest
+  }
+}
+
+test('both dispatch parameter schemas match the baseline apart from description text', () => {
+  const string = { type: 'string' }
+  const requiredString = { type: 'string', required: true }
+  const routes = { provider: string, model: string, reasoning_effort: string }
+  const common = {
+    cwd: string, writeScope: { type: 'array', items: string }, readOnly: { type: 'boolean', default: false },
+    isolation: { type: 'string', enum: ['auto', 'worktree', 'shared'] }, team_task_id: string, ...routes,
+  }
+  const deps = { defineTool: (d) => d, subagents: {}, config }
+  assert.deepEqual(parameterShapes(createDelegateTool(deps).parameters), {
+    ...common, description: requiredString, prompt: requiredString, allowNewReason: string,
+  })
+  assert.deepEqual(parameterShapes(createOrchestrateTool(deps).parameters), {
+    ...common, items: { type: 'array', required: true, items: { type: 'json' } },
+    stages: { type: 'array', required: true, items: {
+      type: 'object', additionalProperties: false, properties: {
+        name: requiredString, prompt: requiredString, schema: { type: 'object', additionalProperties: true }, ...routes,
+      },
+    } }, maxConcurrency: { type: 'integer' },
+  })
+})
+
 function assertIsolationParameter(tool) {
   const isolation = tool.parameters.isolation
   assert.equal(isolation.type, 'string')
   assert.deepEqual(isolation.enum, ['auto', 'worktree', 'shared'])
-  assert.match(isolation.description, /auto（默认/)
+  assert.match(isolation.description, /auto 按设置/)
   assert.equal('required' in isolation, false)
 }
 

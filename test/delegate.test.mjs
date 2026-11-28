@@ -100,14 +100,13 @@ test('the tool is concurrency-safe, named delegate, and takes optional route ove
   assert.equal(tool.parameters.writeScope.items.type, 'string')
   assert.equal('default' in tool.parameters.writeScope, false)
   assert.equal(tool.parameters.readOnly.default, false)
-  assert.match(tool.parameters.writeScope.description, /^非只读任务必填/)
+  assert.match(tool.parameters.writeScope.description, /^写任务必填/)
   assert.match(tool.parameters.writeScope.description, /write-scope-conflict/)
   for (const key of ['provider', 'model', 'reasoning_effort']) {
     assert.equal('required' in tool.parameters[key], false)
   }
-  for (const key of ['provider', 'model']) {
-    assert.match(tool.parameters[key].description, /仅当用户显式点名/)
-  }
+  assert.match(tool.parameters.provider.description, /仅当用户显式点名.*与 model 同传/)
+  assert.match(tool.parameters.model.description, /与 provider 同传/)
   assert.match(tool.parameters.reasoning_effort.description, /仅当用户点名时才设置/)
 })
 
@@ -365,38 +364,37 @@ test('the description keeps the main-agent rule, the whitelist and the execute c
     allowedTools: allowed,
   })
   assert.equal(tool.description.startsWith(mainAgentRule(allowed)), true)
-  assert.match(tool.description, /主代理可用工具（白名单驱动，其余全部禁用）: delegate, orchestrate, delegate_status, todo_write。/)
+  assert.match(tool.description, /主代理白名单: delegate, orchestrate, delegate_status, todo_write。/)
   // The planning-only rule, in one dense Chinese paragraph.
-  assert.match(tool.description, /主代理规则：主代理只负责规划/)
-  assert.match(tool.description, /通过 delegate 或 orchestrate 交子代理执行/)
-  assert.match(tool.description, /勿试探调用被禁工具/)
-  assert.match(tool.description, /优先用 send_message 复用当前会话中已有且闲置.*allowNewReason/)
-  assert.match(tool.description, /租约冲突或工作树已锁定时拒绝投递/)
-  assert.match(tool.description, /新会话或压缩后直接推进，无需重新确认/)
-  assert.match(tool.description, /独立任务在同一消息内派发，delegate 返回后直接结束回合等待子代理完成，勿空转轮询状态。/)
-  assert.ok(tool.description.indexOf('优先用 send_message') < tool.description.indexOf('同一消息内派发'))
+  assert.match(tool.description, /主代理仅规划/)
+  assert.match(tool.description, /读写、命令和检索均交给子代理/)
+  assert.match(tool.description, /勿试探隐藏工具/)
+  assert.match(tool.description, /优先 send_message 复用已有闲置子代理.*allowNewReason/)
+  assert.match(tool.description, /写任务每轮重取租约，冲突或锁树时停止，结束后释放租约/)
+  assert.match(tool.description, /已授权任务在新会话或压缩后直接继续/)
+  assert.match(tool.description, /独立任务同轮派发。delegate 派发或 send_message 告知后立即结束回合等待通知，勿轮询/)
+  assert.ok(tool.description.indexOf('优先 send_message') < tool.description.indexOf('独立任务同轮派发'))
   // The retry contract.
   assert.match(tool.description, /子代理无收尾中断时插件会自动重试，期间勿重派/)
   assert.match(tool.description, /提示停止重试时按通知询问用户/)
   // The route override contract and removed clauses.
   assert.match(tool.description, /AGENTS\.md/)
-  assert.match(tool.description, /严禁复用历史轮次或摘要中的模型/)
-  assert.match(tool.description, /当前消息点名仅限本次派发，工作区指令指定的按其持续生效，两者冲突以当前消息为准/)
+  assert.match(tool.description, /路由默认省略，勿猜或沿用历史/)
+  assert.match(tool.description, /当前指令优先且仅本次有效。provider\/model 成对，reasoning_effort 须点名并随该对/)
   assert.equal(tool.description.includes('run_code'), false)
   assert.equal(tool.description.includes('可直接调用 compress'), false)
   // Separator space between rule and body when enabled.
-  assert.equal(tool.description.includes('。 把一个自包含任务'), true)
+  assert.equal(tool.description.includes('。 Team 任务板只作对齐'), true)
   // The body's handoff contract.
-  assert.match(tool.description, /prompt 须写清目标、允许修改的文件、验收命令与兜底方案。必填 writeScope/)
+  assert.match(tool.description, /prompt 须写清目标、允许修改的文件、验收命令与兜底方案。/)
   assert.match(tool.description, /只读调研.*isolation: "shared".*不得修改文件/)
   assert.match(tool.description, /立即返回子代理 ID 及宿主提供的 agentName，二者均可填 send_message\.agent。结束时自动通知/)
   assert.match(tool.description, /严禁要求子代理用 send_message 汇报/)
-  assert.match(tool.description, /独立 Worktree 交付物须经 worktree_manage 评审、合回或丢弃/)
+  assert.match(tool.description, /Worktree 不自动合回，须评审后显式合回或丢弃/)
   assert.match(tool.description, /多个独立任务在同一轮并发发起；同构批量请用 orchestrate/)
-  // The route parameters carry the same one-line condition, where a model would be typed.
+  assert.match(tool.parameters.provider.description, /AGENTS\.md/)
   for (const param of ['provider', 'model']) {
     const description = tool.parameters[param].description
-    assert.match(description, /AGENTS\.md/, param)
     assert.match(description, /省略走 worker 路由/, param)
   }
 })
@@ -411,7 +409,7 @@ test('the description only recommends delegate_status while it is on the live wh
     allowedTools: () => allowed,
   })
 
-  assert.match(tool.description, /delegate_status.*action:.*edit/)
+  assert.match(tool.description, /delegate_status\(edit\) 更新，再用 send_message 唤醒/)
   allowed = ['delegate']
   assert.doesNotMatch(tool.description, /delegate_status/)
 })
@@ -426,11 +424,10 @@ test('a delegated child no longer sees this tool, so there is no worker variant'
     leases: leases(),
     allowedTools: ['delegate', 'orchestrate'],
   })
-  assert.match(tool.description, /主代理规则：主代理只负责规划/)
+  assert.match(tool.description, /主代理仅规划/)
   assert.equal('workerText' in tool, false)
-  for (const key of ['provider', 'model']) {
-    assert.match(tool.parameters[key].description, /仅当用户显式点名/)
-  }
+  assert.match(tool.parameters.provider.description, /仅当用户显式点名.*与 model 同传/)
+  assert.match(tool.parameters.model.description, /与 provider 同传/)
 })
 
 test('when dispatch mode is off, delegate drops the main-agent rule and refuses execution', async () => {
@@ -452,9 +449,9 @@ test('when dispatch mode is off, delegate drops the main-agent rule and refuses 
     allowedTools: ['delegate', 'orchestrate'],
   })
 
-  assert.equal(tool.description.includes('主代理规则：主代理只负责规划'), false)
-  assert.equal(tool.description.includes('主代理可用工具'), false)
-  assert.match(tool.description, /^把一个自包含任务交给子代理执行/)
+  assert.equal(tool.description.includes('主代理仅规划'), false)
+  assert.equal(tool.description.includes('主代理白名单:'), false)
+  assert.match(tool.description, /^Team 任务板只作对齐。派发单个独立任务/)
 
   await assert.rejects(
     () => tool.execute({ description: 'a', prompt: 'x', writeScope: SCOPE }, exec()),
@@ -464,5 +461,5 @@ test('when dispatch mode is off, delegate drops the main-agent rule and refuses 
   assert.equal(leaseTable.size, 0)
 
   enabled = true
-  assert.match(tool.description, /^主代理规则：主代理只负责规划/)
+  assert.match(tool.description, /^主代理仅规划/)
 })
